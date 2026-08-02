@@ -19,6 +19,19 @@ export enum RegimeType {
   TRANSITIONING = "TRANSITIONING",
 }
 
+// ── Detailed signal (7 levels) - dùng cho TimeframeResult ──
+export type DetailedSignal =
+  | "STRONG_LONG"
+  | "LONG"
+  | "WEAK_LONG"
+  | "NEUTRAL"
+  | "WEAK_SHORT"
+  | "SHORT"
+  | "STRONG_SHORT";
+
+// ── Simple direction (3 levels) - dùng cho final output ──
+export type Direction = "LONG" | "SHORT" | "NEUTRAL";
+
 export interface IndicatorResult {
   name:         string;
   value:        number;
@@ -28,14 +41,14 @@ export interface IndicatorResult {
 }
 
 export interface MarketRegime {
-  type:              RegimeType;
-  adx:               number;
-  atrPct:            number;
-  efficiencyRatio:   number;
-  volSurge:          number;
-  pricePosition:     number;
-  signalMultiplier:  number;
-  indicatorBias:     string;
+  type:             RegimeType;
+  adx:              number;
+  atrPct:           number;
+  efficiencyRatio:  number;
+  volSurge:         number;
+  pricePosition:    number;
+  signalMultiplier: number;
+  indicatorBias:    string;
 }
 
 export interface DataQuality {
@@ -46,38 +59,38 @@ export interface DataQuality {
 }
 
 export interface RiskLevels {
-  entry:                 number;
-  stopLoss:              number;
-  tp1:                   number;
-  tp2:                   number;
-  tp3:                   number;
-  slPct:                 number;
-  rrRatio:               number;
-  refAtr:                number;
-  suggestedPositionPct:  number;
+  entry:                number;
+  stopLoss:             number;
+  tp1:                  number;
+  tp2:                  number;
+  tp3:                  number;
+  slPct:                number;
+  rrRatio:              number;
+  refAtr:               number;
+  suggestedPositionPct: number;
 }
 
 export interface TimeframeResult {
-  timeframe:    string;
-  indicators:   IndicatorResult[];
-  groupScores:  Record<string, number>;
+  timeframe:      string;
+  indicators:     IndicatorResult[];
+  groupScores:    Record<string, number>;
   compositeScore: number;
-  signal:       string; // "LONG" | "SHORT" | "NEUTRAL" only
-  regime?:      MarketRegime;
-  dataQuality?: DataQuality;
-  qualityScore?: number;
-  klineData?:   KlineData[];
+  signal:         DetailedSignal; // 7 levels: STRONG_LONG ... STRONG_SHORT
+  regime?:        MarketRegime;
+  dataQuality?:   DataQuality;
+  qualityScore?:  number;
+  klineData?:     KlineData[];
 }
 
 export interface TechnicalAnalysisResult {
   symbol:          string;
   marketSymbol:    string;
   marketType:      "futures" | "spot";
-  direction:       "LONG" | "SHORT" | "NEUTRAL";
-  signalType:      SignalType;
-  strength:        number;
-  confidence:      number;
-  compositeScore:  number;
+  direction:       Direction;   // 3 levels: LONG | SHORT | NEUTRAL
+  signalType:      SignalType;  // 7 levels enum
+  strength:        number;      // 0 → 100
+  confidence:      number;      // 0 → 95
+  compositeScore:  number;      // -100 → +100
   timestamp:       string;
   dominantRegime?: MarketRegime;
   riskLevels?:     RiskLevels;
@@ -97,7 +110,7 @@ export interface KlineData {
 
 export type Timeframe = "15m" | "1h" | "4h" | "1d";
 
-// ─── Timeframe weights (tổng = 1.0) ───
+// ── Timeframe weights (tổng = 1.0) ──
 export const TIMEFRAME_WEIGHTS: Record<Timeframe, number> = {
   "15m": 0.15,
   "1h":  0.25,
@@ -105,7 +118,7 @@ export const TIMEFRAME_WEIGHTS: Record<Timeframe, number> = {
   "1d":  0.30,
 };
 
-// ─── Base group weights (tổng = 1.0) ───
+// ── Base group weights (tổng = 1.0) ──
 export const BASE_GROUP_WEIGHTS = {
   trend:      0.30,
   momentum:   0.25,
@@ -114,7 +127,7 @@ export const BASE_GROUP_WEIGHTS = {
   pattern:    0.10,
 };
 
-// ─── Regime-adjusted group weights ───
+// ── Regime-adjusted group weights ──
 export const REGIME_GROUP_WEIGHTS: Record<string, typeof BASE_GROUP_WEIGHTS> = {
   // Trending market: ưu tiên trend indicators
   trend: {
