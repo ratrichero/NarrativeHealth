@@ -221,6 +221,17 @@ export async function POST(request: NextRequest) {
         let priceSource = "binance_spot";
         let klines: Awaited<ReturnType<typeof fetchBinanceSpotKlines>> = [];
         let volume24h: number | null = null;
+        let marketCapFromCoingecko: number | null = null;
+
+        // Get CoinGecko market cap first (most accurate)
+        if (coin.coingeckoId && coingeckoData.has(coin.coingeckoId)) {
+          const cgData = coingeckoData.get(coin.coingeckoId);
+          if (cgData && cgData.marketCap) {
+            marketCapFromCoingecko = cgData.marketCap;
+            coinCoingeckoOk = true;
+            console.log(`Got market cap from CoinGecko for ${coin.symbol}: $${marketCapFromCoingecko?.toLocaleString() || 'N/A'}`);
+          }
+        }
 
         if (coin.binanceFuturesSymbol) {
           try {
@@ -235,47 +246,43 @@ export async function POST(request: NextRequest) {
               if (futuresTicker) {
                 volume24h = parseFloat(futuresTicker.quoteVolume);
 
-                // Calculate approximate market cap from price * quote volume (not accurate but useful for comparison)
-                const currentPrice = parseFloat(futuresTicker.lastPrice);
-                const approxMarketCap = volume24h * currentPrice;
+                // Use CoinGecko market cap if available, otherwise calculate approximate from Binance
+                const marketCapToSave = marketCapFromCoingecko || (volume24h * parseFloat(futuresTicker.lastPrice));
 
-                // Save market cap from Binance (approximate) only if we have a value
-                if (approxMarketCap !== null && approxMarketCap > 0) {
+                // Save market cap - prioritize CoinGecko (accurate) over Binance (approximate)
+                if (marketCapToSave !== null && marketCapToSave > 0) {
                   await db
                     .insert(coinMetrics)
                     .values({
                       coinId: coin.id,
                       date: today,
-                      marketCap: approxMarketCap?.toString() || null,
+                      marketCap: marketCapToSave?.toString() || null,
                       source: "binance_futures",
                     })
                     .onConflictDoUpdate({
                       target: [coinMetrics.coinId, coinMetrics.date, coinMetrics.source],
                       set: {
-                        marketCap: approxMarketCap?.toString() || null,
+                        marketCap: marketCapToSave?.toString() || null,
                       },
                     });
                 }
               } else {
-                // Fallback: calculate market cap from latest kline close price * volume
-                if (klines.length > 0) {
-                  const latestKline = klines[klines.length - 1];
-                  const latestPrice = parseFloat(latestKline.close);
-                  const latestVolume = parseFloat(latestKline.quoteVolume);
-                  const approxMarketCap = latestVolume * latestPrice;
-
+                // Fallback: use CoinGecko market cap if available, otherwise calculate from Binance
+                const marketCapToSave = marketCapFromCoingecko || (klines.length > 0 ? parseFloat(klines[klines.length - 1].close) * parseFloat(klines[klines.length - 1].quoteVolume) : null);
+                
+                if (marketCapToSave !== null && marketCapToSave > 0) {
                   await db
                     .insert(coinMetrics)
                     .values({
                       coinId: coin.id,
                       date: today,
-                      marketCap: approxMarketCap?.toString() || null,
+                      marketCap: marketCapToSave?.toString() || null,
                       source: "binance_futures",
                     })
                     .onConflictDoUpdate({
                       target: [coinMetrics.coinId, coinMetrics.date, coinMetrics.source],
                       set: {
-                        marketCap: approxMarketCap?.toString() || null,
+                        marketCap: marketCapToSave?.toString() || null,
                       },
                     });
                 }
@@ -299,24 +306,23 @@ export async function POST(request: NextRequest) {
                   if (spotTicker) {
                     volume24h = parseFloat(spotTicker.quoteVolume);
 
-                    // Calculate approximate market cap from price * quote volume
-                    const currentPrice = parseFloat(spotTicker.lastPrice);
-                    const approxMarketCap = volume24h * currentPrice;
+                    // Use CoinGecko market cap if available, otherwise calculate approximate from Binance
+                    const marketCapToSave = marketCapFromCoingecko || (volume24h * parseFloat(spotTicker.lastPrice));
 
-                    // Save market cap from Binance Spot (approximate) only if we have a value
-                    if (approxMarketCap !== null && approxMarketCap > 0) {
+                    // Save market cap - prioritize CoinGecko (accurate) over Binance (approximate)
+                    if (marketCapToSave !== null && marketCapToSave > 0) {
                       await db
                         .insert(coinMetrics)
                         .values({
                           coinId: coin.id,
                           date: today,
-                          marketCap: approxMarketCap?.toString() || null,
+                          marketCap: marketCapToSave?.toString() || null,
                           source: "binance_spot",
                         })
                         .onConflictDoUpdate({
                           target: [coinMetrics.coinId, coinMetrics.date, coinMetrics.source],
                           set: {
-                            marketCap: approxMarketCap?.toString() || null,
+                            marketCap: marketCapToSave?.toString() || null,
                           },
                         });
                     }
@@ -501,7 +507,7 @@ export async function POST(request: NextRequest) {
               openInterest: oiCurrent,
               openInterestPrev: oiPrev,
               fundingRate,
-              marketCap: null, // Market cap from Binance
+              marketCap: marketCapFromCoingecko, // Use CoinGecko market cap if available
             },
             healthWeights,
             confidenceWeights,
