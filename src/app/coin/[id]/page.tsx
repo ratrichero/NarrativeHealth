@@ -583,16 +583,32 @@ export default function CoinDetailPage() {
                 <div className="text-xs text-slate-500 mb-2">Indicator Group Scores (4H)</div>
                 {technicalAnalysis.timeframes["4h"].groupScores && 
                   Object.keys(technicalAnalysis.timeframes["4h"].groupScores).length > 0 ? (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {Object.entries(technicalAnalysis.timeframes["4h"].groupScores).map(([group, score]: [string, any]) => (
-                      <div key={group} className="flex items-center justify-between">
-                        <span className="text-sm text-slate-400 capitalize">{group}</span>
-                        <span className={`text-sm font-medium ${
-                          score > 0.2 ? 'text-green-400' : 
-                          score < -0.2 ? 'text-red-400' : 'text-slate-400'
-                        }`}>
-                          {score > 0 ? '+' : ''}{(score * 100).toFixed(1)}%
-                        </span>
+                      <div key={group}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm text-slate-400 capitalize">{group}</span>
+                          <span className={`text-sm font-medium ${
+                            score > 0.2 ? 'text-green-400' : 
+                            score < -0.2 ? 'text-red-400' : 'text-slate-400'
+                          }`}>
+                            {score > 0 ? '+' : ''}{(score * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                        {/* Bidirectional bar */}
+                        <div className="h-2 bg-slate-700 rounded-full overflow-hidden relative">
+                          <div className="absolute left-1/2 top-0 bottom-0 w-0.5 bg-slate-500"></div>
+                          <div 
+                            className={`h-full transition-all absolute ${
+                              score > 0 ? 'bg-green-500' : 'bg-red-500'
+                            }`}
+                            style={{ 
+                              width: `${Math.abs(score) * 50}%`,
+                              left: score > 0 ? '50%' : 'auto',
+                              right: score < 0 ? '50%' : 'auto'
+                            }}
+                          />
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -600,28 +616,6 @@ export default function CoinDetailPage() {
                   <p className="text-slate-500 text-center py-4">No group scores available</p>
                 )}
                 
-                <div className="text-xs text-slate-500 mb-2 mt-4">Indicator Details (4H)</div>
-                {technicalAnalysis.timeframes["4h"].indicators && 
-                  technicalAnalysis.timeframes["4h"].indicators.length > 0 ? (
-                  <div className="space-y-2">
-                    {technicalAnalysis.timeframes["4h"].indicators.map((indicator: any, idx: number) => (
-                      <div key={idx} className="bg-slate-800/50 rounded-lg p-2">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-sm font-medium text-white">{indicator.name}</span>
-                          <span className={`text-xs font-medium ${
-                            indicator.signal > 0.3 ? 'text-green-400' : 
-                            indicator.signal < -0.3 ? 'text-red-400' : 'text-slate-400'
-                          }`}>
-                            {indicator.signal > 0 ? '+' : ''}{(indicator.signal * 100).toFixed(1)}%
-                          </span>
-                        </div>
-                        <div className="text-xs text-slate-500">{indicator.description}</div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-slate-500 text-center py-4">No indicators available</p>
-                )}
               </div>
             ) : (
               <p className="text-slate-500 text-center py-4">No technical analysis available</p>
