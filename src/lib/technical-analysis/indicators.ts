@@ -24,15 +24,19 @@ export function sma(data: number[], period: number): number[] {
 export function ema(data: number[], period: number): number[] {
   const result: number[] = [];
   const multiplier = 2 / (period + 1);
+  let lastEma: number | undefined;
   
   for (let i = 0; i < data.length; i++) {
-    if (i === 0) {
-      result.push(data[i]);
-    } else if (i < period - 1) {
+    const value = data[i];
+
+    if (!Number.isFinite(value)) {
       result.push(NaN);
+    } else if (lastEma === undefined) {
+      lastEma = value;
+      result.push(i < period - 1 ? NaN : lastEma);
     } else {
-      const emaValue = (data[i] - result[i - 1]) * multiplier + result[i - 1];
-      result.push(emaValue);
+      lastEma = (value - lastEma) * multiplier + lastEma;
+      result.push(i < period - 1 ? NaN : lastEma);
     }
   }
   return result;

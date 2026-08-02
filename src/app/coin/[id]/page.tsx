@@ -52,6 +52,7 @@ export default function CoinDetailPage() {
   const id = params.id as string;
   const queryClient = useQueryClient();
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>("4h");
+  const [chartMode, setChartMode] = useState<"area" | "candlestick">("area");
 
   const { data: coin, isLoading, error } = useQuery({
     queryKey: ["coin", id],
@@ -108,9 +109,9 @@ export default function CoinDetailPage() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3 mb-2">
-            <h1 className="text-3xl font-bold text-white">{coin.symbol}</h1>
-            <span className="text-xl text-slate-400">{coin.name}</span>
+          <div className="flex items-center gap-2 sm:gap-3 mb-2">
+            <h1 className="text-2xl sm:text-3xl font-bold text-white">{coin.symbol}</h1>
+            <span className="text-lg sm:text-xl text-slate-400">{coin.name}</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {coin.narratives.map((n) => (
@@ -121,15 +122,15 @@ export default function CoinDetailPage() {
             {coin.hasFutures && <Badge variant="default">Futures</Badge>}
           </div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4">
           <Button
             variant="secondary"
             size="sm"
             onClick={() => refreshMutation.mutate()}
-            loading={refreshMutation.isPending}
+            disabled={refreshMutation.isPending}
           >
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
+            <RefreshCw className={`h-4 w-4 mr-2 ${refreshMutation.isPending ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Refresh</span>
           </Button>
           {coin.currentHealth && (
             <>
@@ -159,8 +160,8 @@ export default function CoinDetailPage() {
       {/* Realtime Technical Analysis */}
       <Card className="border-l-4 border-l-purple-500">
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>Realtime Technical Analysis</CardTitle>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <CardTitle className="text-base sm:text-lg">Realtime Technical Analysis</CardTitle>
             <div className="flex items-center gap-2">
               <Button
                 variant="ghost"
@@ -193,23 +194,23 @@ export default function CoinDetailPage() {
           ) : technicalAnalysis ? (
             <div className="space-y-4">
               {/* Main Signal */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div className="flex items-center gap-2 sm:gap-3">
                   <Badge 
                     variant={
                       technicalAnalysis.direction === "LONG" ? "success" : 
                       technicalAnalysis.direction === "SHORT" ? "danger" : "neutral"
                     }
-                    className="text-sm px-3 py-1"
+                    className="text-xs sm:text-sm px-2 sm:px-3 py-1"
                   >
                     {technicalAnalysis.signalType.replace(/_/g, " ")}
                   </Badge>
-                  <span className="text-slate-400 text-sm">
+                  <span className="text-xs sm:text-sm text-slate-400">
                     {technicalAnalysis.marketType === "futures" ? "Futures" : "Spot"} · {technicalAnalysis.marketSymbol}
                   </span>
                 </div>
                 <div className="text-right">
-                  <div className="text-2xl font-bold text-white">
+                  <div className="text-xl sm:text-2xl font-bold text-white">
                     {technicalAnalysis.strength.toFixed(1)}%
                   </div>
                   <div className="text-xs text-slate-500">Strength</div>
@@ -217,21 +218,21 @@ export default function CoinDetailPage() {
               </div>
 
               {/* Metrics */}
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-3 gap-2 sm:gap-4">
                 <div className="text-center">
-                  <div className="text-lg font-semibold text-cyan-400">
+                  <div className="text-base sm:text-lg font-semibold text-cyan-400">
                     {technicalAnalysis.confidence.toFixed(1)}%
                   </div>
                   <div className="text-xs text-slate-500">Confidence</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-lg font-semibold text-purple-400">
+                  <div className="text-base sm:text-lg font-semibold text-purple-400">
                     {technicalAnalysis.compositeScore.toFixed(2)}
                   </div>
                   <div className="text-xs text-slate-500">Composite Score</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-lg font-semibold text-slate-300">
+                  <div className="text-base sm:text-lg font-semibold text-slate-300">
                     {technicalAnalysis.direction}
                   </div>
                   <div className="text-xs text-slate-500">Direction</div>
@@ -240,13 +241,13 @@ export default function CoinDetailPage() {
 
               {/* Dominant Regime */}
               {technicalAnalysis.dominantRegime && (
-                <div className="bg-slate-800/50 rounded-lg p-3">
+                <div className="bg-slate-800/50 rounded-lg p-2 sm:p-3">
                   <div className="text-xs text-slate-500 mb-2">Market Regime</div>
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                     <span className="text-sm font-medium text-white">
                       {technicalAnalysis.dominantRegime.type.replace(/_/g, " ")}
                     </span>
-                    <div className="flex gap-4 text-xs text-slate-400">
+                    <div className="flex gap-3 sm:gap-4 text-xs text-slate-400">
                       <span>ADX: {technicalAnalysis.dominantRegime.adx.toFixed(1)}</span>
                       <span>ATR: {technicalAnalysis.dominantRegime.atrPct.toFixed(2)}%</span>
                     </div>
@@ -257,7 +258,7 @@ export default function CoinDetailPage() {
               {/* Timeframe Breakdown */}
               <div>
                 <div className="text-xs text-slate-500 mb-2">Timeframe Analysis</div>
-                <div className="grid grid-cols-4 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {["15m", "1h", "4h", "1d"].map((tf) => {
                     const tfData = technicalAnalysis.timeframes[tf];
                     if (!tfData) return null;
@@ -280,52 +281,156 @@ export default function CoinDetailPage() {
               {/* Kline Chart */}
               {technicalAnalysis.timeframes[selectedTimeframe]?.klineData && (
                 <div>
-                  <div className="flex items-center justify-between mb-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
                     <div className="text-xs text-slate-500">Price Chart</div>
-                    <div className="flex gap-1">
-                      {["15m", "1h", "4h", "1d"].map((tf) => (
+                    <div className="flex items-center gap-2">
+                      <div className="flex gap-1">
+                        {["15m", "1h", "4h", "1d"].map((tf) => (
+                          <button
+                            key={tf}
+                            onClick={() => setSelectedTimeframe(tf)}
+                            className={`px-2 py-1 text-xs rounded ${
+                              selectedTimeframe === tf
+                                ? "bg-purple-500/20 text-purple-400"
+                                : "bg-slate-700/50 text-slate-400 hover:bg-slate-700"
+                            }`}
+                          >
+                            {tf}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex gap-1 border-l border-slate-700 pl-2">
                         <button
-                          key={tf}
-                          onClick={() => setSelectedTimeframe(tf)}
+                          onClick={() => setChartMode("area")}
                           className={`px-2 py-1 text-xs rounded ${
-                            selectedTimeframe === tf
-                              ? "bg-purple-500/20 text-purple-400"
+                            chartMode === "area"
+                              ? "bg-cyan-500/20 text-cyan-400"
                               : "bg-slate-700/50 text-slate-400 hover:bg-slate-700"
                           }`}
                         >
-                          {tf}
+                          Area
                         </button>
-                      ))}
+                        <button
+                          onClick={() => setChartMode("candlestick")}
+                          className={`px-2 py-1 text-xs rounded ${
+                            chartMode === "candlestick"
+                              ? "bg-orange-500/20 text-orange-400"
+                              : "bg-slate-700/50 text-slate-400 hover:bg-slate-700"
+                          }`}
+                        >
+                          Candle
+                        </button>
+                      </div>
                     </div>
                   </div>
-                  <div className="h-48">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={technicalAnalysis.timeframes[selectedTimeframe].klineData.slice(-50)}>
-                        <XAxis
-                          dataKey="openTime"
-                          stroke="#64748b"
-                          fontSize={12}
-                          tickFormatter={(value) => new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        />
-                        <YAxis stroke="#64748b" fontSize={12} domain={['auto', 'auto']} />
-                        <Tooltip
-                          contentStyle={{
-                            backgroundColor: "#1e293b",
-                            border: "1px solid #334155",
-                            borderRadius: "8px",
-                          }}
-                          formatter={(value: any) => [`$${value?.toFixed(4) || '0'}`, "Price"]}
-                          labelFormatter={(value: any) => value ? new Date(value).toLocaleString() : ''}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="close"
-                          stroke="#a855f7"
-                          fill="#a855f7"
-                          fillOpacity={0.2}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
+                  <div className="h-36 sm:h-48">
+                    {chartMode === "area" ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={technicalAnalysis.timeframes[selectedTimeframe].klineData.slice(-50)}>
+                          <XAxis
+                            dataKey="openTime"
+                            stroke="#64748b"
+                            fontSize={10}
+                            tickFormatter={(value) => new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          />
+                          <YAxis stroke="#64748b" fontSize={10} domain={['auto', 'auto']} />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: "#1e293b",
+                              border: "1px solid #334155",
+                              borderRadius: "8px",
+                            }}
+                            formatter={(value: any) => [`$${value?.toFixed(4) || '0'}`, "Price"]}
+                            labelFormatter={(value: any) => value ? new Date(value).toLocaleString() : ''}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="close"
+                            stroke="#a855f7"
+                            fill="#a855f7"
+                            fillOpacity={0.2}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="relative w-full h-full bg-slate-900/50">
+                        {(() => {
+                          const data = technicalAnalysis.timeframes[selectedTimeframe].klineData.slice(-50);
+                          if (data.length === 0) return <div className="flex items-center justify-center h-full text-slate-500">No data</div>;
+                          
+                          const prices = data.flatMap((d: any) => [d.open, d.high, d.low, d.close]);
+                          const minPrice = Math.min(...prices);
+                          const maxPrice = Math.max(...prices);
+                          const priceRange = maxPrice - minPrice || 1;
+                          
+                          return data.map((candle: any, index: number) => {
+                            const isGreen = candle.close >= candle.open;
+                            const bodyColor = isGreen ? "#22c55e" : "#ef4444";
+                            const wickColor = isGreen ? "#22c55e" : "#ef4444";
+                            
+                            const openPct = ((candle.open - minPrice) / priceRange) * 100;
+                            const closePct = ((candle.close - minPrice) / priceRange) * 100;
+                            const highPct = ((candle.high - minPrice) / priceRange) * 100;
+                            const lowPct = ((candle.low - minPrice) / priceRange) * 100;
+                            
+                            const bodyTopPct = Math.min(openPct, closePct);
+                            const bodyBottomPct = Math.max(openPct, closePct);
+                            const bodyHeightPct = Math.max(bodyBottomPct - bodyTopPct, 1);
+                            
+                            const candleWidth = 100 / data.length;
+                            const leftPct = index * candleWidth;
+                            
+                            return (
+                              <div key={index} className="absolute top-0 bottom-0" style={{ left: `${leftPct}%`, width: `${candleWidth * 0.8}%` }}>
+                                {/* Wick */}
+                                <div 
+                                  className="absolute w-0.5 opacity-80"
+                                  style={{ 
+                                    backgroundColor: wickColor,
+                                    left: '50%',
+                                    transform: 'translateX(-50%)',
+                                    top: `${100 - highPct}%`,
+                                    height: `${highPct - lowPct}%`
+                                  }}
+                                />
+                                {/* Body */}
+                                <div 
+                                  className="absolute hover:opacity-80 transition-opacity cursor-pointer group"
+                                  style={{ 
+                                    backgroundColor: bodyColor,
+                                    left: '10%',
+                                    width: '80%',
+                                    top: `${100 - bodyBottomPct}%`,
+                                    height: `${bodyHeightPct}%`
+                                  }}
+                                >
+                                  {/* Tooltip */}
+                                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs p-2 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-20 pointer-events-none">
+                                    <div>O: ${candle.open.toFixed(4)}</div>
+                                    <div>H: ${candle.high.toFixed(4)}</div>
+                                    <div>L: ${candle.low.toFixed(4)}</div>
+                                    <div>C: ${candle.close.toFixed(4)}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                        {/* X-axis labels */}
+                        <div className="absolute bottom-0 left-0 right-0 flex justify-between text-xs text-slate-500 px-1">
+                          {technicalAnalysis.timeframes[selectedTimeframe].klineData.slice(-50).map((candle: any, index: number) => {
+                            if (index % 10 === 0) {
+                              return (
+                                <span key={index} className="truncate w-8 text-center">
+                                  {new Date(candle.openTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              );
+                            }
+                            return <span key={index} className="w-8" />;
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -337,7 +442,7 @@ export default function CoinDetailPage() {
                   
                   {/* Group Scores */}
                   {technicalAnalysis.timeframes[selectedTimeframe].groupScores && (
-                    <div className="grid grid-cols-5 gap-2 mb-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3">
                       {Object.entries(technicalAnalysis.timeframes[selectedTimeframe].groupScores).map(([group, score]: [string, any]) => (
                         <div key={group} className="bg-slate-800/50 rounded-lg p-2 text-center">
                           <div className="text-xs text-slate-500 capitalize mb-1">{group}</div>
@@ -402,7 +507,7 @@ export default function CoinDetailPage() {
               {technicalAnalysis.riskLevels && technicalAnalysis.direction !== "NEUTRAL" && (
                 <div className="bg-slate-800/50 rounded-lg p-3">
                   <div className="text-xs text-slate-500 mb-2">Risk Management</div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 text-sm">
                     <div>
                       <div className="text-slate-500 text-xs">Entry</div>
                       <div className="text-white font-medium">
