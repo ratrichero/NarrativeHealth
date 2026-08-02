@@ -9,6 +9,7 @@ import {
   features,
   marketPriceDaily,
   coinMetrics,
+  sourceStatus,
 } from "@/db/schema";
 import { eq, and, desc, gte } from "drizzle-orm";
 import { getHealthStatus, getBusinessDate } from "@/lib/utils";
@@ -343,6 +344,62 @@ export async function DELETE(
       );
     }
 
+    // Check if coin exists
+    const [coin] = await db
+      .select()
+      .from(coins)
+      .where(eq(coins.id, coinId))
+      .limit(1);
+
+    if (!coin) {
+      return NextResponse.json(
+        { success: false, error: "Coin not found" },
+        { status: 404 }
+      );
+    }
+
+    // Delete dependent data first (foreign key constraints)
+    // Delete coin narratives associations
+    await db
+      .delete(coinNarratives)
+      .where(eq(coinNarratives.coinId, coinId));
+
+    // Delete coin metrics
+    await db
+      .delete(coinMetrics)
+      .where(eq(coinMetrics.coinId, coinId));
+
+    // Delete coin metrics
+    await db
+      .delete(coinMetrics)
+      .where(eq(coinMetrics.coinId, coinId));
+
+    // Delete health scores
+    await db
+      .delete(healthScores)
+      .where(eq(healthScores.coinId, coinId));
+
+    // Delete recommendations
+    await db
+      .delete(recommendations)
+      .where(eq(recommendations.coinId, coinId));
+
+    // Delete features
+    await db
+      .delete(features)
+      .where(eq(features.coinId, coinId));
+
+    // Delete market price daily
+    await db
+      .delete(marketPriceDaily)
+      .where(eq(marketPriceDaily.coinId, coinId));
+
+    // Delete source status
+    await db
+      .delete(sourceStatus)
+      .where(eq(sourceStatus.coinId, coinId));
+
+    // Delete coin
     const [deleted] = await db
       .delete(coins)
       .where(eq(coins.id, coinId))
