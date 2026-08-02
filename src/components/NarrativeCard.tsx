@@ -8,7 +8,8 @@ import { Button } from "./ui/Button";
 import { HealthBadge } from "./HealthBadge";
 import { ScoreChange } from "./ScoreChange";
 import { ConfidenceBadge } from "./ConfidenceBadge";
-import { TrendingUp, Users, RefreshCw } from "lucide-react";
+import { WatchlistDialog } from "./WatchlistDialog";
+import { TrendingUp, Users, RefreshCw, Star } from "lucide-react";
 import type { NarrativeSummary } from "@/types";
 
 interface NarrativeCardProps {
@@ -22,8 +23,21 @@ async function refreshNarrativeData(narrativeId: number): Promise<{ message: str
   return data.data;
 }
 
+async function addToWatchlist(coinId: number, note?: string, priority?: number) {
+  const response = await fetch("/api/watchlist", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ coinId, note, priority }),
+  });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
 export function NarrativeCard({ narrative }: NarrativeCardProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
+  const [selectedCoin, setSelectedCoin] = useState<{ id: number; symbol: string; name: string } | null>(null);
   const queryClient = useQueryClient();
 
   const refreshMutation = useMutation({
@@ -34,6 +48,14 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
     },
     onError: () => {
       setIsRefreshing(false);
+    },
+  });
+
+  const watchlistMutation = useMutation({
+    mutationFn: ({ coinId, note, priority }: { coinId: number; note?: string; priority?: number }) => 
+      addToWatchlist(coinId, note, priority),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["watchlist"] });
     },
   });
 
@@ -96,14 +118,47 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
                     {narrative.topCoin.symbol}
                   </span>
                 </div>
-                <span className="text-green-500 text-xs">
-                  {narrative.topCoin.healthScore.toFixed(0)}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-green-500 text-xs">
+                    {narrative.topCoin.healthScore.toFixed(0)}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setSelectedCoin({ id: narrative.topCoin!.id, symbol: narrative.topCoin!.symbol, name: narrative.topCoin!.name });
+                      setWatchlistDialogOpen(true);
+                    }}
+                    title="Add to watchlist"
+                    className="hover:bg-slate-700 h-6 w-6 p-0"
+                  >
+                    <Star className="h-3 w-3 text-yellow-500" />
+                  </Button>
+                </div>
               </div>
             </div>
           )}
         </CardContent>
       </Card>
+      
+      {/* Watchlist Dialog */}
+      {selectedCoin && (
+        <WatchlistDialog
+          isOpen={watchlistDialogOpen}
+          onClose={() => {
+            setWatchlistDialogOpen(false);
+            setSelectedCoin(null);
+          }}
+          coinId={selectedCoin.id}
+          coinSymbol={selectedCoin.symbol}
+          coinName={selectedCoin.name}
+          onAdd={async (coinId, note, priority) => {
+            await watchlistMutation.mutateAsync({ coinId, note, priority });
+          }}
+        />
+      )}
     </Link>
   );
 }

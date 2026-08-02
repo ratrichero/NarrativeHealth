@@ -12,7 +12,8 @@ import { SignalBadge } from "@/components/SignalBadge";
 import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { ScoreBreakdown } from "@/components/ScoreBreakdown";
-import { ArrowLeft, AlertCircle, ExternalLink, RefreshCw, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { WatchlistDialog } from "@/components/WatchlistDialog";
+import { ArrowLeft, AlertCircle, ExternalLink, RefreshCw, TrendingUp, TrendingDown, Minus, Star } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -47,12 +48,24 @@ async function fetchTechnicalAnalysis(id: string) {
   return data.data;
 }
 
+async function addToWatchlist(coinId: number, note?: string, priority?: number) {
+  const response = await fetch("/api/watchlist", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ coinId, note, priority }),
+  });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
 export default function CoinDetailPage() {
   const params = useParams();
   const id = params.id as string;
   const queryClient = useQueryClient();
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>("4h");
   const [chartMode, setChartMode] = useState<"area" | "candlestick">("area");
+  const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
 
   const { data: coin, isLoading, error } = useQuery({
     queryKey: ["coin", id],
@@ -74,6 +87,14 @@ export default function CoinDetailPage() {
     mutationFn: () => refreshCoin(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["coin", id] });
+    },
+  });
+
+  const watchlistMutation = useMutation({
+    mutationFn: ({ coinId, note, priority }: { coinId: number; note?: string; priority?: number }) => 
+      addToWatchlist(coinId, note, priority),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["watchlist"] });
     },
   });
 
@@ -131,6 +152,14 @@ export default function CoinDetailPage() {
           >
             <RefreshCw className={`h-4 w-4 mr-2 ${refreshMutation.isPending ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">Refresh</span>
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setWatchlistDialogOpen(true)}
+          >
+            <Star className="h-4 w-4 mr-2" />
+            <span className="hidden sm:inline">Watchlist</span>
           </Button>
           {coin.currentHealth && (
             <>
@@ -844,6 +873,18 @@ export default function CoinDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Watchlist Dialog */}
+      <WatchlistDialog
+        isOpen={watchlistDialogOpen}
+        onClose={() => setWatchlistDialogOpen(false)}
+        coinId={parseInt(id)}
+        coinSymbol={coin.symbol}
+        coinName={coin.name}
+        onAdd={async (coinId, note, priority) => {
+          await watchlistMutation.mutateAsync({ coinId, note, priority });
+        }}
+      />
     </div>
   );
 }
