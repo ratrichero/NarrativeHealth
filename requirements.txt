@@ -1,0 +1,29 @@
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# Database
+sqlalchemy==2.0.25
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+
+# Validation
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Scheduler
+apscheduler==3.10.4
+pytz==2023.3
+
+# HTTP Client
+httpx==0.26.0
+
+# Data Processing (pandas-only, no TA-Lib)
+pandas==2.2.0
+numpy==1.26.3
+
+# Utilities
+python-dotenv==1.0.0
+
+# Static file serving (production)
+aiofiles==23.2.1

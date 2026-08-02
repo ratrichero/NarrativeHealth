@@ -1,0 +1,7 @@
+{
+  "dialect": "postgresql",
+  "schema": "./src/db/schema.ts",
+  "dbCredentials": {
+    "url": "postgresql://upaper:Dotask24h@168.138.179.192:5432/mdd"
+  }
+}

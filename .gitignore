@@ -1,0 +1,21 @@
+.agent/
+.vscode/
+plans/
+
+dist/
+
+*.manifest
+*.log
+
+# Environments
+.env
+.venv
+venv
+.next/
+ENV/
+node_modules/
+
+__pycache__/
+
+# More
+zip/

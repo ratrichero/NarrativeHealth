@@ -1,0 +1,261 @@
+// Binance data collector - Spot and Futures
+
+import axios from "axios";
+
+const BINANCE_SPOT_API = "https://api.binance.com/api/v3";
+const BINANCE_FUTURES_API = "https://fapi.binance.com/fapi/v1";
+const BINANCE_FUTURES_DATA_API = "https://fapi.binance.com/futures/data";
+
+export interface KlineData {
+  openTime: number;
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: string;
+  closeTime: number;
+  quoteVolume: string;
+}
+
+export interface FuturesMetrics {
+  openInterest: number | null;
+  fundingRate: number | null;
+}
+
+/**
+ * Fetch daily klines from Binance Spot
+ */
+export async function fetchBinanceSpotKlines(
+  symbol: string,
+  limit: number = 200
+): Promise<KlineData[]> {
+  try {
+    const response = await axios.get(`${BINANCE_SPOT_API}/klines`, {
+      params: {
+        symbol,
+        interval: "1d",
+        limit,
+      },
+      timeout: 10000,
+    });
+
+    return response.data.map((k: (string | number)[]) => ({
+      openTime: k[0] as number,
+      open: k[1] as string,
+      high: k[2] as string,
+      low: k[3] as string,
+      close: k[4] as string,
+      volume: k[5] as string,
+      closeTime: k[6] as number,
+      quoteVolume: k[7] as string,
+    }));
+  } catch (error) {
+    console.error(`Binance API error for ${symbol}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Fetch daily klines from Binance Futures
+ */
+export async function fetchBinanceFuturesKlines(
+  symbol: string,
+  limit: number = 200
+): Promise<KlineData[]> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_API}/klines`, {
+      params: {
+        symbol,
+        interval: "1d",
+        limit,
+      },
+      timeout: 10000,
+    });
+
+    return response.data.map((k: (string | number)[]) => ({
+      openTime: k[0] as number,
+      open: k[1] as string,
+      high: k[2] as string,
+      low: k[3] as string,
+      close: k[4] as string,
+      volume: k[5] as string,
+      closeTime: k[6] as number,
+      quoteVolume: k[7] as string,
+    }));
+  } catch (error) {
+    console.error(`Binance Futures API error for ${symbol}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Fetch Open Interest from Binance Futures
+ */
+export async function fetchBinanceFuturesOI(symbol: string): Promise<number | null> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_API}/openInterest`, {
+      params: { symbol },
+      timeout: 10000,
+    });
+
+    return parseFloat(response.data.openInterest);
+  } catch (error) {
+    console.error(`Binance futures OI error for ${symbol}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Fetch Funding Rate from Binance Futures
+ */
+export async function fetchBinanceFundingRate(symbol: string): Promise<number | null> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_API}/premiumIndex`, {
+      params: { symbol },
+      timeout: 10000,
+    });
+
+    return parseFloat(response.data.lastFundingRate);
+  } catch (error) {
+    console.error(`Binance funding rate error for ${symbol}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Fetch both OI and Funding Rate
+ */
+export async function fetchBinanceFuturesMetrics(symbol: string): Promise<FuturesMetrics> {
+  const [openInterest, fundingRate] = await Promise.all([
+    fetchBinanceFuturesOI(symbol),
+    fetchBinanceFundingRate(symbol),
+  ]);
+
+  return { openInterest, fundingRate };
+}
+
+/**
+ * Fetch historical Open Interest
+ */
+export async function fetchBinanceOIHistory(
+  symbol: string,
+  period: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "6h" | "12h" | "1d" = "1d",
+  limit: number = 2
+): Promise<{ timestamp: number; openInterest: number }[]> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_DATA_API}/openInterestHist`, {
+      params: {
+        symbol,
+        period,
+        limit,
+      },
+      timeout: 10000,
+    });
+
+    return response.data.map((item: { timestamp: number; sumOpenInterest: string }) => ({
+      timestamp: item.timestamp,
+      openInterest: parseFloat(item.sumOpenInterest),
+    }));
+  } catch (error) {
+    console.error(`Binance OI history error for ${symbol}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Get current price from Binance
+ */
+export async function fetchBinanceCurrentPrice(symbol: string): Promise<number | null> {
+  try {
+    const response = await axios.get(`${BINANCE_SPOT_API}/ticker/price`, {
+      params: { symbol },
+      timeout: 10000,
+    });
+
+    return parseFloat(response.data.price);
+  } catch (error) {
+    console.error(`Error fetching Binance price for ${symbol}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Get current price from Binance Futures
+ */
+export async function fetchBinanceFuturesCurrentPrice(symbol: string): Promise<number | null> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_API}/ticker/price`, {
+      params: { symbol },
+      timeout: 10000,
+    });
+
+    return parseFloat(response.data.price);
+  } catch (error) {
+    console.error(`Error fetching Binance Futures price for ${symbol}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Get 24h ticker data from Binance Spot
+ */
+export async function fetchBinanceSpotTicker(symbol: string): Promise<any | null> {
+  try {
+    const response = await axios.get(`${BINANCE_SPOT_API}/ticker/24hr`, {
+      params: { symbol },
+      timeout: 10000,
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error(`Error fetching Binance Spot ticker for ${symbol}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Get 24h ticker data from Binance Futures
+ */
+export async function fetchBinanceFuturesTicker(symbol: string): Promise<any | null> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_API}/ticker/24hr`, {
+      params: { symbol },
+      timeout: 10000,
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error(`Error fetching Binance Futures ticker for ${symbol}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Check if a symbol exists on Binance Spot
+ */
+export async function checkBinanceSpotSymbol(symbol: string): Promise<boolean> {
+  try {
+    const response = await axios.get(`${BINANCE_SPOT_API}/ticker/price`, {
+      params: { symbol },
+      timeout: 5000,
+    });
+    return !!response.data.price;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if a symbol exists on Binance Futures
+ */
+export async function checkBinanceFuturesSymbol(symbol: string): Promise<boolean> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_API}/premiumIndex`, {
+      params: { symbol },
+      timeout: 5000,
+    });
+    return !!response.data.symbol;
+  } catch {
+    return false;
+  }
+}
