@@ -10,8 +10,9 @@ import {
   marketPriceDaily,
   coinMetrics,
   sourceStatus,
+  narrativeHealth,
 } from "@/db/schema";
-import { eq, and, desc, gte } from "drizzle-orm";
+import { eq, and, desc, gte, or } from "drizzle-orm";
 import { getHealthStatus, getBusinessDate } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -363,6 +364,16 @@ export async function DELETE(
     await db
       .delete(coinNarratives)
       .where(eq(coinNarratives.coinId, coinId));
+
+    // Delete narrative health (top_coin_id and weakest_coin_id reference coins)
+    await db
+      .delete(narrativeHealth)
+      .where(
+        or(
+          eq(narrativeHealth.topCoinId, coinId),
+          eq(narrativeHealth.weakestCoinId, coinId)
+        )
+      );
 
     // Delete coin metrics
     await db
