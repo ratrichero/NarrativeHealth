@@ -1,7 +1,7 @@
 // Technical Analysis Scoring System
 
 import { KlineData, IndicatorResult, MarketRegime, BASE_GROUP_WEIGHTS, REGIME_GROUP_WEIGHTS } from "./types";
-import { sma, ema, rsi, macd, bollingerBands, stochastic, cci, adx, atr } from "./indicators";
+import { sma, ema, rsi, macd, bollingerBands, stochastic, cci, adx, atr, vwapRollingAnalysis } from "./indicators";
 import { detectMarketRegime } from "./regime";
 
 /**
@@ -53,6 +53,35 @@ export function calculateTrendScore(data: KlineData[]): IndicatorResult {
 /**
  * Calculate momentum score using RSI and MACD
  */
+function rsiSmoothMapping(rsiVal: number, rsiSlope: number = 0): number {
+  let base: number;
+  
+  if (rsiVal >= 80) {
+    // Extreme overbought: -0.5 → -1.0
+    base = -0.5 - (rsiVal - 80) / 20 * 0.5;
+  } else if (rsiVal >= 70) {
+    // Overbought: 0 → -0.5
+    base = -(rsiVal - 70) / 10 * 0.5;
+  } else if (rsiVal > 30) {
+    // Neutral zone: linear ±0.4 (RSI=50 → 0, RSI=70 → -0.4, RSI=30 → +0.4)
+    base = -(rsiVal - 50) / 50 * 0.4;
+  } else if (rsiVal >= 20) {
+    // Oversold: 0 → +0.5
+    base = (30 - rsiVal) / 10 * 0.5;
+  } else {
+    // Extreme oversold: +0.5 → +1.0
+    base = 0.5 + (20 - rsiVal) / 20 * 0.5;
+  }
+  
+  // Slope adjustment: RSI đang tăng → thêm bullish bias
+  const slopeAdj = Math.max(-0.2, Math.min(0.2, rsiSlope * 0.1));
+  
+  return Math.max(-1, Math.min(1, base + slopeAdj));
+}
+
+/**
+ * Calculate momentum score using RSI and MACD
+ */
 export function calculateMomentumScore(data: KlineData[]): IndicatorResult {
   const closes = data.map(d => d.close);
   const rsiValues = rsi(closes, 14);
@@ -62,80 +91,40 @@ export function calculateMomentumScore(data: KlineData[]): IndicatorResult {
   const currentMACD = macdResult.macd[macdResult.macd.length - 1] || 0;
   const currentSignal = macdResult.signal[macdResult.signal.length - 1] || 0;
   
-  // RSI signal
-  let rsiSignal = 0;
-  if (currentRSI > 70) {
-    rsiSignal = -0.6; // Overbought
-  } else if (currentRSI > 60) {
-    rsiSignal = -0.3; // Approaching overbought
-  } else if (currentRSI < 30) {
-    rsiSignal = 0.6; // Oversold
-  } else if (currentRSI < 40) {
-    rsiSignal = 0.3; // Approaching oversold
-  } else {
-    rsiSignal = 0; // Neutral
-  }
+  // Calculate RSI slope (4-bar lookback)
+  const rsiSlope = rsiValues.length >= 5 
+    ? rsiValues[rsiValues.length - 1] - rsiValues[rsiValues.length - 5]
+    : 0;
   
-  // MACD signal
-  let macdSignal = 0;
-  if (currentMACD > currentSignal && currentMACD > 0) {
-    macdSignal = 0.5; // Bullish momentum
-  } else if (currentMACD > currentSignal) {
-    macdSignal = 0.3; // Bullish crossover
-  } else if (currentMACD < currentSignal && currentMACD < 0) {
-    macdSignal = -0.5; // Bearish momentum
-  } else if (currentMACD < currentSignal) {
-    macdSignal = -0.3; // Bearish crossover
-  }
-  
-  // Combine signals
-  const combinedSignal = (rsiSignal + macdSignal) / 2;
+  // RSI signal using smooth mapping
+  const rsiSignal = rsiSmoothMapping(currentRSI, rsiSlope);
   
   return {
     name: "Momentum",
-    value: combinedSignal,
-    signal: Math.max(-1, Math.min(1, combinedSignal)),
-    weight: 0.25,
-    description: `RSI: ${currentRSI.toFixed(1)}, MACD: ${currentMACD.toFixed(4)}`,
+    value: rsiSignal,
+    signal: Math.max(-1, Math.min(1, rsiSignal)),
+    weight: 0.28,
+    description: `RSI: ${currentRSI.toFixed(1)}, Slope: ${rsiSlope.toFixed(2)}`,
   };
 }
 
 /**
- * Calculate volume score
+ * Calculate volume score using VWAP Rolling
  */
 export function calculateVolumeScore(data: KlineData[]): IndicatorResult {
-  const volumes = data.map(d => d.volume);
-  const closes = data.map(d => d.close);
+  const high = data.map(d => d.high);
+  const low = data.map(d => d.low);
+  const close = data.map(d => d.close);
+  const volume = data.map(d => d.volume);
   
-  const currentVolume = volumes[volumes.length - 1];
-  const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 1;
-  
-  const priceChange = closes[closes.length - 1] - closes[closes.length - 2];
-  const priceChangePct = closes[closes.length - 2] > 0 ? (priceChange / closes[closes.length - 2]) * 100 : 0;
-  
-  // Volume analysis
-  let signal = 0;
-  if (volumeRatio > 1.5 && priceChangePct > 0) {
-    signal = 0.7; // Strong buying volume
-  } else if (volumeRatio > 1.2 && priceChangePct > 0) {
-    signal = 0.4; // Moderate buying volume
-  } else if (volumeRatio > 1.5 && priceChangePct < 0) {
-    signal = -0.7; // Strong selling volume
-  } else if (volumeRatio > 1.2 && priceChangePct < 0) {
-    signal = -0.4; // Moderate selling volume
-  } else if (volumeRatio < 0.8) {
-    signal = -0.2; // Low volume, weak conviction
-  } else {
-    signal = 0; // Normal volume
-  }
+  const vwapResult = vwapRollingAnalysis(high, low, close, volume, 20);
   
   return {
     name: "Volume",
-    value: signal,
-    signal: Math.max(-1, Math.min(1, signal)),
-    weight: 0.2,
-    description: `Vol ratio: ${volumeRatio.toFixed(2)}x`,
+    value: vwapResult.value,
+    signal: vwapResult.signal,
+    weight: 0.35,
+    description: vwapResult.description,
   };
 }
 
@@ -183,7 +172,7 @@ export function calculateOscillatorScore(data: KlineData[]): IndicatorResult {
 }
 
 /**
- * Calculate pattern score (simplified)
+ * Calculate pattern score using Bollinger Bands
  */
 export function calculatePatternScore(data: KlineData[]): IndicatorResult {
   const closes = data.map(d => d.close);

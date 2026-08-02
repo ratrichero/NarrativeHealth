@@ -52,36 +52,41 @@ export function detectMarketRegime(data: KlineData[]): MarketRegime {
   const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const volSurge = avgVolume > 0 ? recentVolume / avgVolume : 1;
   
-  // Detect regime type
+  // Detect regime type - PRIORITY ORDER (Python source of truth)
   let regimeType: RegimeType;
   let signalMultiplier = 1;
   let indicatorBias = "neutral";
   
-  if (currentADX > 25 && efficiencyRatio > 0.6) {
-    // Strong trend
-    const trendDirection = closes[closes.length - 1] > closes[closes.length - 20];
-    regimeType = trendDirection ? RegimeType.TRENDING_UP : RegimeType.TRENDING_DOWN;
-    signalMultiplier = 1.2;
-    indicatorBias = "trend";
-  } else if (currentADX < 20 && atrPct < 1) {
-    // Ranging market
-    regimeType = RegimeType.RANGING;
-    signalMultiplier = 0.8;
-    indicatorBias = "oscillator";
-  } else if (volSurge > 2 && atrPct > 2) {
-    // Volatile market
+  // PRIORITY 1: Volatile (override everything)
+  if (atrPct > 4.0) {
     regimeType = RegimeType.VOLATILE;
-    signalMultiplier = 0.9;
-    indicatorBias = "momentum";
-  } else if (efficiencyRatio > 0.7 && volSurge > 1.5) {
-    // Breakout potential
+    signalMultiplier = 0.6;
+    indicatorBias = "neutral";
+  }
+  // PRIORITY 2: Breakout (high volume + price at extremes)
+  else if (volSurge > 2.5 && (pricePosition > 0.85 || pricePosition < 0.15)) {
     regimeType = RegimeType.BREAKOUT;
     signalMultiplier = 1.3;
     indicatorBias = "momentum";
-  } else {
-    // Transitioning
+  }
+  // PRIORITY 3: Trending (strong ADX + efficient movement)
+  else if (currentADX > 30 && efficiencyRatio > 0.5) {
+    regimeType = pricePosition >= 0.5 
+      ? RegimeType.TRENDING_UP 
+      : RegimeType.TRENDING_DOWN;
+    signalMultiplier = 1.2;
+    indicatorBias = "trend";
+  }
+  // PRIORITY 4: Ranging (weak ADX + inefficient movement)
+  else if (currentADX < 20 && efficiencyRatio < 0.3) {
+    regimeType = RegimeType.RANGING;
+    signalMultiplier = 0.8;
+    indicatorBias = "oscillator";
+  }
+  // PRIORITY 5: Transitioning (default)
+  else {
     regimeType = RegimeType.TRANSITIONING;
-    signalMultiplier = 1.0;
+    signalMultiplier = 0.9;
     indicatorBias = "neutral";
   }
   

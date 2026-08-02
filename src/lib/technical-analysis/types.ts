@@ -106,8 +106,8 @@ export const TIMEFRAME_WEIGHTS: Record<Timeframe, number> = {
 
 export const BASE_GROUP_WEIGHTS = {
   trend: 0.30,
-  momentum: 0.25,
-  volume: 0.20,
+  momentum: 0.28,
+  volume: 0.35,
   oscillator: 0.15,
   pattern: 0.10,
 };
@@ -115,8 +115,8 @@ export const BASE_GROUP_WEIGHTS = {
 export const REGIME_GROUP_WEIGHTS: Record<string, typeof BASE_GROUP_WEIGHTS> = {
   trend: {
     trend: 0.40,
-    momentum: 0.25,
-    volume: 0.20,
+    momentum: 0.28,
+    volume: 0.35,
     oscillator: 0.10,
     pattern: 0.05,
   },

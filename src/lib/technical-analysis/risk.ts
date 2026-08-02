@@ -1,7 +1,35 @@
 // Risk Management System
 
-import { KlineData, RiskLevels } from "./types";
+import { KlineData, RiskLevels, MarketRegime, RegimeType } from "./types";
 import { atr } from "./indicators";
+
+/**
+ * Get TP multipliers based on signal strength
+ */
+function getTpMultipliers(strength: number): [number, number, number] {
+  if (strength >= 65) return [2.0, 4.0, 6.0];
+  if (strength >= 40) return [1.8, 3.2, 5.0];
+  return [1.5, 2.5, 4.0];
+}
+
+/**
+ * Apply regime adjustments to TP multipliers
+ */
+function applyRegimeToMultipliers(
+  mults: [number, number, number],
+  regime: MarketRegime
+): [number, number, number] {
+  switch (regime.type) {
+    case RegimeType.VOLATILE:
+      return mults.map(m => m * 1.20) as [number, number, number];
+    case RegimeType.RANGING:
+      return [mults[0] * 0.70, mults[0] * 1.30, mults[1]];
+    case RegimeType.BREAKOUT:
+      return mults.map(m => m * 1.30) as [number, number, number];
+    default:
+      return mults;
+  }
+}
 
 /**
  * Calculate risk levels based on ATR and current price
@@ -9,7 +37,8 @@ import { atr } from "./indicators";
 export function calculateRiskLevels(
   data: KlineData[],
   direction: "LONG" | "SHORT" | "NEUTRAL",
-  compositeScore: number
+  compositeScore: number,
+  regime?: MarketRegime
 ): RiskLevels | undefined {
   if (direction === "NEUTRAL") {
     return undefined;
@@ -25,14 +54,19 @@ export function calculateRiskLevels(
     return undefined;
   }
   
+  // Calculate signal strength
+  const strength = Math.abs(compositeScore) * 100;
+  
+  // Get TP multipliers based on strength
+  const tpMults = getTpMultipliers(strength);
+  
+  // Apply regime adjustments if regime provided
+  const adjustedMults = regime ? applyRegimeToMultipliers(tpMults, regime) : tpMults;
+  const [tp1M, tp2M, tp3M] = adjustedMults;
+  
   // Calculate stop loss based on ATR (1.5x ATR for stop loss)
   const atrMultiplier = 1.5;
   const stopLossDistance = currentATR * atrMultiplier;
-  
-  // Calculate take profit levels
-  const tp1Distance = stopLossDistance * 1.5; // 1.5x risk
-  const tp2Distance = stopLossDistance * 2.5; // 2.5x risk
-  const tp3Distance = stopLossDistance * 4.0; // 4.0x risk
   
   let entry: number;
   let stopLoss: number;
@@ -43,30 +77,29 @@ export function calculateRiskLevels(
   if (direction === "LONG") {
     entry = currentPrice;
     stopLoss = currentPrice - stopLossDistance;
-    tp1 = currentPrice + tp1Distance;
-    tp2 = currentPrice + tp2Distance;
-    tp3 = currentPrice + tp3Distance;
+    tp1 = currentPrice + tp1M * currentATR;
+    tp2 = currentPrice + tp2M * currentATR;
+    tp3 = currentPrice + tp3M * currentATR;
   } else {
     entry = currentPrice;
     stopLoss = currentPrice + stopLossDistance;
-    tp1 = currentPrice - tp1Distance;
-    tp2 = currentPrice - tp2Distance;
-    tp3 = currentPrice - tp3Distance;
+    tp1 = currentPrice - tp1M * currentATR;
+    tp2 = currentPrice - tp2M * currentATR;
+    tp3 = currentPrice - tp3M * currentATR;
   }
   
   // Calculate percentages
   const slPct = (stopLossDistance / currentPrice) * 100;
-  const rrRatio = tp1Distance / stopLossDistance;
+  const rrRatio = tp1M / atrMultiplier;
   
   // Suggested position size based on signal strength
-  const strength = Math.abs(compositeScore);
   let suggestedPositionPct = 0;
   
-  if (strength > 0.7) {
+  if (strength > 70) {
     suggestedPositionPct = 2.0; // Strong signal - 2% position
-  } else if (strength > 0.5) {
+  } else if (strength > 50) {
     suggestedPositionPct = 1.5; // Good signal - 1.5% position
-  } else if (strength > 0.3) {
+  } else if (strength > 30) {
     suggestedPositionPct = 1.0; // Moderate signal - 1% position
   } else {
     suggestedPositionPct = 0.5; // Weak signal - 0.5% position

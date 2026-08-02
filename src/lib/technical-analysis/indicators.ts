@@ -267,7 +267,85 @@ export function bollingerBands(data: number[], period: number = 20, stdDev: numb
 }
 
 /**
- * Volume Weighted Average Price (VWAP)
+ * Volume Weighted Average Price (VWAP) - Rolling implementation
+ */
+export function vwapRollingAnalysis(
+  high: number[], 
+  low: number[], 
+  close: number[], 
+  volume: number[],
+  window: number = 20
+): {
+  value: number;
+  signal: number;
+  description: string;
+} {
+  const n = close.length;
+  
+  // Typical Price
+  const tp = high.map((h, i) => (h + low[i] + close[i]) / 3);
+  const tpVol = tp.map((t, i) => t * volume[i]);
+  
+  // Rolling sum helper
+  const rollingSum = (arr: number[], w: number): number[] => {
+    return arr.map((_, i) => {
+      if (i < w - 1) return NaN;
+      return arr.slice(i - w + 1, i + 1).reduce((a, b) => a + b, 0);
+    });
+  };
+  
+  // Rolling std helper
+  const rollingStd = (arr: number[], w: number): number[] => {
+    return arr.map((_, i) => {
+      if (i < w - 1) return NaN;
+      const slice = arr.slice(i - w + 1, i + 1);
+      const mean = slice.reduce((a, b) => a + b, 0) / w;
+      const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / w;
+      return Math.sqrt(variance);
+    });
+  };
+  
+  // VWAP = rolling_sum(tp×vol) / rolling_sum(vol)
+  const rollTpVol = rollingSum(tpVol, window);
+  const rollVol   = rollingSum(volume, window);
+  const vwap      = rollTpVol.map((v, i) => v / (rollVol[i] + 1e-10));
+  
+  // ±2σ Bands
+  const vwapStd = rollingStd(tp, window);
+  const upper2  = vwap.map((v, i) => v + 2 * vwapStd[i]);
+  const lower2  = vwap.map((v, i) => v - 2 * vwapStd[i]);
+  
+  // Current values
+  const price   = close[n - 1];
+  const vwapVal = vwap[n - 1];
+  const u2Val   = upper2[n - 1];
+  const l2Val   = lower2[n - 1];
+  
+  // Signal: position within bands
+  const bandWidth = u2Val - l2Val;
+  let signal: number;
+  let position: number;
+  
+  if (bandWidth > 0) {
+    position = (price - l2Val) / bandWidth;  // 0=lower, 1=upper
+    signal   = Math.max(-1, Math.min(1, (position - 0.5) * 2));
+  } else {
+    position = 0.5;
+    signal   = Math.sign(price - vwapVal) * 0.30;
+  }
+  
+  const pctDiff = Math.abs((price - vwapVal) / vwapVal * 100);
+  
+  return {
+    value: Math.round(vwapVal * 1e6) / 1e6,
+    signal,
+    description: `Price ${price > vwapVal ? 'above' : 'below'} VWAP by ` +
+                 `${pctDiff.toFixed(2)}% | Band pos: ${(position * 100).toFixed(0)}%` 
+  };
+}
+
+/**
+ * Volume Weighted Average Price (VWAP) - Legacy cumulative version
  */
 export function vwap(data: KlineData[]): number[] {
   const result: number[] = [];
