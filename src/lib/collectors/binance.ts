@@ -17,23 +17,26 @@ export interface KlineData {
   quoteVolume: string;
 }
 
+export type BinanceInterval = "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "6h" | "8h" | "12h" | "1d" | "3d" | "1w" | "1M";
+
 export interface FuturesMetrics {
   openInterest: number | null;
   fundingRate: number | null;
 }
 
 /**
- * Fetch daily klines from Binance Spot
+ * Fetch klines from Binance Spot with custom interval
  */
 export async function fetchBinanceSpotKlines(
   symbol: string,
-  limit: number = 200
+  limit: number = 200,
+  interval: BinanceInterval = "1d"
 ): Promise<KlineData[]> {
   try {
     const response = await axios.get(`${BINANCE_SPOT_API}/klines`, {
       params: {
         symbol,
-        interval: "1d",
+        interval,
         limit,
       },
       timeout: 10000,
@@ -56,17 +59,18 @@ export async function fetchBinanceSpotKlines(
 }
 
 /**
- * Fetch daily klines from Binance Futures
+ * Fetch klines from Binance Futures with custom interval
  */
 export async function fetchBinanceFuturesKlines(
   symbol: string,
-  limit: number = 200
+  limit: number = 200,
+  interval: BinanceInterval = "1d"
 ): Promise<KlineData[]> {
   try {
     const response = await axios.get(`${BINANCE_FUTURES_API}/klines`, {
       params: {
         symbol,
-        interval: "1d",
+        interval,
         limit,
       },
       timeout: 10000,
