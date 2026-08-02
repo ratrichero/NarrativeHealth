@@ -132,5 +132,4 @@ if IS_PRODUCTION:
 
 else:
     print("Development mode: API only at :8000")
-    print("Next.js runs separately with: npm run dev")
-    print("Current architecture: Next.js API routes are primary, FastAPI is backup")
+    print("Run Next.js separately with: npm run dev")

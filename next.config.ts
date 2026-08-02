@@ -14,11 +14,6 @@ const nextConfig: NextConfig = {
   // Current recommendation: Keep Next.js in server mode with API routes enabled
   // This provides the best balance of performance and feature set
   
-  // Disable Turbopack due to stability issues
-  experimental: {
-    turbo: undefined,
-  },
-  
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "",
   },

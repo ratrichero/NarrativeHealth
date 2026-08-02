@@ -30,7 +30,10 @@ import {
 import { fetchCoinGeckoMarkets } from "@/lib/collectors/coingecko";
 
 import { runFeatureEngine, calculateHealthScore, getRecommendationSignal, generateRecommendationReason } from "@/lib/features/engine";
-import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate, BUSINESS_TIMEZONE } from "@/lib/utils";
+import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
+
+// Business timezone constant (must match utils.ts)
+const BUSINESS_TIMEZONE = "Asia/Ho_Chi_Minh";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;

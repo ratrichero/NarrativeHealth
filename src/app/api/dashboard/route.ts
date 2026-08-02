@@ -16,8 +16,8 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const today = new Date().toISOString().split("T")[0];
-    const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
+    const today = getBusinessDate();
+    const yesterday = getYesterdayBusinessDate();
 
     // Fetch active narratives with their health scores
     const activeNarratives = await db

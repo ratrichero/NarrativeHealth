@@ -10,10 +10,11 @@ dist/
 # Environments
 .env
 .venv
-venv
-.next/
 ENV/
+
 node_modules/
+.next/
+venv
 
 __pycache__/
 

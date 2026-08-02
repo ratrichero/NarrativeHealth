@@ -169,7 +169,7 @@ export function sleep(ms: number): Promise<void> {
  * All business dates should use this timezone to ensure consistency
  * with Vietnam market hours and user expectations.
  */
-const BUSINESS_TIMEZONE = "Asia/Ho_Chi_Minh";
+export const BUSINESS_TIMEZONE = "Asia/Ho_Chi_Minh";
 
 /**
  * Get today's business date string in YYYY-MM-DD format in business timezone
