@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     scheduler_hour: int = 7  # Run at 7:00 AM Vietnam time (UTC+7)
     scheduler_minute: int = 0
     scheduler_interval_hours: int = 0  # Run every X hours (0 = use daily time)
+    scheduler_timeout: int = 600  # Timeout in seconds (default 10 minutes)
     
     class Config:
         env_file = ".env"

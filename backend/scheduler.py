@@ -13,6 +13,7 @@ from datetime import datetime
 import pytz
 from typing import Optional
 import httpx
+from httpx import ConnectError, TimeoutException
 
 from backend.config import settings
 from backend.database import get_db
@@ -84,29 +85,52 @@ class DataRefreshScheduler:
     async def _run_refresh(self):
         """Run the refresh job"""
         print(f"Starting scheduled refresh at {datetime.now(self.vietnam_tz)}")
+        
+        timeout = settings.scheduler_timeout
+        
+        # Try Next.js API first (primary)
         try:
-            # Call the Next.js API endpoint (primary API in current architecture)
-            # Note: Next.js runs on port 3000 by default
+            print("Attempting Next.js API refresh (localhost:3000)...")
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     "http://localhost:3000/api/refresh",
-                    timeout=300.0  # 5 minutes timeout
+                    timeout=timeout
                 )
-                result = response.json()
-                print(f"Scheduled refresh completed: {result.get('data', {}).get('message', 'Success')}")
-        except Exception as e:
-            print(f"Scheduled refresh failed: {e}")
-            # Fallback to FastAPI endpoint if Next.js is not available
-            try:
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        "http://localhost:8000/api/refresh",
-                        timeout=300.0
-                    )
+                if response.status_code == 200:
                     result = response.json()
-                    print(f"Fallback refresh completed: {result.get('data', {}).get('message', 'Success')}")
-            except Exception as fallback_error:
-                print(f"Fallback refresh also failed: {fallback_error}")
+                    print(f"Next.js refresh completed: {result.get('data', {}).get('message', 'Success')}")
+                    return
+                else:
+                    print(f"Next.js API returned status {response.status_code}: {response.text}")
+        except ConnectError as e:
+            print(f"Next.js API connection failed: {e}")
+        except TimeoutException as e:
+            print(f"Next.js API timeout: {e}")
+        except Exception as e:
+            print(f"Next.js API error: {e}")
+        
+        # Fallback to FastAPI endpoint
+        print("Falling back to FastAPI refresh (localhost:8000)...")
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "http://localhost:8000/api/refresh",
+                    timeout=timeout
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    print(f"FastAPI refresh completed: {result.get('data', {}).get('message', 'Success')}")
+                    return
+                else:
+                    print(f"FastAPI API returned status {response.status_code}: {response.text}")
+        except ConnectError as e:
+            print(f"FastAPI connection failed: {e}")
+        except TimeoutException as e:
+            print(f"FastAPI timeout: {e}")
+        except Exception as e:
+            print(f"FastAPI error: {e}")
+        
+        print("Scheduled refresh failed - both endpoints unavailable")
 
 
 # Global scheduler instance
