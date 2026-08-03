@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -29,6 +29,13 @@ import type { CoinDetail } from "@/types";
 
 async function fetchCoin(id: string): Promise<CoinDetail> {
   const response = await fetch(`/api/coins/${id}`);
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+async function fetchCurrentPrice(id: string): Promise<{ price: number; source: string; symbol: string | null; timestamp: string }> {
+  const response = await fetch(`/api/coins/${id}/current-price`);
   const data = await response.json();
   if (!data.success) throw new Error(data.error);
   return data.data;
@@ -71,6 +78,24 @@ export default function CoinDetailPage() {
     queryKey: ["coin", id],
     queryFn: () => fetchCoin(id),
   });
+
+  const {
+    data: currentPrice,
+    error: currentPriceError,
+  } = useQuery({
+    queryKey: ["coin", id, "current-price"],
+    queryFn: () => fetchCurrentPrice(id),
+    enabled: !!coin,
+    refetchInterval: 5000,
+  });
+
+  const prevPriceRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (currentPrice) {
+      prevPriceRef.current = currentPrice.price;
+    }
+  }, [currentPrice]);
 
   const { 
     data: technicalAnalysis, 
@@ -115,6 +140,14 @@ export default function CoinDetailPage() {
       </div>
     );
   }
+
+  const currentPriceColor = currentPrice
+    ? prevPriceRef.current === null || currentPrice.price === prevPriceRef.current
+      ? "text-white"
+      : currentPrice.price > prevPriceRef.current
+        ? "text-green-500"
+        : "text-red-500"
+    : "text-slate-500";
 
   return (
     <div className="space-y-6">
@@ -187,38 +220,53 @@ export default function CoinDetailPage() {
       )}
 
       {/* Metrics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+        {/* Current Price */}
+        <Card>
+          <CardContent className="py-3">
+            <p className="text-xs text-slate-500 mb-1">Current Price</p>
+            {currentPriceError ? (
+              <p className="text-sm font-semibold text-red-400">Unavailable</p>
+            ) : currentPrice ? (
+              <p className={`text-sm font-semibold ${currentPriceColor}`}>
+                ${currentPrice.price.toFixed(6)}
+              </p>
+            ) : (
+              <p className="text-sm font-semibold text-slate-500">Loading...</p>
+            )}
+          </CardContent>
+        </Card>
         {/* Market Metrics */}
         {coin.metrics && (
           <>
             <Card>
-              <CardContent className="py-4">
+              <CardContent className="py-3">
                 <p className="text-xs text-slate-500 mb-1">Market Cap</p>
-                <p className="text-lg font-semibold text-white">
+                <p className="text-sm font-semibold text-white">
                   {formatLargeNumber(coin.metrics.marketCap)}
                 </p>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="py-4">
+              <CardContent className="py-3">
                 <p className="text-xs text-slate-500 mb-1">FDV</p>
-                <p className="text-lg font-semibold text-white">
+                <p className="text-sm font-semibold text-white">
                   {formatLargeNumber(coin.metrics.fullyDilutedValuation)}
                 </p>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="py-4">
+              <CardContent className="py-3">
                 <p className="text-xs text-slate-500 mb-1">Open Interest</p>
-                <p className="text-lg font-semibold text-white">
+                <p className="text-sm font-semibold text-white">
                   {formatLargeNumber(coin.metrics.openInterest)}
                 </p>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="py-4">
+              <CardContent className="py-3">
                 <p className="text-xs text-slate-500 mb-1">Funding Rate</p>
-                <p className="text-lg font-semibold text-white">
+                <p className="text-sm font-semibold text-white">
                   {coin.metrics.fundingRate !== null
                     ? formatPercent(coin.metrics.fundingRate * 100, 4)
                     : "-"}
