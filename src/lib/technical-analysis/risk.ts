@@ -74,8 +74,8 @@ export function calculateRiskLevels(
 
   if (refAtr === 0 || price === 0) return undefined;
 
-  // strength is abs(compositeScore) already on 0-100 scale
-  const strength = Math.min(Math.abs(compositeScore) * 100, 100);
+  // compositeScore đã là scale [-100, +100], dùng trực tiếp
+  const strength = Math.min(Math.abs(compositeScore), 100);
 
   const baseTpMults = getTpMultipliers(strength);
   const baseSlMult  = getSlMultiplier(strength);

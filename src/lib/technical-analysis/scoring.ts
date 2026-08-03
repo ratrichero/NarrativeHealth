@@ -4,7 +4,6 @@ import {
   KlineData,
   IndicatorResult,
   MarketRegime,
-  RegimeType,
   DetailedSignal,
   BASE_GROUP_WEIGHTS,
   REGIME_GROUP_WEIGHTS,
@@ -21,7 +20,6 @@ import {
   mfi,
   obv,
   adxFull,
-  atr,
   vwapRollingAnalysis,
   superTrend,
   heikinAshi,
@@ -129,7 +127,7 @@ function calcTrendIndicators(data: KlineData[]): IndicatorResult[] {
     const pdiV = plusDI[n - 1];
     const mdiV = minusDI[n - 1];
 
-    if (isFinite(adxV)) {
+    if (isFinite(adxV) && isFinite(pdiV) && isFinite(mdiV)) {
       const strength  = Math.min(adxV / 50, 1.0);
       const direction = pdiV > mdiV ? 1 : -1;
       const adxSig    = clip(direction * strength * 0.85, -1, 1);

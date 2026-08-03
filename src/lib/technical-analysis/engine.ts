@@ -5,6 +5,8 @@ import {
   TechnicalAnalysisResult,
   Timeframe,
   SignalType,
+  DetailedSignal,
+  Direction,
   TIMEFRAME_WEIGHTS,
   TimeframeResult,
 } from "./types";
@@ -42,10 +44,10 @@ function normalizeDirection(signal: string): "LONG" | "SHORT" | "NEUTRAL" {
 
 function applyAdjustments(
   rawScore:   number,
-  directions: Record<string, string>   // STRONG_LONG, WEAK_SHORT, etc.
+  directions: Record<string, DetailedSignal>   // STRONG_LONG, WEAK_SHORT, etc.
 ): number {
   // Normalize về LONG / SHORT / NEUTRAL để tính bonus/penalty
-  const dirs: Record<string, string> = Object.fromEntries(
+  const dirs: Record<string, Direction> = Object.fromEntries(
     Object.entries(directions).map(([tf, sig]) => [tf, normalizeDirection(sig)])
   );
 
@@ -312,7 +314,7 @@ export async function runTechnicalAnalysis(
   // ── Collect detailed signals từ mỗi TF ──
   // Giữ nguyên STRONG_LONG, WEAK_SHORT, etc. để display
   // applyAdjustments tự normalize bên trong
-  const directions: Record<string, string> = {};
+  const directions: Record<string, DetailedSignal> = {};
   for (const tf of timeframes) {
     directions[tf] = timeframeResults[tf].signal;
   }
