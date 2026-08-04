@@ -24,6 +24,12 @@ export interface FuturesMetrics {
   fundingRate: number | null;
 }
 
+export interface LongShortRatio {
+  longAccount: number | null;
+  shortAccount: number | null;
+  longShortRatio: number | null;
+}
+
 /**
  * Fetch klines from Binance Spot with custom interval
  */
@@ -163,6 +169,64 @@ export async function fetchBinanceOIHistory(
   } catch (error) {
     console.error(`Binance OI history error for ${symbol}:`, error);
     return [];
+  }
+}
+
+/**
+ * Fetch Global Long/Short Account Ratio from Binance Futures
+ */
+export async function fetchBinanceGlobalLongShortRatio(
+  symbol: string,
+  period: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "6h" | "12h" | "1d" = "5m",
+  limit: number = 1
+): Promise<LongShortRatio> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_DATA_API}/globalLongShortAccountRatio`, {
+      params: { symbol, period, limit },
+      timeout: 10000,
+    });
+
+    if (response.data && response.data.length > 0) {
+      const item = response.data[0];
+      return {
+        longAccount: parseFloat(item.longAccount),
+        shortAccount: parseFloat(item.shortAccount),
+        longShortRatio: parseFloat(item.longShortRatio),
+      };
+    }
+    return { longAccount: null, shortAccount: null, longShortRatio: null };
+  } catch (error) {
+    console.error(`Binance global long/short ratio error for ${symbol}:`, error);
+    return { longAccount: null, shortAccount: null, longShortRatio: null };
+  }
+}
+
+/**
+ * Fetch Top Trader Long/Short Account Ratio from Binance Futures
+ */
+export async function fetchBinanceTopLongShortRatio(
+  symbol: string,
+  period: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "6h" | "12h" | "1d" = "5m",
+  limit: number = 1
+): Promise<LongShortRatio> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_DATA_API}/topLongShortAccountRatio`, {
+      params: { symbol, period, limit },
+      timeout: 10000,
+    });
+
+    if (response.data && response.data.length > 0) {
+      const item = response.data[0];
+      return {
+        longAccount: parseFloat(item.longAccount),
+        shortAccount: parseFloat(item.shortAccount),
+        longShortRatio: parseFloat(item.longShortRatio),
+      };
+    }
+    return { longAccount: null, shortAccount: null, longShortRatio: null };
+  } catch (error) {
+    console.error(`Binance top trader long/short ratio error for ${symbol}:`, error);
+    return { longAccount: null, shortAccount: null, longShortRatio: null };
   }
 }
 

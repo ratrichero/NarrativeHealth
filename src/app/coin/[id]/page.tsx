@@ -41,6 +41,18 @@ async function fetchCurrentPrice(id: string): Promise<{ price: number; source: s
   return data.data;
 }
 
+async function fetchLongShortRatio(id: string): Promise<{
+  global: { longAccount: number | null; shortAccount: number | null; longShortRatio: number | null };
+  topTrader: { longAccount: number | null; shortAccount: number | null; longShortRatio: number | null };
+  symbol: string;
+  timestamp: string;
+}> {
+  const response = await fetch(`/api/coins/${id}/long-short-ratio`);
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
 async function refreshCoin(id: string): Promise<{ message: string }> {
   const response = await fetch(`/api/refresh/coin/${id}`, { method: "POST" });
   const data = await response.json();
@@ -96,6 +108,16 @@ export default function CoinDetailPage() {
       prevPriceRef.current = currentPrice.price;
     }
   }, [currentPrice]);
+
+  const {
+    data: longShortRatio,
+    error: longShortRatioError,
+  } = useQuery({
+    queryKey: ["coin", id, "long-short-ratio"],
+    queryFn: () => fetchLongShortRatio(id),
+    enabled: !!coin && coin.hasFutures,
+    refetchInterval: 30000,
+  });
 
   const { 
     data: technicalAnalysis, 
@@ -404,6 +426,87 @@ export default function CoinDetailPage() {
                         ).funding_component.toFixed(0)}
                       </span>
                     </div>
+
+                    {/* Long/Short Ratio */}
+                    {longShortRatioError ? (
+                      <div className="pt-2 border-t border-slate-800">
+                        <div className="text-xs text-slate-500 mb-1">Long/Short Ratio</div>
+                        <p className="text-xs text-red-400">Unavailable</p>
+                      </div>
+                    ) : longShortRatio ? (
+                      <div className="pt-2 border-t border-slate-800 space-y-2">
+                        <div className="text-xs text-slate-500">Long/Short Ratio</div>
+
+                        {/* Global */}
+                        <div className="space-y-1">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Global Accounts</span>
+                            <span className="text-white">
+                              {longShortRatio.global.longShortRatio !== null
+                                ? longShortRatio.global.longShortRatio.toFixed(4)
+                                : "N/A"}
+                            </span>
+                          </div>
+                          {longShortRatio.global.longAccount !== null && longShortRatio.global.shortAccount !== null && (
+                            <div className="flex h-2 rounded-full overflow-hidden bg-slate-700">
+                              <div
+                                className="bg-green-500"
+                                style={{ width: `${longShortRatio.global.longAccount * 100}%` }}
+                              />
+                              <div
+                                className="bg-red-500"
+                                style={{ width: `${longShortRatio.global.shortAccount * 100}%` }}
+                              />
+                            </div>
+                          )}
+                          <div className="flex justify-between text-xs">
+                            <span className="text-green-500">
+                              Long: {longShortRatio.global.longAccount !== null ? `${(longShortRatio.global.longAccount * 100).toFixed(2)}%` : "N/A"}
+                            </span>
+                            <span className="text-red-500">
+                              Short: {longShortRatio.global.shortAccount !== null ? `${(longShortRatio.global.shortAccount * 100).toFixed(2)}%` : "N/A"}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Top Traders */}
+                        <div className="space-y-1">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Top Traders</span>
+                            <span className="text-white">
+                              {longShortRatio.topTrader.longShortRatio !== null
+                                ? longShortRatio.topTrader.longShortRatio.toFixed(4)
+                                : "N/A"}
+                            </span>
+                          </div>
+                          {longShortRatio.topTrader.longAccount !== null && longShortRatio.topTrader.shortAccount !== null && (
+                            <div className="flex h-2 rounded-full overflow-hidden bg-slate-700">
+                              <div
+                                className="bg-green-500"
+                                style={{ width: `${longShortRatio.topTrader.longAccount * 100}%` }}
+                              />
+                              <div
+                                className="bg-red-500"
+                                style={{ width: `${longShortRatio.topTrader.shortAccount * 100}%` }}
+                              />
+                            </div>
+                          )}
+                          <div className="flex justify-between text-xs">
+                            <span className="text-green-500">
+                              Long: {longShortRatio.topTrader.longAccount !== null ? `${(longShortRatio.topTrader.longAccount * 100).toFixed(2)}%` : "N/A"}
+                            </span>
+                            <span className="text-red-500">
+                              Short: {longShortRatio.topTrader.shortAccount !== null ? `${(longShortRatio.topTrader.shortAccount * 100).toFixed(2)}%` : "N/A"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="pt-2 border-t border-slate-800">
+                        <div className="text-xs text-slate-500 mb-1">Long/Short Ratio</div>
+                        <p className="text-xs text-slate-500">Loading...</p>
+                      </div>
+                    )}
                   </div>
                 )}
               </CardContent>
