@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { Card, CardContent } from "./ui/Card";
 import { Button } from "./ui/Button";
@@ -9,8 +9,10 @@ import { HealthBadge } from "./HealthBadge";
 import { ScoreChange } from "./ScoreChange";
 import { ConfidenceBadge } from "./ConfidenceBadge";
 import { WatchlistDialog } from "./WatchlistDialog";
+import { HealthSparkline } from "./ui/health-sparkline";
 import { TrendingUp, Users, RefreshCw, Star } from "lucide-react";
 import type { NarrativeSummary } from "@/types";
+import type { HealthTimeline } from "@/lib/types/health-timeline";
 
 interface NarrativeCardProps {
   narrative: NarrativeSummary;
@@ -34,11 +36,26 @@ async function addToWatchlist(coinId: number, note?: string, priority?: number) 
   return data.data;
 }
 
+async function fetchHealthTimeline(coinId: number): Promise<HealthTimeline> {
+  const response = await fetch(`/api/coins/${coinId}/health-timeline?days=7`);
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
 export function NarrativeCard({ narrative }: NarrativeCardProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
   const [selectedCoin, setSelectedCoin] = useState<{ id: number; symbol: string; name: string } | null>(null);
   const queryClient = useQueryClient();
+
+  // Fetch health timeline for top coin if available
+  const { data: healthTimeline } = useQuery({
+    queryKey: ['health-timeline', narrative.topCoin?.id, 7],
+    queryFn: () => fetchHealthTimeline(narrative.topCoin!.id),
+    enabled: !!narrative.topCoin?.id,
+    staleTime: 5 * 60 * 1000, // 5 min cache
+  });
 
   const refreshMutation = useMutation({
     mutationFn: refreshNarrativeData,
@@ -84,6 +101,11 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
             </div>
             <div className="flex items-center gap-2">
               <HealthBadge status={narrative.status} score={narrative.healthScore} />
+              {narrative.weightingMethod && (
+                <span className="text-xs text-blue-400 flex items-center gap-1">
+                  <span>⚖️</span> {narrative.weightingMethod === 'market_cap' ? 'Market Cap Weighted' : 'Equal Weighted'}
+                </span>
+              )}
               <Button
                 variant="ghost"
                 size="sm"
@@ -110,7 +132,7 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
 
           {narrative.topCoin && (
             <div className="pt-3 border-t border-slate-800">
-              <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center justify-between text-sm mb-2">
                 <div className="flex items-center gap-2">
                   <TrendingUp className="h-4 w-4 text-green-500" />
                   <span className="text-slate-400">Top:</span>
@@ -138,6 +160,17 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
                   </Button>
                 </div>
               </div>
+              {/* Health Sparkline */}
+              {healthTimeline && (
+                <div className="mt-2">
+                  <HealthSparkline 
+                    points={healthTimeline.points} 
+                    trend={healthTimeline.trend}
+                    width={80}
+                    height={28}
+                  />
+                </div>
+              )}
             </div>
           )}
         </CardContent>

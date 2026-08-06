@@ -21,6 +21,7 @@ export interface NarrativeSummary {
   weakestCoin: CoinBasic | null;
   avgConfidence: number | null;
   signal: RecommendationSignal | null;
+  weightingMethod?: 'market_cap' | 'equal';
 }
 
 export interface CoinBasic {

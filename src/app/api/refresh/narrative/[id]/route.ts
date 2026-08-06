@@ -27,6 +27,7 @@ import {
 import { fetchCoinGeckoMarkets } from "@/lib/collectors/coingecko";
 import { runFeatureEngine, calculateHealthScore, getRecommendationSignal, generateRecommendationReason } from "@/lib/features/engine";
 import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
+import { ruleVersionService } from "@/lib/services/rule-version.service";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -109,6 +110,9 @@ export async function POST(
   let logEntry: any = null;
 
   try {
+    // Get active rule version (P0B) - must be available before processing
+    const activeVersion = await ruleVersionService.getActiveVersion();
+
     // Get all coins for this narrative
     const narrativeCoins = await db
       .select({
@@ -598,6 +602,7 @@ export async function POST(
                 scoreChange: scoreChange,
                 status: healthStatus,
                 confidenceScore: featureResult.confidence_score,
+                ruleVersionId: activeVersion.id,
               })
               .onConflictDoUpdate({
                 target: [healthScores.coinId, healthScores.date],
@@ -607,6 +612,7 @@ export async function POST(
                   scoreChange: scoreChange,
                   status: healthStatus,
                   confidenceScore: featureResult.confidence_score,
+                  ruleVersionId: activeVersion.id,
                 },
               });
 
@@ -629,12 +635,14 @@ export async function POST(
                 date: today,
                 signal,
                 reason,
+                ruleVersionId: activeVersion.id,
               })
               .onConflictDoUpdate({
                 target: [recommendations.coinId, recommendations.date],
                 set: {
                   signal,
                   reason,
+                  ruleVersionId: activeVersion.id,
                 },
               });
 

@@ -17,6 +17,7 @@ import {
   Edit2,
   X,
   Search,
+  GitBranch,
 } from "lucide-react";
 import type { AdminNarrative, AdminCoin, ConfigItem } from "@/types";
 
@@ -163,7 +164,21 @@ async function refreshNarrativeData(narrativeId: number): Promise<{ message: str
   return data.data;
 }
 
-type TabType = "narratives" | "coins" | "config" | "logs";
+async function fetchRuleVersions(): Promise<any[]> {
+  const response = await fetch("/api/admin/rule-versions");
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+async function activateRuleVersion(id: number): Promise<{ message: string }> {
+  const response = await fetch(`/api/admin/rule-versions/${id}/activate`, { method: "POST" });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+type TabType = "narratives" | "coins" | "config" | "logs" | "rule-versions";
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<TabType>("narratives");
@@ -219,6 +234,12 @@ export default function AdminPage() {
     enabled: activeTab === "logs",
   });
 
+  const { data: ruleVersions, isLoading: ruleVersionsLoading, refetch: refetchRuleVersions } = useQuery({
+    queryKey: ["admin", "rule-versions"],
+    queryFn: fetchRuleVersions,
+    enabled: activeTab === "rule-versions",
+  });
+
   const seedMutation = useMutation({
     mutationFn: seedData,
     onSuccess: () => {
@@ -226,6 +247,15 @@ export default function AdminPage() {
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
+
+  const activateRuleVersionMutation = useMutation({
+    mutationFn: activateRuleVersion,
+    onSuccess: () => {
+      refetchRuleVersions();
+    },
+  });
+
+
 
   const refreshMutation = useMutation({
     mutationFn: refreshData,
@@ -326,6 +356,7 @@ export default function AdminPage() {
     { id: "coins", label: "Coins", icon: Database },
     { id: "config", label: "Config", icon: Settings },
     { id: "logs", label: "Logs", icon: RefreshCw },
+    { id: "rule-versions", label: "Rule Versions", icon: GitBranch },
   ];
 
   return (
@@ -1128,6 +1159,89 @@ export default function AdminPage() {
                     })}
                   </tbody>
                 </table>
+              )}
+            </div>
+          )}
+
+          {/* Rule Versions Tab */}
+          {activeTab === "rule-versions" && (
+            <div>
+              {ruleVersionsLoading ? (
+                <div className="py-12 text-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500 mx-auto" />
+                </div>
+              ) : !ruleVersions || ruleVersions.length === 0 ? (
+                <div className="py-12 text-center text-slate-500">
+                  No rule versions found.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-lg font-semibold text-white">Rule Versions</h2>
+                    <span className="text-xs text-gray-400">
+                      Config versions track which rules generated each score
+                    </span>
+                  </div>
+
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-700 text-left text-gray-400">
+                        <th className="pb-2">Version</th>
+                        <th className="pb-2">Description</th>
+                        <th className="pb-2">Weights</th>
+                        <th className="pb-2">Status</th>
+                        <th className="pb-2">Activated</th>
+                        <th className="pb-2">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ruleVersions.map((v: any) => (
+                        <tr key={v.id} className="border-b border-gray-800 py-2">
+                          <td className="py-3 font-mono text-white">v{v.version}</td>
+                          <td className="py-3 text-gray-300 text-xs">
+                            {v.description ?? '—'}
+                          </td>
+                          <td className="py-3 text-xs text-gray-400">
+                            T:{v.healthWeights.trend}
+                            D:{v.healthWeights.derivative}
+                            V:{v.healthWeights.volume}
+                            M:{v.healthWeights.momentum}
+                          </td>
+                          <td className="py-3">
+                            {v.isActive ? (
+                              <span className="rounded-full bg-green-900/50 px-2 py-0.5
+                                               text-xs font-medium text-green-400">
+                                ● Active
+                              </span>
+                            ) : (
+                              <span className="rounded-full bg-gray-700 px-2 py-0.5
+                                               text-xs text-gray-400">
+                                Inactive
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 text-xs text-gray-500">
+                            {v.activatedAt
+                              ? new Date(v.activatedAt).toLocaleDateString('vi-VN')
+                              : '—'}
+                          </td>
+                          <td className="py-3">
+                            {!v.isActive && (
+                              <button
+                                onClick={() => activateRuleVersionMutation.mutate(v.id)}
+                                disabled={activateRuleVersionMutation.isPending}
+                                className="text-xs text-blue-400 hover:text-blue-300
+                                           underline underline-offset-2 disabled:opacity-50"
+                              >
+                                Activate
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           )}

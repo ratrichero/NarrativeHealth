@@ -31,6 +31,8 @@ import { fetchCoinGeckoMarkets } from "@/lib/collectors/coingecko";
 
 import { runFeatureEngine, calculateHealthScore, getRecommendationSignal, generateRecommendationReason } from "@/lib/features/engine";
 import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
+import { ruleVersionService } from "@/lib/services/rule-version.service";
+import { calculateWeightedNarrativeHealth, type CoinHealthData } from "@/lib/scoring/narrative-health";
 
 // Business timezone constant (must match utils.ts)
 const BUSINESS_TIMEZONE = "Asia/Ho_Chi_Minh";
@@ -119,6 +121,9 @@ export async function POST(request: NextRequest) {
     .returning();
 
   try {
+    // Get active rule version (P0B) - must be available before processing
+    const activeVersion = await ruleVersionService.getActiveVersion();
+
     // Get all active coins
     const activeCoins = await db
       .select()
@@ -589,6 +594,7 @@ export async function POST(request: NextRequest) {
                 volume: featureResult.volume_score * healthWeights.volume,
                 momentum: featureResult.momentum_score * healthWeights.momentum,
               },
+              ruleVersionId: activeVersion.id,
             })
             .onConflictDoUpdate({
               target: [healthScores.coinId, healthScores.date],
@@ -604,6 +610,7 @@ export async function POST(request: NextRequest) {
                   volume: featureResult.volume_score * healthWeights.volume,
                   momentum: featureResult.momentum_score * healthWeights.momentum,
                 },
+                ruleVersionId: activeVersion.id,
               },
             });
 
@@ -631,6 +638,7 @@ export async function POST(request: NextRequest) {
                 volume: featureResult.volume_score,
                 momentum: featureResult.momentum_score,
               },
+              ruleVersionId: activeVersion.id,
             })
             .onConflictDoUpdate({
               target: [recommendations.coinId, recommendations.date],
@@ -643,6 +651,7 @@ export async function POST(request: NextRequest) {
                   volume: featureResult.volume_score,
                   momentum: featureResult.momentum_score,
                 },
+                ruleVersionId: activeVersion.id,
               },
             });
         }
@@ -693,18 +702,40 @@ export async function POST(request: NextRequest) {
 
         if (coinHealthScores.length === 0) continue;
 
-        // Calculate weighted average (simple average for now)
-        const totalScore = coinHealthScores.reduce((sum, c) => sum + c.healthScore, 0);
-        const avgScore = totalScore / coinHealthScores.length;
+        // Fetch market cap for each coin from coin_metrics (latest available for today)
+        const coinIdsForMcap = coinHealthScores.map((c) => c.coinId);
+        const coinMetricsRows = await db
+          .select({
+            coinId: coinMetrics.coinId,
+            marketCap: coinMetrics.marketCap,
+          })
+          .from(coinMetrics)
+          .where(
+            and(
+              eq(coinMetrics.date, today),
+              sql`${coinMetrics.coinId} IN (${sql.join(
+                coinIdsForMcap.map((id) => sql`${id}`),
+                sql`, `
+              )})`
+            )
+          );
 
-        const avgConfidence =
-          coinHealthScores.reduce((sum, c) => sum + (c.confidenceScore || 0), 0) /
-          coinHealthScores.length;
+        // Build a map of coinId -> marketCap (take the first non-null market cap)
+        const mcapMap = new Map<number, number | null>();
+        for (const row of coinMetricsRows) {
+          if (!mcapMap.has(row.coinId)) {
+            mcapMap.set(row.coinId, row.marketCap ? parseFloat(row.marketCap) : null);
+          }
+        }
 
-        // Find top and weakest coins
-        const sortedCoins = [...coinHealthScores].sort((a, b) => b.healthScore - a.healthScore);
-        const topCoinId = sortedCoins[0]?.coinId || null;
-        const weakestCoinId = sortedCoins[sortedCoins.length - 1]?.coinId || null;
+        // Build CoinHealthData[] for weighted calculation
+        const coinScores: CoinHealthData[] = coinHealthScores.map((c) => ({
+          coinId: c.coinId,
+          symbol: activeCoins.find((ac) => ac.id === c.coinId)?.symbol ?? `coin_${c.coinId}`,
+          healthScore: c.healthScore,
+          confidenceScore: c.confidenceScore ?? 0,
+          marketCap: mcapMap.get(c.coinId) ?? null,
+        }));
 
         // Get previous narrative health
         const [prevNarrativeHealth] = await db
@@ -715,45 +746,60 @@ export async function POST(request: NextRequest) {
           )
           .limit(1);
 
-        const narrativeScoreChange = prevNarrativeHealth
-          ? avgScore - prevNarrativeHealth.healthScore
-          : null;
+        // Calculate weighted narrative health (P0A - replaces simple average)
+        const narrativeHealthResult = calculateWeightedNarrativeHealth(
+          narrative.id,
+          today,
+          coinScores,
+          activeVersion.id,
+          prevNarrativeHealth?.healthScore
+        );
 
         await db
           .insert(narrativeHealth)
           .values({
             narrativeId: narrative.id,
             date: today,
-            healthScore: avgScore,
+            healthScore: narrativeHealthResult.healthScore,
             previousScore: prevNarrativeHealth?.healthScore || null,
-            scoreChange: narrativeScoreChange,
-            status: getHealthStatus(avgScore),
+            scoreChange: narrativeHealthResult.scoreChange,
+            status: narrativeHealthResult.status,
             coinCount: coinHealthScores.length,
-            topCoinId,
-            weakestCoinId,
-            avgConfidence,
+            topCoinId: narrativeHealthResult.topCoinId,
+            weakestCoinId: narrativeHealthResult.weakestCoinId,
+            avgConfidence: narrativeHealthResult.avgConfidence,
             coinBreakdown: coinHealthScores.map((c) => ({
               coinId: c.coinId,
               score: c.healthScore,
-              weight: 1 / coinHealthScores.length,
+              weight: narrativeHealthResult.weightDetails[
+                activeCoins.find((ac) => ac.id === c.coinId)?.symbol ?? `coin_${c.coinId}`
+              ]?.weight ?? (1 / coinHealthScores.length),
             })),
+            ruleVersionId: activeVersion.id,
+            weightingMethod: narrativeHealthResult.weightingMethod,
+            weightDetails: narrativeHealthResult.weightDetails,
           })
           .onConflictDoUpdate({
             target: [narrativeHealth.narrativeId, narrativeHealth.date],
             set: {
-              healthScore: avgScore,
+              healthScore: narrativeHealthResult.healthScore,
               previousScore: prevNarrativeHealth?.healthScore || null,
-              scoreChange: narrativeScoreChange,
-              status: getHealthStatus(avgScore),
+              scoreChange: narrativeHealthResult.scoreChange,
+              status: narrativeHealthResult.status,
               coinCount: coinHealthScores.length,
-              topCoinId,
-              weakestCoinId,
-              avgConfidence,
+              topCoinId: narrativeHealthResult.topCoinId,
+              weakestCoinId: narrativeHealthResult.weakestCoinId,
+              avgConfidence: narrativeHealthResult.avgConfidence,
               coinBreakdown: coinHealthScores.map((c) => ({
                 coinId: c.coinId,
                 score: c.healthScore,
-                weight: 1 / coinHealthScores.length,
+                weight: narrativeHealthResult.weightDetails[
+                  activeCoins.find((ac) => ac.id === c.coinId)?.symbol ?? `coin_${c.coinId}`
+                ]?.weight ?? (1 / coinHealthScores.length),
               })),
+              ruleVersionId: activeVersion.id,
+              weightingMethod: narrativeHealthResult.weightingMethod,
+              weightDetails: narrativeHealthResult.weightDetails,
             },
           });
       } catch (error) {

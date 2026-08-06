@@ -132,6 +132,10 @@ export async function GET(
         scoreChange: currentHealth?.scoreChange || null,
         status: getHealthStatus(currentHealth?.healthScore || 50),
         avgConfidence: currentHealth?.avgConfidence || null,
+        narrativeHealth: currentHealth ? {
+          weightingMethod: currentHealth.weightingMethod,
+          weightDetails: currentHealth.weightDetails,
+        } : null,
         coins: coinDetails,
         healthHistory: healthHistory.map((h) => ({
           date: h.date,

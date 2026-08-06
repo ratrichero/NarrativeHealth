@@ -13,6 +13,7 @@ import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { ScoreBreakdown } from "@/components/ScoreBreakdown";
 import { WatchlistDialog } from "@/components/WatchlistDialog";
+import { HealthTimeline } from "@/components/health-timeline";
 import { ArrowLeft, AlertCircle, ExternalLink, RefreshCw, TrendingUp, TrendingDown, Minus, Star } from "lucide-react";
 import {
   LineChart,
@@ -872,32 +873,100 @@ export default function CoinDetailPage() {
 
               {/* Risk Levels */}
               {technicalAnalysis.riskLevels && technicalAnalysis.direction !== "NEUTRAL" && (
-                <div className="bg-slate-800/50 rounded-lg p-3">
-                  <div className="text-xs text-slate-500 mb-2">Risk Management</div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 text-sm">
+                <div className="bg-slate-800/50 rounded-lg p-4">
+                  <div className="text-xs text-slate-500 mb-3 font-medium">Risk Management</div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                    {/* Entry */}
                     <div>
                       <div className="text-slate-500 text-xs">Entry</div>
-                      <div className="text-white font-medium">
-                        ${technicalAnalysis.riskLevels.entry !== null && technicalAnalysis.riskLevels.entry !== undefined ? technicalAnalysis.riskLevels.entry.toFixed(4) : "N/A"}
+                      <div className="text-white font-medium font-mono">
+                        ${technicalAnalysis.riskLevels.entry?.toFixed(4) || "N/A"}
                       </div>
                     </div>
+
+                    {/* Stop Loss */}
                     <div>
                       <div className="text-slate-500 text-xs">Stop Loss</div>
-                      <div className="text-red-400 font-medium">
-                        ${technicalAnalysis.riskLevels.stopLoss !== null && technicalAnalysis.riskLevels.stopLoss !== undefined ? technicalAnalysis.riskLevels.stopLoss.toFixed(4) : "N/A"}
+                      <div className="text-red-400 font-medium font-mono">
+                        ${technicalAnalysis.riskLevels.stopLoss?.toFixed(4) || "N/A"}
+                        <span className="text-xs text-slate-500 ml-1">
+                          ({technicalAnalysis.riskLevels.slPct?.toFixed(2) || "N/A"}%)
+                        </span>
                       </div>
                     </div>
+
+                    {/* TP1 */}
                     <div>
                       <div className="text-slate-500 text-xs">TP1</div>
-                      <div className="text-green-400 font-medium">
-                        ${technicalAnalysis.riskLevels.tp1 !== null && technicalAnalysis.riskLevels.tp1 !== undefined ? technicalAnalysis.riskLevels.tp1.toFixed(4) : "N/A"}
+                      <div className="text-green-400 font-medium font-mono">
+                        ${technicalAnalysis.riskLevels.tp1?.toFixed(4) || "N/A"}
+                        <span className="text-xs text-slate-500 ml-1">
+                          {technicalAnalysis.riskLevels.entry && technicalAnalysis.riskLevels.tp1 ? 
+                            `(${((Math.abs(technicalAnalysis.riskLevels.tp1 - technicalAnalysis.riskLevels.entry) / technicalAnalysis.riskLevels.entry) * 100).toFixed(2)}%)` : 
+                            "N/A"}
+                        </span>
                       </div>
                     </div>
+
+                    {/* TP2 */}
+                    <div>
+                      <div className="text-slate-500 text-xs">TP2</div>
+                      <div className="text-green-400 font-medium font-mono">
+                        ${technicalAnalysis.riskLevels.tp2?.toFixed(4) || "N/A"}
+                        <span className="text-xs text-slate-500 ml-1">
+                          {technicalAnalysis.riskLevels.entry && technicalAnalysis.riskLevels.tp2 ? 
+                            `(${((Math.abs(technicalAnalysis.riskLevels.tp2 - technicalAnalysis.riskLevels.entry) / technicalAnalysis.riskLevels.entry) * 100).toFixed(2)}%)` : 
+                            "N/A"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* TP3 */}
+                    <div>
+                      <div className="text-slate-500 text-xs">TP3</div>
+                      <div className="text-green-500 font-medium font-mono">
+                        ${technicalAnalysis.riskLevels.tp3?.toFixed(4) || "N/A"}
+                        <span className="text-xs text-slate-500 ml-1">
+                          {technicalAnalysis.riskLevels.entry && technicalAnalysis.riskLevels.tp3 ? 
+                            `(${((Math.abs(technicalAnalysis.riskLevels.tp3 - technicalAnalysis.riskLevels.entry) / technicalAnalysis.riskLevels.entry) * 100).toFixed(2)}%)` : 
+                            "N/A"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* R:R Ratio */}
                     <div>
                       <div className="text-slate-500 text-xs">R:R Ratio</div>
-                      <div className="text-white font-medium">
-                        {technicalAnalysis.riskLevels.rrRatio !== null && technicalAnalysis.riskLevels.rrRatio !== undefined ? `1:${technicalAnalysis.riskLevels.rrRatio.toFixed(1)}` : "N/A"}
+                      <div className={`font-medium font-mono ${
+                        (technicalAnalysis.riskLevels.rrRatio || 0) >= 1.5 ? 'text-green-400' :
+                        (technicalAnalysis.riskLevels.rrRatio || 0) >= 1.0 ? 'text-yellow-400' :
+                        'text-red-400'
+                      }`}>
+                        1:{technicalAnalysis.riskLevels.rrRatio?.toFixed(1) || "N/A"}
+                        {(technicalAnalysis.riskLevels.rrRatio || 0) < 1.0 && (
+                          <span className="text-xs text-red-500 ml-1">⚠️ Unfavorable</span>
+                        )}
                       </div>
+                    </div>
+
+                    {/* Position Size */}
+                    {technicalAnalysis.riskLevels.suggestedPositionPct > 0 && (
+                      <div>
+                        <div className="text-slate-500 text-xs">Suggested Position</div>
+                        <div className="text-blue-400 font-medium font-mono">
+                          {technicalAnalysis.riskLevels.suggestedPositionPct.toFixed(2)}% of account
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* TP Strategy Guide */}
+                  <div className="mt-4 pt-3 border-t border-slate-700">
+                    <div className="text-xs text-slate-500 mb-1">Suggested exit strategy:</div>
+                    <div className="flex gap-3 text-xs text-slate-400">
+                      <span>TP1: Close 40%</span>
+                      <span>TP2: Close 30%</span>
+                      <span>TP3: Close 30%</span>
                     </div>
                   </div>
                 </div>
@@ -959,46 +1028,53 @@ export default function CoinDetailPage() {
           </CardContent>
         </Card>
 
-        {/* Health History */}
+        {/* Health Timeline */}
         <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Health Score History</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {coin.healthHistory.length === 0 ? (
-              <p className="text-slate-500 text-center py-8">No history available</p>
-            ) : (
-              <div className="h-48">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={coin.healthHistory}>
-                    <XAxis
-                      dataKey="date"
-                      stroke="#64748b"
-                      fontSize={12}
-                      tickFormatter={(value) => value.slice(5)}
-                    />
-                    <YAxis stroke="#64748b" fontSize={12} domain={[0, 100]} />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "#1e293b",
-                        border: "1px solid #334155",
-                        borderRadius: "8px",
-                      }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="score"
-                      stroke="#22d3ee"
-                      strokeWidth={2}
-                      dot={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            )}
+          <CardContent className="p-6">
+            <HealthTimeline coinId={coin.id} days={30} />
           </CardContent>
         </Card>
       </div>
+
+      {/* Health History */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Health Score History</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {coin.healthHistory.length === 0 ? (
+            <p className="text-slate-500 text-center py-8">No history available</p>
+          ) : (
+            <div className="h-48">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={coin.healthHistory}>
+                  <XAxis
+                    dataKey="date"
+                    stroke="#64748b"
+                    fontSize={12}
+                    tickFormatter={(value) => value.slice(5)}
+                  />
+                  <YAxis stroke="#64748b" fontSize={12} domain={[0, 100]} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: "#1e293b",
+                      border: "1px solid #334155",
+                      borderRadius: "8px",
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="score"
+                    stroke="#22d3ee"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Price Chart */}
       <Card>

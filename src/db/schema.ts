@@ -183,6 +183,8 @@ export const healthScores = pgTable(
     status: varchar("status", { length: 20 }).notNull(), // STRONG, HEALTHY, NEUTRAL, CAUTION, WEAK
     confidenceScore: real("confidence_score"),
     weightBreakdown: jsonb("weight_breakdown"), // { trend: 35, derivative: 28, ... }
+    ruleVersionId: integer("rule_version_id")
+      .references(() => ruleVersions.id),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => ({
@@ -204,6 +206,8 @@ export const recommendations = pgTable(
     reason: text("reason").notNull(),
     reasonBreakdown: jsonb("reason_breakdown"),
     healthScoreId: integer("health_score_id").references(() => healthScores.id),
+    ruleVersionId: integer("rule_version_id")
+      .references(() => ruleVersions.id),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => ({
@@ -230,6 +234,19 @@ export const narrativeHealth = pgTable(
     weakestCoinId: integer("weakest_coin_id").references(() => coins.id),
     avgConfidence: real("avg_confidence"),
     coinBreakdown: jsonb("coin_breakdown"), // Array of { coinId, score, weight }
+    ruleVersionId: integer("rule_version_id")
+      .references(() => ruleVersions.id),
+    weightingMethod: varchar("weighting_method", { length: 20 })
+      .notNull()
+      .default("equal"),
+    weightDetails: jsonb("weight_details")
+      .$type<Record<string, {
+        coinId: number;
+        symbol: string;
+        weight: number;
+        marketCap: number | null;
+        healthScore: number;
+      }>>(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => ({
@@ -237,6 +254,42 @@ export const narrativeHealth = pgTable(
     uniqueNarrativeHealth: unique("narrative_health_unique").on(table.narrativeId, table.date),
   })
 );
+
+// ─── Rule Versions (P0B) ─────────────────────────────────
+
+export const ruleVersions = pgTable("rule_versions", {
+  id: serial("id").primaryKey(),
+  version: integer("version").notNull().unique(),
+  description: text("description"),
+  healthWeights: jsonb("health_weights")
+    .$type<{
+      trend: number;
+      derivative: number;
+      volume: number;
+      momentum: number;
+    }>()
+    .notNull(),
+  confidenceWeights: jsonb("confidence_weights")
+    .$type<{
+      binance_spot: number;
+      binance_futures: number;
+      coingecko: number;
+    }>()
+    .notNull(),
+  recommendationThresholds: jsonb("recommendation_thresholds")
+    .$type<{
+      strong_watch: number;
+      watch: number;
+      observe: number;
+    }>()
+    .notNull(),
+  isActive: boolean("is_active").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  activatedAt: timestamp("activated_at"),
+});
+
+export type RuleVersion = typeof ruleVersions.$inferSelect;
+export type NewRuleVersion = typeof ruleVersions.$inferInsert;
 
 // ==================== MORNING_SNAPSHOT ====================
 export const morningSnapshots = pgTable("morning_snapshots", {

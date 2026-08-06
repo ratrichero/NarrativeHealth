@@ -564,8 +564,9 @@ DELIVERABLES
 □ Report: "A-DONE" với output của verify queries
 
 NOTIFY khi xong: Agent B và Agent C có thể bắt đầu
+
+==================================================================
 🤖 AGENT B — Service Layer
-text
 
 # AGENT B: SERVICE LAYER
 # Priority: HIGH
@@ -998,10 +999,9 @@ DELIVERABLES
   - Verify CARV/BLUAI/TRUTH test case output
   - List of all files modified
   - Any deviations from spec with reason
-
+======================================================================
 NOTIFY khi xong: Agent C và D có thể bắt đầu
 🤖 AGENT C — API Routes
-text
 
 # AGENT C: API ROUTES
 # Priority: HIGH
@@ -1301,9 +1301,10 @@ DELIVERABLES
 
 Output của tất cả 8 test cases
 Any issues found
+
 NOTIFY khi xong: Agent D có thể tiếp tục
 
-text
+=============================================================
 
 
 ---

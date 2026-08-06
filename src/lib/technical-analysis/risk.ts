@@ -3,6 +3,11 @@
 import { KlineData, RiskLevels, MarketRegime, RegimeType } from "./types";
 import { atr } from "./indicators";
 
+// ── Constants ──────────────────────────────────────────
+const MAX_SL_PCT = 5.0;   // Maximum 5% stop loss
+const MIN_SL_PCT = 0.5;   // Minimum 0.5% stop loss
+const MIN_RR_RATIO = 1.0; // Minimum 1:1 risk-reward
+
 function getTpMultipliers(strength: number): [number, number, number] {
   if (strength >= 65) return [2.0, 4.0, 6.0];
   if (strength >= 40) return [1.8, 3.2, 5.0];
@@ -85,50 +90,76 @@ export function calculateRiskLevels(
     : { tp: baseTpMults, sl: baseSlMult };
 
   const [tp1M, tp2M, tp3M] = tpMults;
-  const slDistance = slMult * refAtr;
 
-  let entry:  number;
+  // ── Raw SL distance ──────────────────────────────────
+  let slDistance = slMult * refAtr;
+  const rawSlPct = (slDistance / price) * 100;
+
+  // ── SL% Cap: clamp between MIN and MAX ───────────────
+  if (rawSlPct > MAX_SL_PCT) {
+    slDistance = price * (MAX_SL_PCT / 100);
+  } else if (rawSlPct < MIN_SL_PCT) {
+    slDistance = price * (MIN_SL_PCT / 100);
+  }
+
+  // ── TP distances ─────────────────────────────────────
+  let tp1Dist = tp1M * refAtr;
+  let tp2Dist = tp2M * refAtr;
+  let tp3Dist = tp3M * refAtr;
+
+  // ── R:R Floor: TP1 distance >= SL distance (R:R >= 1) ─
+  if (tp1Dist < slDistance * MIN_RR_RATIO) {
+    // Scale all TPs proportionally to maintain ratios
+    const scaleFactor = (slDistance * MIN_RR_RATIO) / tp1Dist;
+    tp1Dist *= scaleFactor;
+    tp2Dist *= scaleFactor;
+    tp3Dist *= scaleFactor;
+  }
+
+  // ── Calculate price levels ───────────────────────────
+  let entry:    number;
   let stopLoss: number;
-  let tp1: number;
-  let tp2: number;
-  let tp3: number;
+  let tp1:      number;
+  let tp2:      number;
+  let tp3:      number;
 
   if (direction === "LONG") {
     entry    = price;
     stopLoss = price - slDistance;
-    tp1      = price + tp1M * refAtr;
-    tp2      = price + tp2M * refAtr;
-    tp3      = price + tp3M * refAtr;
+    tp1      = price + tp1Dist;
+    tp2      = price + tp2Dist;
+    tp3      = price + tp3Dist;
   } else {
     entry    = price;
     stopLoss = price + slDistance;
-    tp1      = price - tp1M * refAtr;
-    tp2      = price - tp2M * refAtr;
-    tp3      = price - tp3M * refAtr;
+    tp1      = price - tp1Dist;
+    tp2      = price - tp2Dist;
+    tp3      = price - tp3Dist;
   }
 
-  const slPct  = (slDistance / price) * 100;
-  const rrRatio= tp1M / slMult;
+  // ── Final calculations ───────────────────────────────
+  const slPct   = (slDistance / price) * 100;
+  const rrRatio = tp1Dist / slDistance;
   const suggestedPositionPct = calcPositionSize(price, slDistance);
 
   return {
-    entry,
-    stopLoss,
-    tp1,
-    tp2,
-    tp3,
-    slPct,
-    rrRatio,
-    refAtr,
-    suggestedPositionPct,
+    entry:                 Math.round(entry    * 1e8) / 1e8,
+    stopLoss:              Math.round(stopLoss * 1e8) / 1e8,
+    tp1:                   Math.round(tp1      * 1e8) / 1e8,
+    tp2:                   Math.round(tp2      * 1e8) / 1e8,
+    tp3:                   Math.round(tp3      * 1e8) / 1e8,
+    slPct:                 Math.round(slPct  * 1000) / 1000,
+    rrRatio:               Math.round(rrRatio * 100) / 100,
+    refAtr:                refAtr,
+    suggestedPositionPct:  Math.round(suggestedPositionPct * 100) / 100,
   };
 }
 
 export function validateRiskLevels(risk: RiskLevels): boolean {
-  if (risk.slPct > 5)          return false;
-  if (risk.rrRatio < 1)        return false;
-  if (risk.tp1 === risk.tp2)   return false;
-  if (risk.tp2 === risk.tp3)   return false;
+  if (risk.slPct > MAX_SL_PCT)    return false;
+  if (risk.rrRatio < MIN_RR_RATIO) return false;
+  if (risk.tp1 === risk.tp2)       return false;
+  if (risk.tp2 === risk.tp3)       return false;
   return true;
 }
 
@@ -137,6 +168,8 @@ export function calculatePositionSize(
   riskPerTrade:   number,
   riskLevels:     RiskLevels
 ): number {
+  if (riskLevels.slPct <= 0) return 0;
   const riskAmount = accountBalance * (riskPerTrade / 100);
-  return riskAmount / riskLevels.slPct;
+  const slAbsolute = riskLevels.entry * (riskLevels.slPct / 100);
+  return slAbsolute > 0 ? riskAmount / slAbsolute : 0;
 }
