@@ -445,7 +445,7 @@ export default function AdminPage() {
                 const data = {
                   name: formData.get("name") as string,
                   description: formData.get("description") as string,
-                  isActive: narrativeModal.mode === "edit" ? formData.get("isActive") === "true" : true,
+                  isActive: narrativeModal.mode === "edit" ? formData.get("isActive") === "on" : true,
                 };
                 if (narrativeModal.mode === "add") {
                   createNarrativeMutation.mutate(data);
@@ -536,7 +536,7 @@ export default function AdminPage() {
                   binanceFuturesSymbol: formData.get("binanceFuturesSymbol") as string,
                   coingeckoId: formData.get("coingeckoId") as string,
                   narrativeIds,
-                  isActive: coinModal.mode === "edit" ? formData.get("isActive") === "true" : true,
+                  isActive: coinModal.mode === "edit" ? formData.get("isActive") === "on" : true,
                 };
                 if (coinModal.mode === "add") {
                   createCoinMutation.mutate(data);
