@@ -17,6 +17,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { CorrelationHeatmap } from "@/components/CorrelationHeatmap";
 import type { NarrativeDetail } from "@/types";
 
 async function fetchNarrative(id: string): Promise<NarrativeDetail> {
@@ -33,6 +34,17 @@ export default function NarrativeDetailPage() {
   const { data: narrative, isLoading, error } = useQuery({
     queryKey: ["narrative", id],
     queryFn: () => fetchNarrative(id),
+  });
+
+  const { data: correlation, isLoading: correlationLoading } = useQuery({
+    queryKey: ["narrative", id, "correlations"],
+    queryFn: async () => {
+      const response = await fetch(`/api/narratives/${id}/correlations?days=30`);
+      const data = await response.json();
+      if (!data.success) throw new Error(data.error);
+      return data.data;
+    },
+    enabled: !!narrative,
   });
 
   if (isLoading) {
@@ -124,6 +136,9 @@ export default function NarrativeDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Correlation Matrix */}
+      <CorrelationHeatmap data={correlation ?? null} isLoading={correlationLoading} />
 
       {/* Coin Ranking Table */}
       <Card>

@@ -12,6 +12,7 @@ const signalConfig: Record<
   STRONG_WATCH: { label: "Strong Watch", variant: "success" },
   WATCH: { label: "Watch", variant: "success" },
   OBSERVE: { label: "Observe", variant: "warning" },
+  CAUTION: { label: "Caution", variant: "warning" },
   WEAK: { label: "Weak", variant: "danger" },
 };
 

@@ -160,6 +160,8 @@ export const features = pgTable(
     confidenceScore: real("confidence_score"),
     dataCompleteness: real("data_completeness"),
     missingSources: jsonb("missing_sources"),
+    sourceProvenance: jsonb("source_provenance"),
+    calculatedAt: timestamp("calculated_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => ({
@@ -304,6 +306,92 @@ export const morningSnapshots = pgTable("morning_snapshots", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// ==================== INDICATORS ====================
+export const indicators = pgTable("indicators", {
+  id: serial("id").primaryKey(),
+  coinId: integer("coin_id")
+    .notNull()
+    .references(() => coins.id, { onDelete: "cascade" }),
+  date: date("date").notNull(),
+  timeframe: varchar("timeframe", { length: 10 }).notNull(),
+  indicatorType: varchar("indicator_type", { length: 50 }).notNull(),
+  indicatorValue: decimal("indicator_value", { precision: 20, scale: 8 }),
+  indicatorMeta: jsonb("indicator_meta"),
+  source: varchar("source", { length: 30 }),
+  calculatedAt: timestamp("calculated_at").notNull().defaultNow(),
+}, (table) => ({
+  coinDateTypeIdx: index("indicators_coin_date_type_idx").on(table.coinId, table.date, table.indicatorType),
+  indicatorsUnique: unique("indicators_unique").on(table.coinId, table.date, table.timeframe, table.indicatorType),
+}));
+
+// ==================== RECOMMENDATION_RULES ====================
+export const recommendationRules = pgTable("recommendation_rules", {
+  id: serial("id").primaryKey(),
+  ruleVersionId: integer("rule_version_id")
+    .notNull()
+    .references(() => ruleVersions.id),
+  priority: integer("priority").notNull().default(50),
+  signal: varchar("signal", { length: 20 }).notNull(),
+  logicOperator: varchar("logic_operator", { length: 5 })
+    .notNull().default("AND"),
+  conditions: jsonb("conditions").notNull(),
+  reasonTemplate: text("reason_template").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  versionActiveIdx: index("rec_rules_version_active_idx").on(table.ruleVersionId, table.isActive),
+  priorityIdx: index("rec_rules_priority_idx").on(table.priority),
+}));
+
+// ==================== MORNING_SNAPSHOT_HEADERS ====================
+export const morningSnapshotHeaders = pgTable("morning_snapshot_headers", {
+  id: serial("id").primaryKey(),
+  date: date("date").notNull().unique(),
+  totalCoins: integer("total_coins"),
+  avgHealthScore: decimal("avg_health_score", { precision: 5, scale: 2 }),
+  topNarrativeId: integer("top_narrative_id").references(() => narratives.id),
+  alertCount: integer("alert_count").default(0),
+  ruleVersionId: integer("rule_version_id").references(() => ruleVersions.id),
+  timezone: varchar("timezone", { length: 50 })
+    .default("Asia/Ho_Chi_Minh"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ==================== MORNING_SNAPSHOT_COINS ====================
+export const morningSnapshotCoins = pgTable("morning_snapshot_coins", {
+  id: serial("id").primaryKey(),
+  snapshotId: integer("snapshot_id")
+    .notNull()
+    .references(() => morningSnapshotHeaders.id, { onDelete: "cascade" }),
+  coinId: integer("coin_id").notNull().references(() => coins.id),
+  healthScore: decimal("health_score", { precision: 5, scale: 2 }),
+  scoreChange: decimal("score_change", { precision: 5, scale: 2 }),
+  signal: varchar("signal", { length: 20 }),
+  confidence: decimal("confidence", { precision: 5, scale: 2 }),
+}, (table) => ({
+  snapshotCoinUnique: unique("snapshot_coin_unique").on(table.snapshotId, table.coinId),
+  snapshotIdx: index("snapshot_coins_snapshot_idx").on(table.snapshotId),
+}));
+
+// ==================== MORNING_SNAPSHOT_NARRATIVES ====================
+export const morningSnapshotNarratives = pgTable("morning_snapshot_narratives", {
+  id: serial("id").primaryKey(),
+  snapshotId: integer("snapshot_id")
+    .notNull()
+    .references(() => morningSnapshotHeaders.id, { onDelete: "cascade" }),
+  narrativeId: integer("narrative_id").notNull()
+    .references(() => narratives.id),
+  healthScore: decimal("health_score", { precision: 5, scale: 2 }),
+  scoreChange: decimal("score_change", { precision: 5, scale: 2 }),
+  coinCount: integer("coin_count"),
+  topCoinId: integer("top_coin_id").references(() => coins.id),
+  weakestCoinId: integer("weakest_coin_id").references(() => coins.id),
+  weightingMethod: varchar("weighting_method", { length: 20 }),
+}, (table) => ({
+  snapshotNarrativeUnique: unique("snapshot_narrative_unique").on(table.snapshotId, table.narrativeId),
+  snapshotIdx: index("snapshot_narratives_snapshot_idx").on(table.snapshotId),
+}));
+
 // ==================== SCORE_CONFIG ====================
 export const scoreConfigs = pgTable("score_configs", {
   id: serial("id").primaryKey(),
@@ -347,10 +435,105 @@ export const schedulerLogs = pgTable("scheduler_logs", {
   details: jsonb("details"),
 });
 
+// ==================== EVENT_RISKS ====================
+export const eventRisks = pgTable("event_risks", {
+  id: serial("id").primaryKey(),
+  coinId: integer("coin_id").references(() => coins.id),
+  narrativeId: integer("narrative_id").references(() => narratives.id),
+  eventType: varchar("event_type", { length: 30 }).notNull(),
+  eventDate: date("event_date").notNull(),
+  riskLevel: varchar("risk_level", { length: 10 }).notNull(),
+  riskScore: decimal("risk_score", { precision: 5, scale: 2 }),
+  title: varchar("title", { length: 200 }).notNull(),
+  description: text("description"),
+  sourceUrl: text("source_url"),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  expiresAt: date("expires_at"),
+}, (table) => ({
+  coinIdx: index("event_risks_coin_idx").on(table.coinId),
+  narrativeIdx: index("event_risks_narrative_idx").on(table.narrativeId),
+  dateIdx: index("event_risks_date_idx").on(table.eventDate),
+}));
+
+// ==================== COIN_CORRELATIONS ====================
+export const coinCorrelations = pgTable("coin_correlations", {
+  id: serial("id").primaryKey(),
+  date: date("date").notNull(),
+  coinIdA: integer("coin_id_a").notNull().references(() => coins.id),
+  coinIdB: integer("coin_id_b").notNull().references(() => coins.id),
+  correlation: decimal("correlation", { precision: 5, scale: 4 }),
+  periodDays: integer("period_days").default(30),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  dateIdx: index("coin_correlations_date_idx").on(table.date),
+  coinsIdx: index("coin_correlations_coins_idx").on(table.coinIdA, table.coinIdB),
+  uniqueCorrelation: unique("coin_correlations_unique").on(table.date, table.coinIdA, table.coinIdB, table.periodDays),
+}));
+
+// ==================== NARRATIVE_MOMENTUM ====================
+export const narrativeMomentum = pgTable("narrative_momentum", {
+  id: serial("id").primaryKey(),
+  narrativeId: integer("narrative_id").notNull().references(() => narratives.id),
+  date: date("date").notNull(),
+  momentumScore: decimal("momentum_score", { precision: 5, scale: 2 }),
+  momentumType: varchar("momentum_type", { length: 20 }),
+  health7dAgo: decimal("health_7d_ago", { precision: 5, scale: 2 }),
+  healthNow: decimal("health_now", { precision: 5, scale: 2 }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  narrativeDateUnique: unique("narrative_momentum_unique").on(table.narrativeId, table.date),
+  narrativeIdx: index("narrative_momentum_narrative_idx").on(table.narrativeId),
+}));
+
+// ==================== DECISION_SIGNALS ====================
+export const decisionSignals = pgTable("decision_signals", {
+  id: serial("id").primaryKey(),
+  coinId: integer("coin_id").notNull().references(() => coins.id),
+  date: date("date").notNull(),
+  baseHealth: decimal("base_health", { precision: 5, scale: 2 }),
+  eventRiskScore: decimal("event_risk_score", { precision: 5, scale: 2 }),
+  adjustedScore: decimal("adjusted_score", { precision: 5, scale: 2 }),
+  adjustmentReason: text("adjustment_reason"),
+  activeEvents: jsonb("active_events"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  coinDateUnique: unique("decision_signals_unique").on(table.coinId, table.date),
+  coinDateIdx: index("decision_signals_coin_date_idx").on(table.coinId, table.date),
+}));
+
+// ==================== ALERT_RULES ====================
+export const alertRules = pgTable("alert_rules", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 100 }).notNull(),
+  scope: varchar("scope", { length: 10 }).notNull(),
+  scopeId: integer("scope_id"),
+  triggerType: varchar("trigger_type", { length: 30 }).notNull(),
+  triggerValue: decimal("trigger_value", { precision: 10, scale: 2 }),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  scopeIdx: index("alert_rules_scope_idx").on(table.scope, table.scopeId),
+}));
+
+// ==================== ALERT_HISTORY ====================
+export const alertHistory = pgTable("alert_history", {
+  id: serial("id").primaryKey(),
+  ruleId: integer("rule_id").notNull().references(() => alertRules.id),
+  triggeredAt: timestamp("triggered_at").notNull().defaultNow(),
+  triggerDetail: jsonb("trigger_detail"),
+  acknowledgedAt: timestamp("acknowledged_at"),
+  acknowledgedBy: varchar("acknowledged_by", { length: 100 }),
+}, (table) => ({
+  ruleIdx: index("alert_history_rule_idx").on(table.ruleId),
+  triggeredIdx: index("alert_history_triggered_idx").on(table.triggeredAt),
+}));
+
 // ==================== RELATIONS ====================
 export const narrativesRelations = relations(narratives, ({ many }) => ({
   coinNarratives: many(coinNarratives),
   narrativeHealth: many(narrativeHealth),
+  morningSnapshotNarratives: many(morningSnapshotNarratives),
 }));
 
 export const coinsRelations = relations(coins, ({ many }) => ({
@@ -361,6 +544,8 @@ export const coinsRelations = relations(coins, ({ many }) => ({
   healthScores: many(healthScores),
   recommendations: many(recommendations),
   watchlist: many(watchlists),
+  indicators: many(indicators),
+  morningSnapshotCoins: many(morningSnapshotCoins),
 }));
 
 export const coinNarrativesRelations = relations(coinNarratives, ({ one }) => ({
@@ -374,6 +559,61 @@ export const coinNarrativesRelations = relations(coinNarratives, ({ one }) => ({
   }),
 }));
 
+export const ruleVersionsRelations = relations(ruleVersions, ({ many }) => ({
+  recommendationRules: many(recommendationRules),
+  healthScores: many(healthScores),
+  narrativeHealth: many(narrativeHealth),
+  morningSnapshotHeaders: many(morningSnapshotHeaders),
+}));
+
+export const morningSnapshotHeadersRelations = relations(morningSnapshotHeaders, ({ many }) => ({
+  coins: many(morningSnapshotCoins),
+  narratives: many(morningSnapshotNarratives),
+}));
+
+export const eventRisksRelations = relations(eventRisks, ({ one }) => ({
+  coin: one(coins, {
+    fields: [eventRisks.coinId],
+    references: [coins.id],
+  }),
+  narrative: one(narratives, {
+    fields: [eventRisks.narrativeId],
+    references: [narratives.id],
+  }),
+}));
+
+export const coinCorrelationsRelations = relations(coinCorrelations, ({ one }) => ({
+  coinA: one(coins, {
+    fields: [coinCorrelations.coinIdA],
+    references: [coins.id],
+  }),
+  coinB: one(coins, {
+    fields: [coinCorrelations.coinIdB],
+    references: [coins.id],
+  }),
+}));
+
+export const narrativeMomentumRelations = relations(narrativeMomentum, ({ one }) => ({
+  narrative: one(narratives, {
+    fields: [narrativeMomentum.narrativeId],
+    references: [narratives.id],
+  }),
+}));
+
+export const decisionSignalsRelations = relations(decisionSignals, ({ one }) => ({
+  coin: one(coins, {
+    fields: [decisionSignals.coinId],
+    references: [coins.id],
+  }),
+}));
+
+export const alertHistoryRelations = relations(alertHistory, ({ one }) => ({
+  rule: one(alertRules, {
+    fields: [alertHistory.ruleId],
+    references: [alertRules.id],
+  }),
+}));
+
 // Type exports
 export type Narrative = typeof narratives.$inferSelect;
 export type NewNarrative = typeof narratives.$inferInsert;
@@ -384,6 +624,7 @@ export type MarketPriceDaily = typeof marketPriceDaily.$inferSelect;
 export type CoinMetrics = typeof coinMetrics.$inferSelect;
 export type SourceStatus = typeof sourceStatus.$inferSelect;
 export type Feature = typeof features.$inferSelect;
+export type NewFeature = typeof features.$inferInsert;
 export type HealthScore = typeof healthScores.$inferSelect;
 export type Recommendation = typeof recommendations.$inferSelect;
 export type NarrativeHealth = typeof narrativeHealth.$inferSelect;
@@ -391,3 +632,25 @@ export type MorningSnapshot = typeof morningSnapshots.$inferSelect;
 export type ScoreConfig = typeof scoreConfigs.$inferSelect;
 export type Watchlist = typeof watchlists.$inferSelect;
 export type SchedulerLog = typeof schedulerLogs.$inferSelect;
+export type Indicator = typeof indicators.$inferSelect;
+export type NewIndicator = typeof indicators.$inferInsert;
+export type RecommendationRule = typeof recommendationRules.$inferSelect;
+export type NewRecommendationRule = typeof recommendationRules.$inferInsert;
+export type MorningSnapshotHeader = typeof morningSnapshotHeaders.$inferSelect;
+export type NewMorningSnapshotHeader = typeof morningSnapshotHeaders.$inferInsert;
+export type MorningSnapshotCoin = typeof morningSnapshotCoins.$inferSelect;
+export type NewMorningSnapshotCoin = typeof morningSnapshotCoins.$inferInsert;
+export type MorningSnapshotNarrative = typeof morningSnapshotNarratives.$inferSelect;
+export type NewMorningSnapshotNarrative = typeof morningSnapshotNarratives.$inferInsert;
+export type EventRisk = typeof eventRisks.$inferSelect;
+export type NewEventRisk = typeof eventRisks.$inferInsert;
+export type CoinCorrelation = typeof coinCorrelations.$inferSelect;
+export type NewCoinCorrelation = typeof coinCorrelations.$inferInsert;
+export type NarrativeMomentum = typeof narrativeMomentum.$inferSelect;
+export type NewNarrativeMomentum = typeof narrativeMomentum.$inferInsert;
+export type DecisionSignal = typeof decisionSignals.$inferSelect;
+export type NewDecisionSignal = typeof decisionSignals.$inferInsert;
+export type AlertRule = typeof alertRules.$inferSelect;
+export type NewAlertRule = typeof alertRules.$inferInsert;
+export type AlertHistory = typeof alertHistory.$inferSelect;
+export type NewAlertHistory = typeof alertHistory.$inferInsert;

@@ -18,8 +18,12 @@ import {
   X,
   Search,
   GitBranch,
+  Gavel,
+  ToggleLeft,
+  ToggleRight,
 } from "lucide-react";
 import type { AdminNarrative, AdminCoin, ConfigItem } from "@/types";
+import type { RecommendationRule, RuleCondition } from "@/lib/types/recommendation-rule";
 
 // Fetch functions
 async function fetchNarratives(): Promise<AdminNarrative[]> {
@@ -178,12 +182,152 @@ async function activateRuleVersion(id: number): Promise<{ message: string }> {
   return data.data;
 }
 
-type TabType = "narratives" | "coins" | "config" | "logs" | "rule-versions";
+async function fetchRecommendationRules(): Promise<RecommendationRule[]> {
+  const response = await fetch("/api/admin/recommendation-rules");
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+async function createRecommendationRule(data: {
+  priority: number;
+  signal: string;
+  logicOperator: string;
+  conditions: RuleCondition[];
+  reasonTemplate: string;
+}) {
+  const response = await fetch("/api/admin/recommendation-rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await response.json();
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+async function updateRecommendationRule(id: number, data: Partial<{
+  priority: number;
+  signal: string;
+  logicOperator: string;
+  conditions: RuleCondition[];
+  reasonTemplate: string;
+}>) {
+  const response = await fetch(`/api/admin/recommendation-rules/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await response.json();
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+async function deactivateRecommendationRule(id: number) {
+  const response = await fetch(`/api/admin/recommendation-rules/${id}`, { method: "DELETE" });
+  const result = await response.json();
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+async function fetchEvents(coinId?: number, narrativeId?: number): Promise<any[]> {
+  const url = new URL("/api/events", window.location.origin);
+  if (coinId) url.searchParams.set("coinId", String(coinId));
+  if (narrativeId) url.searchParams.set("narrativeId", String(narrativeId));
+  const response = await fetch(url.toString());
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+async function createEvent(data: any) {
+  const response = await fetch("/api/admin/events", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await response.json();
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+async function updateEvent(id: number, data: any) {
+  const response = await fetch(`/api/admin/events/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await response.json();
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+async function deactivateEvent(id: number) {
+  const response = await fetch(`/api/admin/events/${id}`, { method: "DELETE" });
+  const result = await response.json();
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+async function fetchAlertRules(): Promise<any[]> {
+  const response = await fetch("/api/admin/alerts/rules");
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+async function fetchAlertHistory(): Promise<any[]> {
+  const response = await fetch("/api/admin/alerts/history");
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+async function createAlertRule(data: any) {
+  const response = await fetch("/api/admin/alerts/rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const result = await response.json();
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+async function acknowledgeAlert(historyId: number, acknowledgedBy: string) {
+  const response = await fetch(`/api/admin/alerts/${historyId}/acknowledge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ acknowledgedBy }),
+  });
+  const result = await response.json();
+  if (!result.success) throw new Error(result.error);
+  return result.data;
+}
+
+async function fetchRuleEffectiveness(): Promise<any[]> {
+  const response = await fetch("/api/admin/analytics/rule-effectiveness");
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+async function fetchNarrativePerformance(): Promise<any[]> {
+  const response = await fetch("/api/admin/analytics/narrative-performance");
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+type TabType = "narratives" | "coins" | "config" | "logs" | "rule-versions" | "rules" | "events" | "alerts" | "analytics";
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<TabType>("narratives");
   const [narrativeModal, setNarrativeModal] = useState<{ isOpen: boolean; mode: "add" | "edit"; data?: AdminNarrative }>({ isOpen: false, mode: "add" });
   const [coinModal, setCoinModal] = useState<{ isOpen: boolean; mode: "add" | "edit"; data?: AdminCoin }>({ isOpen: false, mode: "add" });
+  const [ruleModal, setRuleModal] = useState<{ isOpen: boolean; mode: "add" | "edit"; data?: RecommendationRule }>({ isOpen: false, mode: "add" });
+  const [eventModal, setEventModal] = useState<{ isOpen: boolean; mode: "add" | "edit"; data?: any }>({ isOpen: false, mode: "add" });
+  const [alertRuleModal, setAlertRuleModal] = useState<{ isOpen: boolean; mode: "add" | "edit"; data?: any }>({ isOpen: false, mode: "add" });
   const [selectedNarrativeFilter, setSelectedNarrativeFilter] = useState<string>("all");
   const [coinSearchQuery, setCoinSearchQuery] = useState<string>("");
   const queryClient = useQueryClient();
@@ -238,6 +382,104 @@ export default function AdminPage() {
     queryKey: ["admin", "rule-versions"],
     queryFn: fetchRuleVersions,
     enabled: activeTab === "rule-versions",
+  });
+
+  const { data: rules, isLoading: rulesLoading, refetch: refetchRules } = useQuery({
+    queryKey: ["admin", "rules"],
+    queryFn: fetchRecommendationRules,
+    enabled: activeTab === "rules",
+  });
+
+  const createRuleMutation = useMutation({
+    mutationFn: createRecommendationRule,
+    onSuccess: () => {
+      refetchRules();
+      setRuleModal({ isOpen: false, mode: "add" });
+    },
+  });
+
+  const updateRuleMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) => updateRecommendationRule(id, data),
+    onSuccess: () => {
+      refetchRules();
+      setRuleModal({ isOpen: false, mode: "add" });
+    },
+  });
+
+  const deactivateRuleMutation = useMutation({
+    mutationFn: deactivateRecommendationRule,
+    onSuccess: () => {
+      refetchRules();
+    },
+  });
+
+  const { data: events, isLoading: eventsLoading, refetch: refetchEvents } = useQuery({
+    queryKey: ["admin", "events"],
+    queryFn: () => fetchEvents(),
+    enabled: activeTab === "events",
+  });
+
+  const { data: alertRulesData, isLoading: alertRulesLoading, refetch: refetchAlertRules } = useQuery({
+    queryKey: ["admin", "alert-rules"],
+    queryFn: fetchAlertRules,
+    enabled: activeTab === "alerts",
+  });
+
+  const { data: alertHistoryData, isLoading: alertHistoryLoading, refetch: refetchAlertHistory } = useQuery({
+    queryKey: ["admin", "alert-history"],
+    queryFn: fetchAlertHistory,
+    enabled: activeTab === "alerts",
+  });
+
+  const { data: ruleEffectiveness, isLoading: ruleEffectivenessLoading } = useQuery({
+    queryKey: ["admin", "analytics", "rule-effectiveness"],
+    queryFn: fetchRuleEffectiveness,
+    enabled: activeTab === "analytics",
+  });
+
+  const { data: narrativePerformance, isLoading: narrativePerformanceLoading } = useQuery({
+    queryKey: ["admin", "analytics", "narrative-performance"],
+    queryFn: fetchNarrativePerformance,
+    enabled: activeTab === "analytics",
+  });
+
+  const createEventMutation = useMutation({
+    mutationFn: createEvent,
+    onSuccess: () => {
+      refetchEvents();
+      setEventModal({ isOpen: false, mode: "add" });
+    },
+  });
+
+  const updateEventMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) => updateEvent(id, data),
+    onSuccess: () => {
+      refetchEvents();
+      setEventModal({ isOpen: false, mode: "add" });
+    },
+  });
+
+  const deactivateEventMutation = useMutation({
+    mutationFn: deactivateEvent,
+    onSuccess: () => {
+      refetchEvents();
+    },
+  });
+
+  const createAlertRuleMutation = useMutation({
+    mutationFn: createAlertRule,
+    onSuccess: () => {
+      refetchAlertRules();
+      setAlertRuleModal({ isOpen: false, mode: "add" });
+    },
+  });
+
+  const acknowledgeAlertMutation = useMutation({
+    mutationFn: ({ historyId, acknowledgedBy }: { historyId: number; acknowledgedBy: string }) =>
+      acknowledgeAlert(historyId, acknowledgedBy),
+    onSuccess: () => {
+      refetchAlertHistory();
+    },
   });
 
   const seedMutation = useMutation({
@@ -357,6 +599,10 @@ export default function AdminPage() {
     { id: "config", label: "Config", icon: Settings },
     { id: "logs", label: "Logs", icon: RefreshCw },
     { id: "rule-versions", label: "Rule Versions", icon: GitBranch },
+    { id: "rules", label: "Rules", icon: Gavel },
+    { id: "events", label: "Events", icon: AlertCircle },
+    { id: "alerts", label: "Alerts", icon: AlertCircle },
+    { id: "analytics", label: "Analytics", icon: RefreshCw },
   ];
 
   return (
@@ -1245,8 +1491,610 @@ export default function AdminPage() {
               )}
             </div>
           )}
+
+          {activeTab === "rules" && (
+            <div>
+              {rulesLoading ? (
+                <div className="py-12 text-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500 mx-auto" />
+                </div>
+              ) : !rules || rules.length === 0 ? (
+                <div className="py-12 text-center text-slate-500">
+                  No recommendation rules found.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-lg font-semibold text-white">Recommendation Rules</h2>
+                    <Button
+                      variant="secondary"
+                      onClick={() => setRuleModal({ isOpen: true, mode: "add" })}
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Rule
+                    </Button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {rules.map((rule: any) => (
+                      <div key={rule.id} className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-mono bg-slate-700 px-2 py-1 rounded text-white">
+                              P{rule.priority}
+                            </span>
+                            <span className={`text-xs font-medium px-2 py-1 rounded ${
+                              rule.signal === 'STRONG_WATCH' ? 'bg-green-900/50 text-green-400' :
+                              rule.signal === 'WATCH' ? 'bg-blue-900/50 text-blue-400' :
+                              rule.signal === 'OBSERVE' ? 'bg-yellow-900/50 text-yellow-400' :
+                              rule.signal === 'CAUTION' ? 'bg-orange-900/50 text-orange-400' :
+                              'bg-red-900/50 text-red-400'
+                            }`}>
+                              {rule.signal}
+                            </span>
+                            <span className="text-xs text-gray-400">
+                              Logic: {rule.logicOperator}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setRuleModal({ isOpen: true, mode: "edit", data: rule })}
+                              className="text-xs text-blue-400 hover:text-blue-300"
+                            >
+                              <Edit2 className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => deactivateRuleMutation.mutate(rule.id)}
+                              disabled={deactivateRuleMutation.isPending}
+                              className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mb-2">
+                          <p className="text-xs text-gray-500 mb-1">Conditions:</p>
+                          <div className="flex flex-wrap gap-2">
+                            {(rule.conditions || []).map((cond: RuleCondition, idx: number) => (
+                              <span key={idx} className="text-xs bg-slate-700 px-2 py-1 rounded text-gray-300">
+                                {cond.field} {cond.operator} {cond.value}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <p className="text-xs text-gray-500 mb-1">Reason Template:</p>
+                          <p className="text-xs text-gray-400 italic">
+                            {rule.reasonTemplate || '—'}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "events" && (
+            <div>
+              {eventsLoading ? (
+                <div className="py-12 text-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500 mx-auto" />
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-lg font-semibold text-white">Event Risks</h2>
+                    <Button
+                      variant="secondary"
+                      onClick={() => setEventModal({ isOpen: true, mode: "add" })}
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Event
+                    </Button>
+                  </div>
+
+                  {!events || events.length === 0 ? (
+                    <p className="text-slate-500 text-center py-8">No event risks found.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {events.map((event: any) => (
+                        <div key={event.id} className="bg-slate-800/50 border border-slate-700 rounded p-3">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="text-sm font-medium text-white">{event.title}</span>
+                              <span className={`ml-2 text-xs px-2 py-0.5 rounded ${
+                                event.riskLevel === 'CRITICAL' ? 'bg-red-900/50 text-red-400' :
+                                event.riskLevel === 'HIGH' ? 'bg-orange-900/50 text-orange-400' :
+                                event.riskLevel === 'MEDIUM' ? 'bg-yellow-900/50 text-yellow-400' :
+                                'bg-green-900/50 text-green-400'
+                              }`}>
+                                {event.riskLevel}
+                              </span>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => setEventModal({ isOpen: true, mode: "edit", data: event })}
+                                className="text-xs text-blue-400 hover:text-blue-300"
+                              >
+                                <Edit2 className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => deactivateEventMutation.mutate(event.id)}
+                                className="text-xs text-red-400 hover:text-red-300"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-400">
+                            {event.eventType} | {event.eventDate} | Score: {event.riskScore ?? '—'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "alerts" && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-lg font-semibold text-white mb-4">Alert Rules</h2>
+                {alertRulesLoading ? (
+                  <div className="py-8 text-center">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {alertRulesData?.map((rule: any) => (
+                      <div key={rule.id} className="bg-slate-800/50 border border-slate-700 rounded p-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="text-sm font-medium text-white">{rule.name}</span>
+                            <span className="ml-2 text-xs text-gray-400">{rule.scope}</span>
+                          </div>
+                          <span className={`text-xs px-2 py-0.5 rounded ${rule.isActive ? 'bg-green-900/50 text-green-400' : 'bg-gray-700 text-gray-400'}`}>
+                            {rule.isActive ? 'Active' : 'Inactive'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <h2 className="text-lg font-semibold text-white mb-4">Alert History</h2>
+                {alertHistoryLoading ? (
+                  <div className="py-8 text-center">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {alertHistoryData?.map((alert: any) => (
+                      <div key={alert.id} className="bg-slate-800/50 border border-slate-700 rounded p-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="text-sm font-medium text-white">{alert.ruleName}</span>
+                            <span className="ml-2 text-xs text-gray-400">{alert.triggerType}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {alert.acknowledged ? (
+                              <span className="text-xs text-green-400">Acknowledged</span>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => acknowledgeAlertMutation.mutate({ historyId: alert.id, acknowledgedBy: "admin" })}
+                              >
+                                Acknowledge
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-1 text-xs text-gray-400">
+                          {new Date(alert.triggeredAt).toLocaleString()}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === "analytics" && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-lg font-semibold text-white mb-4">Rule Effectiveness</h2>
+                {ruleEffectivenessLoading ? (
+                  <div className="py-8 text-center">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-700 text-left text-gray-400">
+                          <th className="pb-2">Rule</th>
+                          <th className="pb-2">Signal</th>
+                          <th className="pb-2">Priority</th>
+                          <th className="pb-2">Active</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ruleEffectiveness?.map((rule: any) => (
+                          <tr key={rule.ruleId} className="border-b border-gray-800">
+                            <td className="py-2 text-white">Rule #{rule.ruleId}</td>
+                            <td className="py-2">{rule.signal}</td>
+                            <td className="py-2">{rule.priority}</td>
+                            <td className="py-2">{rule.isActive ? 'Yes' : 'No'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <h2 className="text-lg font-semibold text-white mb-4">Narrative Performance</h2>
+                {narrativePerformanceLoading ? (
+                  <div className="py-8 text-center">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {narrativePerformance?.map((narrative: any) => (
+                      <div key={narrative.narrativeId} className="bg-slate-800/50 border border-slate-700 rounded p-4">
+                        <h3 className="text-sm font-medium text-white mb-2">{narrative.narrativeName}</h3>
+                        <div className="space-y-1">
+                          {narrative.history.slice(0, 5).map((point: any, idx: number) => (
+                            <div key={idx} className="flex justify-between text-xs">
+                              <span className="text-gray-400">{point.date}</span>
+                              <span className="text-white">{point.healthScore?.toFixed(1) ?? '—'}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
   );
+
+  // Rule Modal
+  if (ruleModal.isOpen) {
+    const editingRule = ruleModal.mode === "edit" ? ruleModal.data : null;
+    const [priority, setPriority] = useState(editingRule?.priority ?? 50);
+    const [signal, setSignal] = useState(editingRule?.signal ?? 'OBSERVE');
+    const [logicOperator, setLogicOperator] = useState(editingRule?.logicOperator ?? 'AND');
+    const [conditions, setConditions] = useState<RuleCondition[]>(editingRule?.conditions ?? [{ field: 'health', operator: '>=', value: 50 }]);
+    const [reasonTemplate, setReasonTemplate] = useState(editingRule?.reasonTemplate ?? '');
+    const [error, setError] = useState<string | null>(null);
+
+    const addCondition = () => {
+      setConditions([...conditions, { field: 'health', operator: '>=', value: 50 }]);
+    };
+
+    const removeCondition = (index: number) => {
+      setConditions(conditions.filter((_, i) => i !== index));
+    };
+
+    const updateCondition = (index: number, field: keyof RuleCondition, value: any) => {
+      const updated = [...conditions];
+      updated[index] = { ...updated[index], [field]: value };
+      setConditions(updated);
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setError(null);
+
+      try {
+        const data = { priority, signal, logicOperator, conditions, reasonTemplate };
+        if (ruleModal.mode === "add") {
+          await createRuleMutation.mutateAsync(data);
+        } else if (editingRule) {
+          await updateRuleMutation.mutateAsync({ id: editingRule.id, data });
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error");
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <Card className="w-full max-w-lg bg-slate-900 border border-slate-800 max-h-[90vh] overflow-y-auto">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>
+                {ruleModal.mode === "add" ? "Add Recommendation Rule" : "Edit Recommendation Rule"}
+              </CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => setRuleModal({ isOpen: false, mode: "add" })} className="h-8 w-8 p-0">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {error && (
+                <div className="bg-red-900/20 border border-red-800 text-red-400 px-3 py-2 rounded text-sm">
+                  {error}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Priority</label>
+                <input
+                  type="number"
+                  value={priority}
+                  onChange={(e) => setPriority(Number(e.target.value))}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm"
+                  min="1"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Signal</label>
+                <select
+                  value={signal}
+                  onChange={(e) => setSignal(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm"
+                >
+                  <option value="STRONG_WATCH">STRONG_WATCH</option>
+                  <option value="WATCH">WATCH</option>
+                  <option value="OBSERVE">OBSERVE</option>
+                  <option value="CAUTION">CAUTION</option>
+                  <option value="WEAK">WEAK</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Logic Operator</label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 text-sm text-gray-300">
+                    <input
+                      type="radio"
+                      checked={logicOperator === 'AND'}
+                      onChange={() => setLogicOperator('AND')}
+                    />
+                    AND
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-gray-300">
+                    <input
+                      type="radio"
+                      checked={logicOperator === 'OR'}
+                      onChange={() => setLogicOperator('OR')}
+                    />
+                    OR
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm text-gray-400">Conditions</label>
+                  <Button type="button" variant="ghost" size="sm" onClick={addCondition}>
+                    <Plus className="h-4 w-4 mr-1" />
+                    Add
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {conditions.map((cond, idx) => (
+                    <div key={idx} className="flex gap-2">
+                      <select
+                        value={cond.field}
+                        onChange={(e) => updateCondition(idx, 'field', e.target.value)}
+                        className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-sm"
+                      >
+                        <option value="health">health</option>
+                        <option value="trend">trend</option>
+                        <option value="derivative">derivative</option>
+                        <option value="volume">volume</option>
+                        <option value="momentum">momentum</option>
+                        <option value="confidence">confidence</option>
+                      </select>
+                      <select
+                        value={cond.operator}
+                        onChange={(e) => updateCondition(idx, 'operator', e.target.value)}
+                        className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-sm"
+                      >
+                        <option value=">=">{">="}</option>
+                        <option value=">">{">"}</option>
+                        <option value="<">{"<"}</option>
+                        <option value="<=">{"<="}</option>
+                        <option value="==">{"=="}</option>
+                        <option value="!=">{"!="}</option>
+                      </select>
+                      <input
+                        type="number"
+                        value={cond.value}
+                        onChange={(e) => updateCondition(idx, 'value', Number(e.target.value))}
+                        className="w-20 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-white text-sm"
+                        min="0"
+                        max="100"
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeCondition(idx)}
+                        className="text-red-400"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Reason Template</label>
+                <textarea
+                  value={reasonTemplate}
+                  onChange={(e) => setReasonTemplate(e.target.value)}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm"
+                  rows={2}
+                  placeholder="Strong health ({health}) with solid trend ({trend})"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Available: {'{health}'}, {'{trend}'}, {'{derivative}'}, {'{volume}'}, {'{momentum}'}, {'{confidence}'}
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setRuleModal({ isOpen: false, mode: "add" })}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  loading={createRuleMutation.isPending || updateRuleMutation.isPending}
+                >
+                  {ruleModal.mode === "add" ? "Create Rule" : "Update Rule"}
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Event Modal
+  if (eventModal.isOpen) {
+    const editingEvent = eventModal.mode === "edit" ? eventModal.data : null;
+    const [eventType, setEventType] = useState(editingEvent?.eventType ?? 'TOKEN_UNLOCK');
+    const [eventDate, setEventDate] = useState(editingEvent?.eventDate ?? '');
+    const [riskLevel, setRiskLevel] = useState(editingEvent?.riskLevel ?? 'MEDIUM');
+    const [riskScore, setRiskScore] = useState(editingEvent?.riskScore ?? 50);
+    const [title, setTitle] = useState(editingEvent?.title ?? '');
+    const [description, setDescription] = useState(editingEvent?.description ?? '');
+    const [coinId, setCoinId] = useState(editingEvent?.coinId ?? '');
+    const [error, setError] = useState<string | null>(null);
+
+    const handleSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setError(null);
+
+      try {
+        const data = {
+          eventType,
+          eventDate,
+          riskLevel,
+          riskScore: Number(riskScore),
+          title,
+          description: description || null,
+          coinId: coinId ? Number(coinId) : null,
+        };
+        if (eventModal.mode === "add") {
+          await createEventMutation.mutateAsync(data);
+        } else if (editingEvent) {
+          await updateEventMutation.mutateAsync({ id: editingEvent.id, data });
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error");
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <Card className="w-full max-w-lg bg-slate-900 border border-slate-800">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>{eventModal.mode === "add" ? "Add Event Risk" : "Edit Event Risk"}</CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => setEventModal({ isOpen: false, mode: "add" })} className="h-8 w-8 p-0">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {error && (
+                <div className="bg-red-900/20 border border-red-800 text-red-400 px-3 py-2 rounded text-sm">
+                  {error}
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Event Type</label>
+                <select value={eventType} onChange={(e) => setEventType(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm">
+                  <option value="TOKEN_UNLOCK">Token Unlock</option>
+                  <option value="PROTOCOL_UPGRADE">Protocol Upgrade</option>
+                  <option value="REGULATORY_NEWS">Regulatory News</option>
+                  <option value="HACK_EXPLOIT">Hack/Exploit</option>
+                  <option value="TEAM_CHANGE">Team Change</option>
+                  <option value="PARTNERSHIP">Partnership</option>
+                  <option value="LISTING">Listing</option>
+                  <option value="VESTING_END">Vesting End</option>
+                  <option value="AUDIT_ISSUE">Audit Issue</option>
+                  <option value="LIQUIDITY_CRISIS">Liquidity Crisis</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Event Date</label>
+                <input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm" required />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Risk Level</label>
+                  <select value={riskLevel} onChange={(e) => setRiskLevel(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm">
+                    <option value="LOW">LOW</option>
+                    <option value="MEDIUM">MEDIUM</option>
+                    <option value="HIGH">HIGH</option>
+                    <option value="CRITICAL">CRITICAL</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Risk Score (0-100)</label>
+                  <input type="number" value={riskScore} onChange={(e) => setRiskScore(Number(e.target.value))} className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm" min="0" max="100" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Title</label>
+                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm" required />
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Description</label>
+                <textarea value={description} onChange={(e) => setDescription(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm" rows={2} />
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Coin ID (optional)</label>
+                <input type="number" value={coinId} onChange={(e) => setCoinId(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-white text-sm" placeholder="Leave empty for narrative-level event" />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="ghost" onClick={() => setEventModal({ isOpen: false, mode: "add" })}>
+                  Cancel
+                </Button>
+                <Button type="submit" loading={createEventMutation.isPending || updateEventMutation.isPending}>
+                  {eventModal.mode === "add" ? "Create Event" : "Update Event"}
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 }

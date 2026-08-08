@@ -10,12 +10,23 @@ import { ScoreChange } from "./ScoreChange";
 import { ConfidenceBadge } from "./ConfidenceBadge";
 import { WatchlistDialog } from "./WatchlistDialog";
 import { HealthSparkline } from "./ui/health-sparkline";
-import { TrendingUp, Users, RefreshCw, Star } from "lucide-react";
+import { TrendingUp, Users, RefreshCw, Star, AlertTriangle } from "lucide-react";
 import type { NarrativeSummary } from "@/types";
 import type { HealthTimeline } from "@/lib/types/health-timeline";
 
 interface NarrativeCardProps {
   narrative: NarrativeSummary;
+}
+
+async function fetchNarrativeCorrelation(narrativeId: number): Promise<{ avgCorrelation: number } | null> {
+  try {
+    const response = await fetch(`/api/narratives/${narrativeId}/correlations?days=30`);
+    const data = await response.json();
+    if (!data.success) return null;
+    return { avgCorrelation: data.data.avgCorrelation };
+  } catch {
+    return null;
+  }
 }
 
 async function refreshNarrativeData(narrativeId: number): Promise<{ message: string; coinsProcessed: number; totalCoins: number; duration: number }> {
@@ -54,7 +65,13 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
     queryKey: ['health-timeline', narrative.topCoin?.id, 7],
     queryFn: () => fetchHealthTimeline(narrative.topCoin!.id),
     enabled: !!narrative.topCoin?.id,
-    staleTime: 5 * 60 * 1000, // 5 min cache
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: correlation } = useQuery({
+    queryKey: ['narrative-correlation', narrative.id],
+    queryFn: () => fetchNarrativeCorrelation(narrative.id),
+    staleTime: 30 * 60 * 1000,
   });
 
   const refreshMutation = useMutation({
@@ -101,6 +118,16 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
             </div>
             <div className="flex items-center gap-2">
               <HealthBadge status={narrative.status} score={narrative.healthScore} />
+              {correlation && correlation.avgCorrelation >= 0.4 && (
+                <span className={`text-xs flex items-center gap-1 px-2 py-0.5 rounded ${
+                  correlation.avgCorrelation >= 0.7 ? 'bg-red-900/50 text-red-400' :
+                  correlation.avgCorrelation >= 0.4 ? 'bg-yellow-900/50 text-yellow-400' :
+                  'bg-green-900/50 text-green-400'
+                }`}>
+                  <AlertTriangle className="h-3 w-3" />
+                  Corr: {correlation.avgCorrelation.toFixed(2)}
+                </span>
+              )}
               {narrative.weightingMethod && (
                 <span className="text-xs text-blue-400 flex items-center gap-1">
                   <span>⚖️</span> {narrative.weightingMethod === 'market_cap' ? 'Market Cap Weighted' : 'Equal Weighted'}

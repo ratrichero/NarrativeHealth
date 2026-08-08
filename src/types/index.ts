@@ -56,7 +56,7 @@ export interface SourceState {
 
 // Health & Scoring Types
 export type HealthStatus = 'STRONG' | 'HEALTHY' | 'NEUTRAL' | 'CAUTION' | 'WEAK';
-export type RecommendationSignal = 'STRONG_WATCH' | 'WATCH' | 'OBSERVE' | 'WEAK';
+export type RecommendationSignal = 'STRONG_WATCH' | 'WATCH' | 'OBSERVE' | 'CAUTION' | 'WEAK';
 
 export interface ScoreBreakdown {
   trend: number;

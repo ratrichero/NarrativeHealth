@@ -1,0 +1,784 @@
+# 📁 02_Agent_Work_Pack_P1/
+
+## Agent A-P1: `A_P1_Database.md`
+
+```markdown
+# Agent A-P1: Database Migration P1
+# Depends on: P0 complete
+
+═══════════════════════════════════════════════════════════
+TASK 1: indicators table
+═══════════════════════════════════════════════════════════
+
+File: drizzle/migrations/0005_add_indicators.sql
+
+CREATE TABLE IF NOT EXISTS indicators (
+  id              SERIAL PRIMARY KEY,
+  coin_id         INTEGER NOT NULL REFERENCES coins(id) ON DELETE CASCADE,
+  date            DATE NOT NULL,
+  timeframe       VARCHAR(10) NOT NULL,
+  indicator_type  VARCHAR(50) NOT NULL,
+  indicator_value DECIMAL(20,8),
+  indicator_meta  JSONB,
+  source          VARCHAR(30),
+  calculated_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+  CONSTRAINT indicators_unique
+    UNIQUE(coin_id, date, timeframe, indicator_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_indicators_coin_date
+  ON indicators(coin_id, date);
+CREATE INDEX IF NOT EXISTS idx_indicators_type
+  ON indicators(coin_id, indicator_type, date DESC);
+
+═══════════════════════════════════════════════════════════
+TASK 2: recommendation_rules table
+═══════════════════════════════════════════════════════════
+
+File: drizzle/migrations/0006_add_recommendation_rules.sql
+
+CREATE TABLE IF NOT EXISTS recommendation_rules (
+  id               SERIAL PRIMARY KEY,
+  rule_version_id  INTEGER NOT NULL REFERENCES rule_versions(id),
+  priority         INTEGER NOT NULL DEFAULT 50,
+  signal           VARCHAR(20) NOT NULL,
+  logic_operator   VARCHAR(5) NOT NULL DEFAULT 'AND'
+    CHECK (logic_operator IN ('AND', 'OR')),
+  conditions       JSONB NOT NULL DEFAULT '[]',
+  reason_template  TEXT NOT NULL DEFAULT '',
+  is_active        BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at       TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rec_rules_version_active
+  ON recommendation_rules(rule_version_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_rec_rules_priority
+  ON recommendation_rules(priority DESC);
+
+-- Seed default rules cho version 1
+-- (Insert JSON từ spec section 4.3)
+INSERT INTO recommendation_rules
+  (rule_version_id, priority, signal, logic_operator, conditions, reason_template)
+SELECT
+  rv.id, r.priority, r.signal, r.logic_operator,
+  r.conditions::jsonb, r.reason_template
+FROM rule_versions rv,
+(VALUES
+  (100, 'STRONG_WATCH', 'AND',
+   '[{"field":"health","operator":">=","value":85},{"field":"trend","operator":">=","value":75},{"field":"derivative","operator":">=","value":70},{"field":"confidence","operator":">=","value":60}]',
+   'Strong health ({health}) with solid trend ({trend}) and derivatives ({derivative})'
+  ),
+  (90, 'WATCH', 'AND',
+   '[{"field":"health","operator":">=","value":75},{"field":"confidence","operator":">=","value":50}]',
+   'Good health ({health}) with adequate confidence ({confidence})'
+  ),
+  (80, 'WATCH', 'AND',
+   '[{"field":"health","operator":">=","value":65},{"field":"derivative","operator":">=","value":85},{"field":"trend","operator":">=","value":70}]',
+   'Moderate health but strong derivatives ({derivative}) suggest accumulation'
+  ),
+  (70, 'OBSERVE', 'AND',
+   '[{"field":"health","operator":">=","value":55},{"field":"health","operator":"<","value":75}]',
+   'Moderate health ({health}), watching for trend direction'
+  ),
+  (60, 'CAUTION', 'OR',
+   '[{"field":"health","operator":"<","value":50},{"field":"confidence","operator":"<","value":30}]',
+   'Low health ({health}) or insufficient data confidence ({confidence})'
+  ),
+  (10, 'WEAK', 'AND',
+   '[{"field":"health","operator":"<","value":40}]',
+   'Weak health score ({health}), avoid or reduce exposure'
+  )
+) AS r(priority, signal, logic_operator, conditions, reason_template)
+WHERE rv.version = 1
+ON CONFLICT DO NOTHING;
+
+═══════════════════════════════════════════════════════════
+TASK 3: Morning Snapshot Normalized Tables
+═══════════════════════════════════════════════════════════
+
+File: drizzle/migrations/0007_add_snapshot_normalized.sql
+
+CREATE TABLE IF NOT EXISTS morning_snapshot_headers (
+  id               SERIAL PRIMARY KEY,
+  date             DATE NOT NULL UNIQUE,
+  total_coins      INTEGER,
+  avg_health_score DECIMAL(5,2),
+  top_narrative_id INTEGER REFERENCES narratives(id),
+  alert_count      INTEGER DEFAULT 0,
+  rule_version_id  INTEGER REFERENCES rule_versions(id),
+  timezone         VARCHAR(50) DEFAULT 'Asia/Ho_Chi_Minh',
+  created_at       TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS morning_snapshot_coins (
+  id           SERIAL PRIMARY KEY,
+  snapshot_id  INTEGER NOT NULL
+    REFERENCES morning_snapshot_headers(id) ON DELETE CASCADE,
+  coin_id      INTEGER NOT NULL REFERENCES coins(id),
+  health_score DECIMAL(5,2),
+  score_change DECIMAL(5,2),
+  signal       VARCHAR(20),
+  confidence   DECIMAL(5,2),
+  UNIQUE(snapshot_id, coin_id)
+);
+
+CREATE TABLE IF NOT EXISTS morning_snapshot_narratives (
+  id              SERIAL PRIMARY KEY,
+  snapshot_id     INTEGER NOT NULL
+    REFERENCES morning_snapshot_headers(id) ON DELETE CASCADE,
+  narrative_id    INTEGER NOT NULL REFERENCES narratives(id),
+  health_score    DECIMAL(5,2),
+  score_change    DECIMAL(5,2),
+  coin_count      INTEGER,
+  top_coin_id     INTEGER REFERENCES coins(id),
+  weakest_coin_id INTEGER REFERENCES coins(id),
+  weighting_method VARCHAR(20),
+  UNIQUE(snapshot_id, narrative_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snap_coins_snapshot
+  ON morning_snapshot_coins(snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_snap_narratives_snapshot
+  ON morning_snapshot_narratives(snapshot_id);
+
+═══════════════════════════════════════════════════════════
+TASK 4: Feature Provenance
+═══════════════════════════════════════════════════════════
+
+File: drizzle/migrations/0008_alter_features_provenance.sql
+
+ALTER TABLE features
+  ADD COLUMN IF NOT EXISTS source_provenance JSONB,
+  ADD COLUMN IF NOT EXISTS calculated_at     TIMESTAMP;
+
+UPDATE features
+  SET calculated_at = created_at
+  WHERE calculated_at IS NULL;
+
+═══════════════════════════════════════════════════════════
+TASK 5: Drizzle Schema Updates
+═══════════════════════════════════════════════════════════
+
+Thêm vào src/lib/db/schema.ts:
+
+export const indicators = pgTable('indicators', {
+  id:             serial('id').primaryKey(),
+  coinId:         integer('coin_id').notNull().references(() => coins.id),
+  date:           date('date').notNull(),
+  timeframe:      varchar('timeframe', { length: 10 }).notNull(),
+  indicatorType:  varchar('indicator_type', { length: 50 }).notNull(),
+  indicatorValue: decimal('indicator_value', { precision: 20, scale: 8 }),
+  indicatorMeta:  jsonb('indicator_meta'),
+  source:         varchar('source', { length: 30 }),
+  calculatedAt:   timestamp('calculated_at').notNull().defaultNow(),
+});
+
+export const recommendationRules = pgTable('recommendation_rules', {
+  id:             serial('id').primaryKey(),
+  ruleVersionId:  integer('rule_version_id').notNull()
+    .references(() => ruleVersions.id),
+  priority:       integer('priority').notNull().default(50),
+  signal:         varchar('signal', { length: 20 }).notNull(),
+  logicOperator:  varchar('logic_operator', { length: 5 })
+    .notNull().default('AND'),
+  conditions:     jsonb('conditions').notNull(),
+  reasonTemplate: text('reason_template').notNull(),
+  isActive:       boolean('is_active').notNull().default(true),
+  createdAt:      timestamp('created_at').defaultNow(),
+});
+
+export const morningSnapshotHeaders = pgTable('morning_snapshot_headers', {
+  id:             serial('id').primaryKey(),
+  date:           date('date').notNull().unique(),
+  totalCoins:     integer('total_coins'),
+  avgHealthScore: decimal('avg_health_score', { precision: 5, scale: 2 }),
+  topNarrativeId: integer('top_narrative_id').references(() => narratives.id),
+  alertCount:     integer('alert_count').default(0),
+  ruleVersionId:  integer('rule_version_id').references(() => ruleVersions.id),
+  timezone:       varchar('timezone', { length: 50 })
+    .default('Asia/Ho_Chi_Minh'),
+  createdAt:      timestamp('created_at').defaultNow(),
+});
+
+export const morningSnapshotCoins = pgTable('morning_snapshot_coins', {
+  id:          serial('id').primaryKey(),
+  snapshotId:  integer('snapshot_id').notNull()
+    .references(() => morningSnapshotHeaders.id),
+  coinId:      integer('coin_id').notNull().references(() => coins.id),
+  healthScore: decimal('health_score', { precision: 5, scale: 2 }),
+  scoreChange: decimal('score_change', { precision: 5, scale: 2 }),
+  signal:      varchar('signal', { length: 20 }),
+  confidence:  decimal('confidence', { precision: 5, scale: 2 }),
+});
+
+export const morningSnapshotNarratives = pgTable('morning_snapshot_narratives', {
+  id:             serial('id').primaryKey(),
+  snapshotId:     integer('snapshot_id').notNull()
+    .references(() => morningSnapshotHeaders.id),
+  narrativeId:    integer('narrative_id').notNull()
+    .references(() => narratives.id),
+  healthScore:    decimal('health_score', { precision: 5, scale: 2 }),
+  scoreChange:    decimal('score_change', { precision: 5, scale: 2 }),
+  coinCount:      integer('coin_count'),
+  topCoinId:      integer('top_coin_id').references(() => coins.id),
+  weakestCoinId:  integer('weakest_coin_id').references(() => coins.id),
+  weightingMethod: varchar('weighting_method', { length: 20 }),
+});
+
+═══════════════════════════════════════════════════════════
+DELIVERABLES
+═══════════════════════════════════════════════════════════
+
+□ 0005_add_indicators.sql
+□ 0006_add_recommendation_rules.sql
+□ 0007_add_snapshot_normalized.sql
+□ 0008_alter_features_provenance.sql
+□ Drizzle schema updated (all 4 new tables)
+□ npx drizzle-kit push → success
+□ Default rules seeded (6 rules for version 1)
+□ Rollback script for P1 migrations
+□ Report: "A-P1-DONE"
+```
+
+---
+
+## Agent B-P1: `B_P1_Services.md`
+
+```markdown
+# Agent B-P1: Service Layer P1
+# Depends on: A-P1-DONE
+
+═══════════════════════════════════════════════════════════
+TASK 1: Indicator Engine Service
+═══════════════════════════════════════════════════════════
+
+File MỚI: src/lib/services/indicator.service.ts
+
+CLASS: IndicatorService
+
+METHOD: calculateAndSave(
+  data: KlineData[],
+  coinId: number,
+  date: string,
+  timeframe: string,
+  source: string
+): Promise<void>
+
+  Calculate indicators từ KlineData:
+    EMA_9:   ema(closes, 9).at(-1)
+    EMA_21:  ema(closes, 21).at(-1)
+    EMA_50:  ema(closes, 50).at(-1)
+    EMA_200: ema(closes, 200).at(-1)
+    RSI_14:  rsi(closes, 14).at(-1)
+    ADX_14:  adxFull(data, 14).adx.at(-1)
+    MACD:    value=macdLine.at(-1), meta={signal, histogram}
+    BB_20:   value=middle.at(-1), meta={upper, lower, pctB}
+    ATR_14:  atr(data, 14).at(-1)
+    VWAP_20: vwapRollingAnalysis(...).value
+
+  UPSERT vào indicators table (ON CONFLICT UPDATE)
+  Use INSERT ... ON CONFLICT (coin_id, date, timeframe, indicator_type)
+  DO UPDATE SET indicator_value=..., calculated_at=NOW()
+
+METHOD: getIndicators(
+  coinId: number,
+  date: string,
+  timeframe?: string
+): Promise<IndicatorRecord[]>
+
+METHOD: getIndicatorHistory(
+  coinId: number,
+  indicatorType: string,
+  days: number
+): Promise<Array<{ date: string; value: number | null }>>
+
+Export singleton: export const indicatorService = new IndicatorService();
+
+═══════════════════════════════════════════════════════════
+TASK 2: Rule Engine Service
+═══════════════════════════════════════════════════════════
+
+File MỚI: src/lib/services/rule-engine.service.ts
+
+CLASS: RuleEngineService
+
+METHOD: getRulesForVersion(versionId: number): Promise<RecommendationRule[]>
+  - Query recommendation_rules WHERE rule_version_id=? AND is_active=true
+  - ORDER BY priority DESC
+
+METHOD: evaluate(
+  scores: ScoreInput,
+  versionId: number
+): Promise<RecommendationResult>
+
+  1. Get rules for version
+  2. For each rule (sorted by priority DESC):
+     a. Skip if !isActive
+     b. Evaluate all conditions based on logicOperator
+     c. If matches: format reason, return result
+  3. If no match: return fallback OBSERVE
+
+METHOD: formatReason(template: string, scores: ScoreInput): string
+  Replace {health} with scores.health.toFixed(1)
+  Replace {trend} with scores.trend.toFixed(1)
+  etc.
+
+METHOD: createRule(
+  input: CreateRuleInput,
+  ruleVersionId: number
+): Promise<RecommendationRule>
+  - Validate: priority > 0
+  - Validate: conditions array not empty
+  - Validate: signal is valid value
+  - Insert and return
+
+METHOD: updateRule(id: number, updates: Partial<CreateRuleInput>): Promise<RecommendationRule>
+METHOD: deactivateRule(id: number): Promise<void>
+
+CRITICAL BEHAVIOR:
+  - evaluateCondition(scores, condition) phải return false nếu field không tồn tại
+  - Không throw khi field missing, chỉ return false
+  - AND: tất cả conditions phải true
+  - OR: ít nhất 1 condition phải true
+  - Nếu rules = [] → fallback OBSERVE
+
+Export singleton: export const ruleEngineService = new RuleEngineService();
+
+═══════════════════════════════════════════════════════════
+TASK 3: Morning Snapshot Service (Normalized)
+═══════════════════════════════════════════════════════════
+
+File MỚI: src/lib/services/snapshot.service.ts
+
+CLASS: SnapshotService
+
+METHOD: createDailySnapshot(
+  date: string,
+  coinScores: CoinScoreData[],
+  narrativeScores: NarrativeScoreData[],
+  ruleVersionId: number
+): Promise<number>   // returns snapshot header ID
+
+  1. Check existing: if header for date exists → return existing id
+  2. Insert morning_snapshot_headers
+  3. Insert morning_snapshot_coins (one row per coin)
+  4. Insert morning_snapshot_narratives (one row per narrative)
+  5. Return header id
+
+METHOD: getSnapshotByDate(date: string): Promise<FullSnapshot | null>
+  - Join header + coins + narratives
+  - Return combined object
+
+METHOD: getSnapshotHistory(days: number): Promise<SnapshotSummary[]>
+  - Return header records with top narrative name
+
+METHOD: getNarrativeHistory(
+  narrativeId: number,
+  days: number
+): Promise<NarrativeSnapshotPoint[]>
+  - Join morning_snapshot_narratives + morning_snapshot_headers
+  - WHERE narrative_id=? AND date >= X
+  - ORDER BY date ASC
+
+METHOD: getCoinHistory(
+  coinId: number,
+  days: number
+): Promise<CoinSnapshotPoint[]>
+  - Similar but for coins
+
+Export singleton: export const snapshotService = new SnapshotService();
+
+═══════════════════════════════════════════════════════════
+TASK 4: Update Refresh Pipeline
+═══════════════════════════════════════════════════════════
+
+Tìm refresh pipeline, THÊM:
+
+1. After collecting kline data for each coin:
+   await indicatorService.calculateAndSave(klines, coinId, date, '1d', source);
+   await indicatorService.calculateAndSave(klines4h, coinId, date, '4h', source);
+
+2. Replace old recommendation logic với rule engine:
+   const recommendation = await ruleEngineService.evaluate({
+     health:     healthScore,
+     trend:      features.trend_score,
+     derivative: features.derivative_score,
+     volume:     features.volume_score,
+     momentum:   features.momentum_score,
+     confidence: features.confidence_score,
+   }, activeVersion.id);
+
+3. Replace old snapshot với normalized:
+   await snapshotService.createDailySnapshot(
+     date, coinScoresList, narrativeScoresList, activeVersion.id
+   );
+
+4. Add feature provenance:
+   const provenance = buildProvenance(sources, indicators, calculatedAt);
+   // Save to features.source_provenance
+
+═══════════════════════════════════════════════════════════
+DELIVERABLES
+═══════════════════════════════════════════════════════════
+
+□ src/lib/services/indicator.service.ts
+□ src/lib/services/rule-engine.service.ts
+□ src/lib/services/snapshot.service.ts
+□ Refresh pipeline updated (3 points above)
+□ Unit tests cho rule engine (AND/OR/priority/fallback/missing field)
+□ Unit tests cho indicator service (upsert behavior)
+□ Unit tests cho snapshot service (create + query)
+□ npx tsc --noEmit → 0 errors
+□ Report: "B-P1-DONE"
+```
+
+---
+
+## Agent C-P1: `C_P1_APIs.md`
+
+```markdown
+# Agent C-P1: API Routes P1
+# Depends on: A-P1-DONE + B-P1-DONE
+
+═══════════════════════════════════════════════════════════
+ENDPOINTS TO CREATE
+═══════════════════════════════════════════════════════════
+
+1. GET /api/indicators/[coinId]
+   Params: date (YYYY-MM-DD), timeframe (1d/4h/1h/15m)
+   → { success, data: IndicatorRecord[] }
+
+2. GET /api/indicators/[coinId]/history
+   Params: days (default 30), type (indicator_type string)
+   → { success, data: Array<{date, value}> }
+
+3. GET /api/admin/recommendation-rules
+   → { success, data: RecommendationRule[] }
+
+4. POST /api/admin/recommendation-rules
+   Body: { priority, signal, logicOperator, conditions, reasonTemplate }
+   Validate:
+     - priority: number > 0
+     - signal: one of STRONG_WATCH/WATCH/OBSERVE/CAUTION/WEAK
+     - logicOperator: 'AND' | 'OR'
+     - conditions: array with at least 1 item
+     - each condition has field/operator/value
+   → 201 { success, data: RecommendationRule }
+   → 422 if validation fails
+
+5. PUT /api/admin/recommendation-rules/[id]
+   → 200 { success, data: updated rule }
+   → 404 if not found
+
+6. DELETE /api/admin/recommendation-rules/[id]
+   (soft delete: sets is_active = false)
+   → 200 { success, data: { deactivated: true } }
+
+7. GET /api/snapshots
+   Params: limit (default 30, max 90)
+   → { success, data: SnapshotSummary[] }
+
+8. GET /api/snapshots/[date]/coins
+   Date format: YYYY-MM-DD
+   → { success, data: CoinSnapshotPoint[] }
+
+9. GET /api/snapshots/[date]/narratives
+   → { success, data: NarrativeSnapshotPoint[] }
+
+═══════════════════════════════════════════════════════════
+VALIDATION RULES
+═══════════════════════════════════════════════════════════
+
+Rule conditions validation:
+  VALID fields: health, trend, derivative, volume, momentum, confidence
+  VALID operators: >, >=, <, <=, ==, !=
+  VALID value: number between 0 and 100
+
+Signal validation:
+  VALID: STRONG_WATCH, WATCH, OBSERVE, CAUTION, WEAK
+
+Date validation:
+  Must be YYYY-MM-DD format
+  Must be valid calendar date
+  Must not be in future
+
+═══════════════════════════════════════════════════════════
+DELIVERABLES
+═══════════════════════════════════════════════════════════
+
+□ 9 route files created
+□ All validation implemented
+□ Manual tests cho tất cả endpoints
+□ Error cases tested (bad input, not found, etc.)
+□ Report: "C-P1-DONE"
+```
+
+---
+
+## Agent D-P1: `D_P1_Frontend.md`
+
+```markdown
+# Agent D-P1: Frontend UI P1
+# Depends on: C-P1-DONE
+
+═══════════════════════════════════════════════════════════
+TASK 1: Rule Engine Admin UI
+═══════════════════════════════════════════════════════════
+
+Thêm "Rules" sub-tab trong Admin → Rule Versions tab:
+
+RulesEditor component:
+  - List all rules cho active version
+  - Hiển thị: priority, signal, logic, conditions count, reason template
+  - Sort by priority DESC
+  - Toggle active/inactive
+  - "Add Rule" button → modal form
+
+AddRuleModal:
+  Fields:
+    - Priority (number input)
+    - Signal (select: STRONG_WATCH/WATCH/OBSERVE/CAUTION/WEAK)
+    - Logic (radio: AND / OR)
+    - Conditions (dynamic list):
+        + Add Condition button
+        + Each condition: [field dropdown] [operator dropdown] [value input]
+    - Reason Template (textarea, show {health} {trend} etc. as hints)
+  
+  Validation:
+    - Priority > 0
+    - At least 1 condition
+    - All condition fields filled
+
+RuleCard component:
+  Display:
+    Priority: [100]  Signal: [STRONG_WATCH]  Logic: [AND]
+    
+    Conditions:
+      ✓ health >= 85
+      ✓ trend >= 75
+      ✓ derivative >= 70
+      ✓ confidence >= 60
+    
+    Reason: "Strong health ({health}) with solid trend..."
+    
+    [Edit] [Deactivate]
+
+═══════════════════════════════════════════════════════════
+TASK 2: Indicator Detail Panel
+═══════════════════════════════════════════════════════════
+
+Thêm vào Coin Detail page:
+
+IndicatorPanel component:
+  Title: "Indicator Values (1D)"
+  
+  Grid layout (2 columns):
+    Trend Indicators:
+      EMA 9:   [value]  [distance from price %]
+      EMA 21:  [value]
+      EMA 50:  [value]
+      EMA 200: [value]
+      ADX 14:  [value]  [label: Strong/Weak Trend]
+    
+    Momentum:
+      RSI 14:  [value]  [overbought/oversold badge]
+      MACD:    [value]  [signal, histogram]
+    
+    Volatility:
+      BB 20:   [%B value]  [Upper/Lower band]
+      ATR 14:  [value]
+    
+    Volume:
+      VWAP:    [value]  [above/below label]
+
+Fetch from: GET /api/indicators/[coinId]?date=today&timeframe=1d
+
+═══════════════════════════════════════════════════════════
+TASK 3: Snapshot History Page
+═══════════════════════════════════════════════════════════
+
+Page MỚI: src/app/snapshots/page.tsx
+
+Layout:
+  Header: "Morning Snapshot History"
+  
+  Date selector (last 30 days dropdown)
+  
+  When date selected:
+    Narrative Summary cards (health score, change, top coin)
+    Coin table (symbol, health, signal, change)
+
+Fetch:
+  GET /api/snapshots?limit=30 → populate date dropdown
+  GET /api/snapshots/[date]/narratives → narrative cards
+  GET /api/snapshots/[date]/coins → coin table
+
+═══════════════════════════════════════════════════════════
+TASK 4: P1E - Fix analyzer.ts imports
+═══════════════════════════════════════════════════════════
+
+File: src/lib/technical-analysis/analyzer.ts
+
+FIND:
+  import {
+    KlineData,
+    TechnicalAnalysisResult,
+    Timeframe,
+    SignalType,
+    TIMEFRAME_WEIGHTS,
+    TimeframeResult,
+  } from "./types";
+
+REPLACE WITH:
+  import {
+    KlineData,
+    TechnicalAnalysisResult,
+    Timeframe,
+    SignalType,
+    DetailedSignal,
+    Direction,
+    TIMEFRAME_WEIGHTS,
+    TimeframeResult,
+  } from "./types";
+
+FIND (in applyAdjustments):
+  const directions: Record<string, string> = Object.fromEntries(
+
+REPLACE:
+  const dirs: Record<string, Direction> = Object.fromEntries(
+
+FIND (collect directions):
+  const directions: Record<string, string> = {};
+
+REPLACE:
+  const directions: Record<string, DetailedSignal> = {};
+
+Verify: npx tsc --noEmit → 0 errors
+
+═══════════════════════════════════════════════════════════
+DELIVERABLES
+═══════════════════════════════════════════════════════════
+
+□ Admin Rule Engine UI (list + add + toggle)
+□ AddRuleModal with dynamic conditions
+□ Indicator Panel trên Coin Detail
+□ Snapshot History page (/snapshots)
+□ analyzer.ts import fix
+□ No TypeScript errors
+□ No console errors in browser
+□ Report: "D-P1-DONE"
+```
+
+---
+
+# 📄 03_Review_Pack_P1.md
+
+```markdown
+# P1 Review Pack
+# Run before merging P1 branch
+
+═══════════════════════════════════════════════════════════
+PRE-REVIEW COMMANDS
+═══════════════════════════════════════════════════════════
+
+npx tsc --noEmit        # 0 errors
+npm run build           # success
+npm test                # all pass
+npx drizzle-kit push --dry-run  # no destructive ops
+
+═══════════════════════════════════════════════════════════
+DATABASE REVIEW
+═══════════════════════════════════════════════════════════
+
+□ indicators table exists với UNIQUE constraint
+□ recommendation_rules table exists
+□ 6 default rules seeded cho version 1
+□ morning_snapshot_headers/coins/narratives tables exist
+□ features.source_provenance column added
+□ All indexes created
+□ Rollback script exists
+
+═══════════════════════════════════════════════════════════
+INDICATOR ENGINE REVIEW
+═══════════════════════════════════════════════════════════
+
+□ calculateAndSave uses UPSERT (not plain INSERT)
+□ All 10 indicator types calculated
+□ MACD saves meta (signal + histogram)
+□ Source field populated correctly
+□ No duplicate indicators per date/timeframe/type
+
+═══════════════════════════════════════════════════════════
+RULE ENGINE REVIEW
+═══════════════════════════════════════════════════════════
+
+□ AND logic: ALL conditions required
+□ OR logic: ANY condition sufficient
+□ Priority sorted DESC before evaluation
+□ First matching rule wins (no double-matching)
+□ Missing field returns false (NOT throw)
+□ Fallback OBSERVE when no rule matches
+□ reasonTemplate uses correct format tokens
+□ Deactivated rules are skipped
+
+Test specific scenarios:
+□ health=87, trend=78, deriv=72, conf=65 → STRONG_WATCH
+□ health=68, deriv=87, trend=71 → WATCH (rule priority 80)
+□ health=45 → WEAK (priority 10)
+□ health=50, confidence=25 → CAUTION (OR rule)
+
+═══════════════════════════════════════════════════════════
+SNAPSHOT NORMALIZATION REVIEW
+═══════════════════════════════════════════════════════════
+
+□ Header created once per date (unique constraint)
+□ Coin records: one row per active coin per snapshot
+□ Narrative records: one row per narrative per snapshot
+□ Historical query returns ASC date order
+□ Old morning_snapshots table still populated (backward compat)
+
+═══════════════════════════════════════════════════════════
+API REVIEW
+═══════════════════════════════════════════════════════════
+
+□ All 9 new endpoints respond correctly
+□ Rule condition validation rejects invalid fields/operators
+□ Signal validation rejects unknown signals
+□ Date format validation works
+□ Pagination/limit works for snapshot history
+
+═══════════════════════════════════════════════════════════
+UI REVIEW
+═══════════════════════════════════════════════════════════
+
+□ Rule Engine tab in Admin works
+□ AddRuleModal validates before submit
+□ Dynamic conditions add/remove works
+□ Indicator Panel shows values
+□ Snapshot History page loads
+□ analyzer.ts imports fixed (no TS errors)
+
+═══════════════════════════════════════════════════════════
+REGRESSION
+═══════════════════════════════════════════════════════════
+
+□ Dashboard loads correctly
+□ Refresh still works end-to-end
+□ Existing recommendations still generated
+□ Health scores unchanged in calculation
+
+═══════════════════════════════════════════════════════════
+SIGN-OFF
+═══════════════════════════════════════════════════════════
+
+Reviewed by: _______________  Date: _______________
+P1A Indicator Table:    [ ] PASS  [ ] FAIL
+P1B Rule Engine:        [ ] PASS  [ ] FAIL
+P1C Snapshot Normal:    [ ] PASS  [ ] FAIL
+P1D Feature Provenance: [ ] PASS  [ ] FAIL
+P1E Import Fix:         [ ] PASS  [ ] FAIL
+
+Approved to merge: [ ] YES  [ ] NO
+```
+
+---

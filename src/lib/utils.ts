@@ -14,6 +14,27 @@ export function formatNumber(value: number | null | undefined, decimals = 2): st
   });
 }
 
+// Format indicator value with smart decimal places based on magnitude
+export function formatIndicatorValue(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  
+  const absValue = Math.abs(value);
+  
+  if (absValue === 0) return "0";
+  
+  let decimals = 2;
+  if (absValue < 0.0001) decimals = 8;
+  else if (absValue < 0.01) decimals = 6;
+  else if (absValue < 0.1) decimals = 4;
+  else if (absValue < 1) decimals = 4;
+  else decimals = 2;
+  
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
 // Format percentage
 export function formatPercent(value: number | null | undefined, decimals = 2): string {
   if (value === null || value === undefined) return "-";

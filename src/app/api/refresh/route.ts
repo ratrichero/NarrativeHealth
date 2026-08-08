@@ -15,6 +15,11 @@ import {
   schedulerLogs,
   scoreConfigs,
   morningSnapshots,
+  indicators,
+  recommendationRules,
+  morningSnapshotHeaders,
+  morningSnapshotCoins,
+  morningSnapshotNarratives,
 } from "@/db/schema";
 import { eq, and, desc, sql, gte } from "drizzle-orm";
 import {
@@ -32,7 +37,11 @@ import { fetchCoinGeckoMarkets } from "@/lib/collectors/coingecko";
 import { runFeatureEngine, calculateHealthScore, getRecommendationSignal, generateRecommendationReason } from "@/lib/features/engine";
 import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
 import { ruleVersionService } from "@/lib/services/rule-version.service";
+import { indicatorService } from "@/lib/services/indicator.service";
+import { ruleEngineService } from "@/lib/services/rule-engine.service";
+import { snapshotService } from "@/lib/services/snapshot.service";
 import { calculateWeightedNarrativeHealth, type CoinHealthData } from "@/lib/scoring/narrative-health";
+import { KlineData } from "@/lib/technical-analysis/types";
 
 // Business timezone constant (must match utils.ts)
 const BUSINESS_TIMEZONE = "Asia/Ho_Chi_Minh";
@@ -177,21 +186,12 @@ export async function POST(request: NextRequest) {
       coingecko: 0.2,
     };
 
-    const recThresholds = {
-      strong_watch: 90,
-      watch: 80,
-      observe: 65,
-    };
-
     for (const config of configsData) {
       if (config.configKey === "health_weights" && typeof config.configValue === "object") {
         Object.assign(healthWeights, config.configValue);
       }
       if (config.configKey === "confidence_weights" && typeof config.configValue === "object") {
         Object.assign(confidenceWeights, config.configValue);
-      }
-      if (config.configKey === "recommendation_thresholds" && typeof config.configValue === "object") {
-        Object.assign(recThresholds, config.configValue);
       }
     }
 
@@ -225,6 +225,7 @@ export async function POST(request: NextRequest) {
         // Collect price data - prioritize Futures if available, otherwise use Spot
         let priceSource = "binance_spot";
         let klines: Awaited<ReturnType<typeof fetchBinanceSpotKlines>> = [];
+        let klines4h: Awaited<ReturnType<typeof fetchBinanceSpotKlines>> = [];
         let volume24h: number | null = null;
         let marketCapFromCoingecko: number | null = null;
 
@@ -245,6 +246,12 @@ export async function POST(request: NextRequest) {
             if (klines.length > 0) {
               binanceFuturesOk = true;
               console.log(`Successfully fetched ${klines.length} futures klines for ${coin.symbol}`);
+
+              try {
+                klines4h = await fetchBinanceFuturesKlines(coin.binanceFuturesSymbol, 100, "4h");
+              } catch (e) {
+                console.warn(`Failed to fetch 4h futures klines for ${coin.symbol}`);
+              }
 
               // Get 24h volume from futures ticker
               const futuresTicker = await fetchBinanceFuturesTicker(coin.binanceFuturesSymbol);
@@ -306,6 +313,12 @@ export async function POST(request: NextRequest) {
                   binanceSpotOk = true;
                   console.log(`Fallback: Successfully fetched ${klines.length} spot klines for ${coin.symbol}`);
 
+                  try {
+                    klines4h = await fetchBinanceSpotKlines(coin.binanceSpotSymbol, 100, "4h");
+                  } catch (e) {
+                    console.warn(`Failed to fetch 4h spot klines for ${coin.symbol}`);
+                  }
+
                   // Get 24h volume from spot ticker
                   const spotTicker = await fetchBinanceSpotTicker(coin.binanceSpotSymbol);
                   if (spotTicker) {
@@ -345,6 +358,12 @@ export async function POST(request: NextRequest) {
             if (klines.length > 0) {
               binanceSpotOk = true;
               console.log(`Successfully fetched ${klines.length} spot klines for ${coin.symbol}`);
+
+              try {
+                klines4h = await fetchBinanceSpotKlines(coin.binanceSpotSymbol, 100, "4h");
+              } catch (e) {
+                console.warn(`Failed to fetch 4h spot klines for ${coin.symbol}`);
+              }
 
               // Get 24h volume from spot ticker
               const spotTicker = await fetchBinanceSpotTicker(coin.binanceSpotSymbol);
@@ -482,6 +501,24 @@ export async function POST(request: NextRequest) {
           recordsCollected: binanceSpotOk ? 200 : 0,
         });
 
+        // Calculate indicators (P1A)
+        if (klines.length > 0) {
+          try {
+            const { convertBinanceKlines } = await import("@/lib/technical-analysis/indicators");
+            await indicatorService.calculateAndSave(convertBinanceKlines(klines), coin.id, today, '1d', priceSource);
+          } catch (e) {
+            console.error(`Failed to calculate 1d indicators for ${coin.symbol}:`, e);
+          }
+        }
+        if (klines4h.length > 0) {
+          try {
+            const { convertBinanceKlines } = await import("@/lib/technical-analysis/indicators");
+            await indicatorService.calculateAndSave(convertBinanceKlines(klines4h), coin.id, today, '4h', priceSource);
+          } catch (e) {
+            console.error(`Failed to calculate 4h indicators for ${coin.symbol}:`, e);
+          }
+        }
+
         // Calculate features
         const priceData = await db
           .select({
@@ -523,6 +560,34 @@ export async function POST(request: NextRequest) {
             }
           );
 
+          const provenance = {
+            trend: {
+              sources: [binanceSpotOk ? 'binance_spot' : null, binanceFuturesOk ? 'binance_futures' : null].filter(Boolean) as string[],
+              indicators: ['EMA_9', 'EMA_21', 'EMA_50', 'EMA_200', 'ADX_14'],
+              calculated_at: new Date().toISOString(),
+              confidence: featureResult.confidence_score,
+            },
+            derivative: {
+              sources: [binanceFuturesOk ? 'binance_futures' : null].filter(Boolean) as string[],
+              indicators: ['OI_CHANGE', 'FUNDING_RATE'],
+              calculated_at: new Date().toISOString(),
+              confidence: featureResult.confidence_score,
+              missing: [!binanceFuturesOk ? 'LIQUIDATION' : null].filter(Boolean) as string[],
+            },
+            volume: {
+              sources: [binanceSpotOk ? 'binance_spot' : null, binanceFuturesOk ? 'binance_futures' : null].filter(Boolean) as string[],
+              indicators: ['VOLUME_RATIO', 'OBV'],
+              calculated_at: new Date().toISOString(),
+              confidence: featureResult.confidence_score,
+            },
+            momentum: {
+              sources: [binanceSpotOk ? 'binance_spot' : null, binanceFuturesOk ? 'binance_futures' : null].filter(Boolean) as string[],
+              indicators: ['RSI_14', 'MACD'],
+              calculated_at: new Date().toISOString(),
+              confidence: featureResult.confidence_score,
+            },
+          };
+
           // Save features
           await db
             .insert(features)
@@ -541,6 +606,8 @@ export async function POST(request: NextRequest) {
               confidenceScore: featureResult.confidence_score,
               dataCompleteness: featureResult.data_completeness,
               missingSources: featureResult.missing_sources,
+              sourceProvenance: provenance as any,
+              calculatedAt: new Date(),
             })
             .onConflictDoUpdate({
               target: [features.coinId, features.date, features.versionId],
@@ -556,6 +623,8 @@ export async function POST(request: NextRequest) {
                 confidenceScore: featureResult.confidence_score,
                 dataCompleteness: featureResult.data_completeness,
                 missingSources: featureResult.missing_sources,
+                sourceProvenance: provenance as any,
+                calculatedAt: new Date(),
               },
             });
 
@@ -614,42 +683,45 @@ export async function POST(request: NextRequest) {
               },
             });
 
-          // Generate recommendation
-          const signal = getRecommendationSignal(healthScore, recThresholds);
-          const reason = generateRecommendationReason(
-            signal,
-            featureResult.trend_score,
-            featureResult.derivative_score,
-            featureResult.volume_score,
-            featureResult.momentum_score,
-            featureResult.confidence_score
-          );
+          // Generate recommendation using Rule Engine (P1B)
+          const recommendation = await ruleEngineService.evaluate({
+            health:     healthScore,
+            trend:      featureResult.trend_score,
+            derivative: featureResult.derivative_score,
+            volume:     featureResult.volume_score,
+            momentum:   featureResult.momentum_score,
+            confidence: featureResult.confidence_score,
+          }, activeVersion.id);
 
           await db
             .insert(recommendations)
             .values({
               coinId: coin.id,
               date: today,
-              signal,
-              reason,
+              signal: recommendation.signal,
+              reason: recommendation.reason,
               reasonBreakdown: {
                 trend: featureResult.trend_score,
                 derivative: featureResult.derivative_score,
                 volume: featureResult.volume_score,
                 momentum: featureResult.momentum_score,
+                ruleId: recommendation.ruleId,
+                matched: recommendation.matched,
               },
               ruleVersionId: activeVersion.id,
             })
             .onConflictDoUpdate({
               target: [recommendations.coinId, recommendations.date],
               set: {
-                signal,
-                reason,
+                signal: recommendation.signal,
+                reason: recommendation.reason,
                 reasonBreakdown: {
                   trend: featureResult.trend_score,
                   derivative: featureResult.derivative_score,
                   volume: featureResult.volume_score,
                   momentum: featureResult.momentum_score,
+                  ruleId: recommendation.ruleId,
+                  matched: recommendation.matched,
                 },
                 ruleVersionId: activeVersion.id,
               },
@@ -864,101 +936,55 @@ export async function POST(request: NextRequest) {
       })
       .where(eq(schedulerLogs.id, logEntry.id));
 
-    // Create morning snapshot (only for global refresh)
-    // Policy: Snapshots only created after global manual or scheduled refresh
-    // Narrative/coin refresh do NOT create snapshots to avoid confusion
-    // Snapshot uses business date timezone (Asia/Ho_Chi_Minh)
+    // Create normalized morning snapshot (P1C)
     try {
-      // Get narrative summaries
-      const narrativeSummariesResult = await db
+      const coinHealthRows = await db
         .select({
-          id: narratives.id,
-          name: narratives.name,
-          healthScore: narrativeHealth.healthScore,
-          coinCount: narrativeHealth.coinCount,
+          coinId: healthScores.coinId,
+          healthScore: healthScores.healthScore,
+          scoreChange: healthScores.scoreChange,
+          signal: recommendations.signal,
+          confidence: healthScores.confidenceScore,
         })
-        .from(narrativeHealth)
-        .innerJoin(narratives, eq(narratives.id, narrativeHealth.narrativeId))
-        .where(eq(narrativeHealth.date, today))
-        .orderBy(desc(narrativeHealth.healthScore));
-
-      const narrativeSummaries = narrativeSummariesResult;
-
-      // Get total coin count
-      const totalCoinsResult = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(coins)
-        .where(eq(coins.isActive, true));
-
-      const totalCoins = totalCoinsResult[0]?.count || 0;
-
-      // Calculate average health score
-      const avgHealthScoreResult = await db
-        .select({ avg: sql<number>`avg(${healthScores.healthScore})` })
         .from(healthScores)
+        .leftJoin(recommendations, and(
+          eq(recommendations.coinId, healthScores.coinId),
+          eq(recommendations.date, healthScores.date)
+        ))
         .where(eq(healthScores.date, today));
 
-      const avgHealthScore = avgHealthScoreResult[0]?.avg || 0;
+      const coinScores = coinHealthRows.map(r => ({
+        coinId: r.coinId,
+        healthScore: r.healthScore ?? null,
+        scoreChange: r.scoreChange ?? null,
+        signal: r.signal ?? null,
+          confidence: r.confidence ?? null,
+      }));
 
-      // Get top narrative
-      const topNarrative = narrativeSummaries[0];
-
-      // Count alerts (coins with health score < 65)
-      const alertCountResult = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(healthScores)
-        .where(and(eq(healthScores.date, today), sql`${healthScores.healthScore} < 65`));
-
-      const alertCount = alertCountResult[0]?.count || 0;
-
-      // Determine source status from the coin processing results
-      const binanceSpotAvailable = activeCoins.some(c => c.binanceSpotSymbol);
-      const binanceFuturesAvailable = activeCoins.some(c => c.binanceFuturesSymbol);
-      const coingeckoAvailable = activeCoins.some(c => c.coingeckoId);
-
-      // Build snapshot data
-      const snapshotData = {
-        date: today,
-        narratives: narrativeSummaries,
-        totalCoins,
-        avgHealthScore,
-        topNarrative: topNarrative ? {
-          id: topNarrative.id,
-          name: topNarrative.name,
-          healthScore: topNarrative.healthScore,
-        } : null,
-        alertCount,
-        sourceStatus: {
-          binanceSpot: binanceSpotAvailable,
-          binanceFutures: binanceFuturesAvailable,
-          coingecko: coingeckoAvailable,
-        },
-        timezone: BUSINESS_TIMEZONE,
-      };
-
-      // Upsert morning snapshot
-      await db
-        .insert(morningSnapshots)
-        .values({
-          date: today,
-          snapshotData: snapshotData as any,
-          narrativeCount: narrativeSummaries.length,
-          coinCount: totalCoins,
-          avgHealthScore,
-          topNarrativeId: topNarrative?.id || null,
-          alertCount,
+      const narrativeRows = await db
+        .select({
+          narrativeId: narrativeHealth.narrativeId,
+          healthScore: narrativeHealth.healthScore,
+          scoreChange: narrativeHealth.scoreChange,
+          coinCount: narrativeHealth.coinCount,
+          topCoinId: narrativeHealth.topCoinId,
+          weakestCoinId: narrativeHealth.weakestCoinId,
+          weightingMethod: narrativeHealth.weightingMethod,
         })
-        .onConflictDoUpdate({
-          target: [morningSnapshots.date],
-          set: {
-            snapshotData: snapshotData as any,
-            narrativeCount: narrativeSummaries.length,
-            coinCount: totalCoins,
-            avgHealthScore,
-            topNarrativeId: topNarrative?.id || null,
-            alertCount,
-          },
-        });
+        .from(narrativeHealth)
+        .where(eq(narrativeHealth.date, today));
+
+      const narrativeScores = narrativeRows.map(r => ({
+        narrativeId: r.narrativeId,
+        healthScore: r.healthScore ?? null,
+        scoreChange: r.scoreChange ?? null,
+        coinCount: r.coinCount ?? null,
+        topCoinId: r.topCoinId ?? null,
+        weakestCoinId: r.weakestCoinId ?? null,
+        weightingMethod: r.weightingMethod ?? null,
+      }));
+
+      await snapshotService.createDailySnapshot(today, coinScores, narrativeScores, activeVersion.id);
 
       console.log(`Morning snapshot created for ${today}`);
     } catch (snapshotError) {
