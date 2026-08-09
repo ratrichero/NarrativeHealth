@@ -486,6 +486,73 @@ export const narrativeMomentum = pgTable("narrative_momentum", {
   narrativeIdx: index("narrative_momentum_narrative_idx").on(table.narrativeId),
 }));
 
+// ==================== P3_NARRATIVE_INTELLIGENCE ====================
+export const p3NarrativeIntelligence = pgTable("p3_narrative_intelligence", {
+  id: serial("id").primaryKey(),
+  narrativeId: integer("narrative_id").notNull().references(() => narratives.id, { onDelete: "restrict" }),
+  windowEnd: timestamp("window_end").notNull(),
+  periodStart: timestamp("period_start").notNull(),
+  periodEnd: timestamp("period_end").notNull(),
+  algorithmKey: varchar("algorithm_key", { length: 100 }).notNull(),
+  algorithmVersion: varchar("algorithm_version", { length: 50 }).notNull(),
+  ruleVersionId: integer("rule_version_id").references(() => ruleVersions.id, { onDelete: "restrict" }),
+  featureVersionId: integer("feature_version_id").references(() => featureVersions.id, { onDelete: "restrict" }),
+  scoreConfigId: integer("score_config_id").references(() => scoreConfigs.id, { onDelete: "restrict" }),
+  calculationMode: varchar("calculation_mode", { length: 30 }).notNull().default("observed"),
+  availabilityState: varchar("availability_state", { length: 30 }).notNull(),
+  confidence: decimal("confidence", { precision: 7, scale: 4 }),
+  breadth: decimal("breadth", { precision: 9, scale: 6 }),
+  strongBreadth: decimal("strong_breadth", { precision: 9, scale: 6 }),
+  momentum1d: decimal("momentum_1d", { precision: 12, scale: 6 }),
+  momentum3d: decimal("momentum_3d", { precision: 12, scale: 6 }),
+  momentum7d: decimal("momentum_7d", { precision: 12, scale: 6 }),
+  momentum14d: decimal("momentum_14d", { precision: 12, scale: 6 }),
+  acceleration: decimal("acceleration", { precision: 12, scale: 6 }),
+  relativeStrength1d: decimal("relative_strength_1d", { precision: 12, scale: 6 }),
+  relativeStrength3d: decimal("relative_strength_3d", { precision: 12, scale: 6 }),
+  relativeStrength7d: decimal("relative_strength_7d", { precision: 12, scale: 6 }),
+  relativeStrength14d: decimal("relative_strength_14d", { precision: 12, scale: 6 }),
+  concentrationTop1: decimal("concentration_top1", { precision: 9, scale: 6 }),
+  concentrationTop3: decimal("concentration_top3", { precision: 9, scale: 6 }),
+  regime: varchar("regime", { length: 30 }),
+  rotation: varchar("rotation", { length: 30 }),
+  explanation: jsonb("explanation"),
+  provenance: jsonb("provenance").notNull(),
+  calculatedAt: timestamp("calculated_at").notNull(),
+  persistedAt: timestamp("persisted_at").defaultNow().notNull(),
+}, (table) => ({
+  identityUnique: unique("p3_narrative_intelligence_identity_unique").on(table.narrativeId, table.windowEnd, table.algorithmKey, table.algorithmVersion, table.calculationMode),
+  narrativeWindowIdx: index("p3_narrative_intelligence_narrative_window_idx").on(table.narrativeId, table.windowEnd),
+  algorithmIdx: index("p3_narrative_intelligence_algorithm_idx").on(table.algorithmKey, table.algorithmVersion),
+  windowIdx: index("p3_narrative_intelligence_window_idx").on(table.windowEnd),
+}));
+
+// ==================== P3_CONSTITUENT_SNAPSHOTS ====================
+export const p3ConstituentSnapshots = pgTable("p3_constituent_snapshots", {
+  id: serial("id").primaryKey(),
+  intelligenceId: integer("intelligence_id").notNull().references(() => p3NarrativeIntelligence.id, { onDelete: "restrict" }),
+  capturedAt: timestamp("captured_at").notNull(),
+  membershipSource: varchar("membership_source", { length: 40 }).notNull(),
+  membershipMode: varchar("membership_mode", { length: 30 }).notNull(),
+  memberCount: integer("member_count").notNull(),
+  eligibleCount: integer("eligible_count").notNull(),
+  provenance: jsonb("provenance").notNull(),
+}, (table) => ({
+  intelligenceUnique: unique("p3_constituent_snapshot_intelligence_unique").on(table.intelligenceId),
+  capturedIdx: index("p3_constituent_snapshot_captured_idx").on(table.capturedAt),
+}));
+
+export const p3ConstituentSnapshotMembers = pgTable("p3_constituent_snapshot_members", {
+  snapshotId: integer("snapshot_id").notNull().references(() => p3ConstituentSnapshots.id, { onDelete: "restrict" }),
+  coinId: integer("coin_id").notNull().references(() => coins.id, { onDelete: "restrict" }),
+  membershipState: varchar("membership_state", { length: 30 }).notNull(),
+  inclusionReason: varchar("inclusion_reason", { length: 100 }),
+  availabilityState: varchar("availability_state", { length: 30 }).notNull(),
+  inputManifest: jsonb("input_manifest"),
+}, (table) => ({
+  memberPk: primaryKey({ columns: [table.snapshotId, table.coinId] }),
+  coinIdx: index("p3_constituent_snapshot_members_coin_idx").on(table.coinId),
+}));
 // ==================== DECISION_SIGNALS ====================
 export const decisionSignals = pgTable("decision_signals", {
   id: serial("id").primaryKey(),
