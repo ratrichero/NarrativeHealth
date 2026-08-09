@@ -14,6 +14,7 @@ from backend.models.recommendation import Recommendation
 from backend.models.narrative_health import NarrativeHealth
 from backend.models.morning_snapshot import MorningSnapshot
 from backend.models.score_config import ScoreConfig
+from backend.models.rule_version import RuleVersion
 from backend.models.watchlist import Watchlist
 from backend.models.scheduler_log import SchedulerLog
 
@@ -31,6 +32,7 @@ __all__ = [
     "NarrativeHealth",
     "MorningSnapshot",
     "ScoreConfig",
+    "RuleVersion",
     "Watchlist",
     "SchedulerLog",
 ]

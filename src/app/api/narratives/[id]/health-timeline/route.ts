@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/db";
-import { narrativeHealth, narratives } from "@/db/schema";
+import { db } from "@/lib/db";
+import { narrativeHealth}b/db/schema";
 import { eq, and, gte, asc } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -24,35 +24,7 @@ export async function GET(
     const daysParam = request.nextUrl.searchParams.get("days");
     const days = daysParam
       ? Math.min(Math.max(parseInt(daysParam) || 30, 1), 90)
-      : 30;
-
-    // Get narrative details
-    const [narrative] = await db
-      .select()
-      .from(narratives)
-      .where(eq(narratives.id, narrativeId))
-      .limit(1);
-
-    if (!narrative) {
-      return NextResponse.json(
-        { success: false, error: "Narrative not found" },
-        { status: 404 }
-      );
-    }
-
-    // Calculate since date
-    const since = new Date();
-    since.setDate(since.getDate() - days);
-    const sinceStr = since.toISOString().split("T")[0];
-
-    // Fetch narrative health history
-    const records = await db
-      .select({
-        date: narrativeHealth.date,
-        healthScore: narrativeHealth.healthScore,
-        status: narrativeHealth.status,
-        scoreChange: narrativeHealth.scoreChange,
-        weightingMethod: narrativeHealth.weightingMethod,
+      : 3r    weightingMethod: narrativeHealth.weightingMethod,
       })
       .from(narrativeHealth)
       .where(
@@ -67,7 +39,6 @@ export async function GET(
       success: true,
       data: {
         narrativeId,
-        name: narrative.name,
         points: records.map((r) => ({
           date: r.date,
           healthScore: Number(r.healthScore),
@@ -81,7 +52,6 @@ export async function GET(
     console.error("[GET /api/narratives/[id]/health-timeline]", error);
     return NextResponse.json(
       { success: false, error: "Failed to fetch narrative timeline" },
-      { status: 500 }
-    );
+      { status: 500
   }
 }

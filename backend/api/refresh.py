@@ -11,9 +11,9 @@ from backend.database import get_db
 from backend.models import (
     Coin, CoinNarrative, Narrative, MarketPriceDaily, CoinMetrics,
     SourceStatus, Feature, FeatureVersion, HealthScore, Recommendation,
-    NarrativeHealth, ScoreConfig, SchedulerLog
+    NarrativeHealth, ScoreConfig, RuleVersion, SchedulerLog
 )
-from backend.collectors import BinanceSpotCollector, BinanceFuturesCollector
+from backend.collectors import BinanceSpotCollector, BinanceFuturesCollector, CoinGeckoCollector
 from backend.features import FeatureEngine
 from backend.schemas.dashboard import RefreshResponse
 
@@ -79,15 +79,22 @@ async def refresh_data(db: AsyncSession):
             db.add(feature_version)
             await db.flush()
 
-        # Get configs
-        config_result = await db.execute(
-            select(ScoreConfig).where(ScoreConfig.is_active == True)
+        # Get configs - prefer active rule version weights, fall back to score_configs
+        rv_result = await db.execute(
+            select(RuleVersion).where(RuleVersion.is_active == True)
         )
-        configs = {c.config_key: c.config_value for c in config_result.scalars().all()}
+        active_rule_version = rv_result.scalar_one_or_none()
 
-        health_weights = configs.get("default", {})
-        if not health_weights or "trend" not in health_weights:
-            health_weights = {"trend": 0.35, "derivative": 0.35, "volume": 0.20, "momentum": 0.10}
+        if active_rule_version and active_rule_version.health_weights:
+            health_weights = active_rule_version.health_weights
+        else:
+            config_result = await db.execute(
+                select(ScoreConfig).where(ScoreConfig.is_active == True)
+            )
+            configs = {c.config_key: c.config_value for c in config_result.scalars().all()}
+            health_weights = configs.get("default", {})
+            if not health_weights or "trend" not in health_weights:
+                health_weights = {"trend": 0.35, "derivative": 0.35, "volume": 0.20, "momentum": 0.10}
 
         feature_engine = FeatureEngine(health_weights=health_weights)
 
@@ -297,7 +304,7 @@ async def refresh_data(db: AsyncSession):
                         {
                             "binance_spot": spot_ok,
                             "binance_futures": futures_ok,
-                            "coingecko": coin_cg_ok,
+                            "coingecko": cg_ok,
                         },
                     )
 

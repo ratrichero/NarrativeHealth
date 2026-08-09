@@ -6,6 +6,7 @@ import {
   coinNarratives,
   scoreConfigs,
   featureVersions,
+  ruleVersions,
 } from "@/db/schema";
 import { eq, sql } from "drizzle-orm";
 
@@ -211,6 +212,31 @@ export async function POST() {
       });
     }
 
+    const [defaultRuleVersion] = await db
+      .insert(ruleVersions)
+      .values({
+        version: 1,
+        description: "Initial rule version - default weights",
+        healthWeights: {
+          trend: 0.35,
+          derivative: 0.35,
+          volume: 0.2,
+          momentum: 0.1,
+        },
+        confidenceWeights: {
+          binance_spot: 0.3,
+          binance_futures: 0.4,
+          coingecko: 0.3,
+        },
+        recommendationThresholds: {
+          strong_watch: 90,
+          watch: 80,
+          observe: 65,
+        },
+        isActive: true,
+      })
+      .returning();
+
     return NextResponse.json({
       success: true,
       data: {
@@ -218,6 +244,7 @@ export async function POST() {
         narratives: 2,
         coins: aiCoins.length + rwaCoins.length,
         configs: defaultConfigs.length,
+        ruleVersions: 1,
       },
     });
   } catch (error) {

@@ -139,6 +139,7 @@ class DataRefreshScheduler:
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
                         "http://localhost:3000/api/refresh",
+                        json={"jobName": job_id},
                         timeout=timeout
                     )
                     if response.status_code == 200:

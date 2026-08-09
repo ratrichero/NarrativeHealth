@@ -104,8 +104,11 @@ export async function POST(request: NextRequest) {
   const today = getBusinessDate();
   const yesterday = getYesterdayBusinessDate();
 
+  // Get job name from request body, default to manual_refresh
+  const body = await request.json().catch(() => ({}));
+  const jobName = body.jobName || "manual_refresh";
+  
   // Check for refresh lock
-  const jobName = "manual_refresh";
   const lockCheck = await checkRefreshLock(jobName);
   
   if (lockCheck.isLocked) {
