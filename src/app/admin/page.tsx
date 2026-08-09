@@ -2604,47 +2604,47 @@ export default function AdminPage() {
           )}
         </CardContent>
       </Card>
+
+      {ruleModal.isOpen && (
+        <RuleModal
+          isOpen={ruleModal.isOpen}
+          mode={ruleModal.mode}
+          data={ruleModal.data}
+          onClose={() => setRuleModal({ isOpen: false, mode: 'add' })}
+          onCreate={async (data) => await createRuleMutation.mutateAsync(data)}
+          onUpdate={async (id, data) => await updateRuleMutation.mutateAsync({ id, data })}
+        />
+      )}
+
+      {ruleVersionModal.isOpen && (
+        <RuleVersionModal
+          isOpen={ruleVersionModal.isOpen}
+          onClose={() => setRuleVersionModal({ isOpen: false })}
+          onCreate={async (data) => await createRuleVersionMutation.mutateAsync(data)}
+        />
+      )}
+
+      {eventModal.isOpen && (
+        <EventModal
+          isOpen={eventModal.isOpen}
+          mode={eventModal.mode}
+          data={eventModal.data}
+          onClose={() => setEventModal({ isOpen: false, mode: 'add' })}
+          onCreate={async (data) => await createEventMutation.mutateAsync(data)}
+          onUpdate={async (id, data) => await updateEventMutation.mutateAsync({ id, data })}
+        />
+      )}
+
+      {alertRuleModal.isOpen && (
+        <AlertRuleModal
+          isOpen={alertRuleModal.isOpen}
+          mode={alertRuleModal.mode}
+          data={alertRuleModal.data}
+          onClose={() => setAlertRuleModal({ isOpen: false, mode: 'add' })}
+          onCreate={async (data) => await createAlertRuleMutation.mutateAsync(data)}
+          onUpdate={async (id, data) => await updateAlertRuleMutation.mutateAsync({ id, data })}
+        />
+      )}
     </div>
   );
-
-  {ruleModal.isOpen && (
-    <RuleModal
-      isOpen={ruleModal.isOpen}
-      mode={ruleModal.mode}
-      data={ruleModal.data}
-      onClose={() => setRuleModal({ isOpen: false, mode: 'add' })}
-      onCreate={async (data) => await createRuleMutation.mutateAsync(data)}
-      onUpdate={async (id, data) => await updateRuleMutation.mutateAsync({ id, data })}
-    />
-  )}
-
-  {ruleVersionModal.isOpen && (
-    <RuleVersionModal
-      isOpen={ruleVersionModal.isOpen}
-      onClose={() => setRuleVersionModal({ isOpen: false })}
-      onCreate={async (data) => await createRuleVersionMutation.mutateAsync(data)}
-    />
-  )}
-
-  {eventModal.isOpen && (
-    <EventModal
-      isOpen={eventModal.isOpen}
-      mode={eventModal.mode}
-      data={eventModal.data}
-      onClose={() => setEventModal({ isOpen: false, mode: 'add' })}
-      onCreate={async (data) => await createEventMutation.mutateAsync(data)}
-      onUpdate={async (id, data) => await updateEventMutation.mutateAsync({ id, data })}
-    />
-  )}
-
-  {alertRuleModal.isOpen && (
-    <AlertRuleModal
-      isOpen={alertRuleModal.isOpen}
-      mode={alertRuleModal.mode}
-      data={alertRuleModal.data}
-      onClose={() => setAlertRuleModal({ isOpen: false, mode: 'add' })}
-      onCreate={async (data) => await createAlertRuleMutation.mutateAsync(data)}
-      onUpdate={async (id, data) => await updateAlertRuleMutation.mutateAsync({ id, data })}
-    />
-  )}
 }

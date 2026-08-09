@@ -71,7 +71,32 @@
 
 ---
 
-## 6. Các file đã thay đổi
+## 6. Fix Scheduler Refresh không cập nhật coin
+
+- **Vấn đề**: Scheduler chạy định kỳ (`interval_refresh`, `manual_refresh`) nhưng không có coin nào được cập nhật. Log cho thấy job hoàn thành nhưng không có thay đổi dữ liệu.
+- **Nguyên nhân**:
+  - Next.js API route (`src/app/api/refresh/route.ts`) hardcode `jobName = "manual_refresh"`, khiến tất cả refresh jobs đều được log với tên "manual_refresh" và refresh lock không hoạt động đúng cho các job khác.
+  - Backend scheduler (`backend/scheduler.py`) không truyền `jobName` trong request body khi gọi Next.js API.
+  - Backend refresh API (`backend/api/refresh.py`) thiếu import `CoinGeckoCollector` và có biến undefined (`coin_cg_ok`).
+- **Giải pháp**:
+  - Sửa Next.js API để đọc `jobName` từ request body, default về "manual_refresh" nếu không có.
+  - Cập nhật scheduler để gửi `json={"jobName": job_id}` khi gọi Next.js API.
+  - Thêm `CoinGeckoCollector` vào import trong `backend/api/refresh.py`.
+  - Fix biến undefined `coin_cg_ok` → `cg_ok` trong `backend/api/refresh.py`.
+- **Lợi ích**: Scheduler giờ có thể phân biệt các loại job (`interval_refresh`, `daily_refresh`, `manual_refresh`), logging chính xác, và refresh lock hoạt động đúng.
+
+---
+
+## 7. Fix Admin Modals không hiển thị
+
+- **Vấn đề**: Các modal (Rule, Rule Version, Event, Alert Rule) không hiển thị khi click Add/Edit/Delete, dù UI có các nút tương ứng.
+- **Nguyên nhân**: Các modal component được đặt SAU return statement của main component, thành dead code không bao giờ render.
+- **Giải pháp**: Di chuyển tất cả modal components (`RuleModal`, `RuleVersionModal`, `EventModal`, `AlertRuleModal`) từ bên ngoài return statement vào bên trong, ngay trước thẻ đóng `</div>` cuối cùng.
+- **Lợi ích**: Các modal giờ render đúng khi state được set, admin có thể tạo/edit rules, events, và alert rules từ UI.
+
+---
+
+## 8. Các file đã thay đổi
 
 | File | Thay đổi |
 |------|----------|
@@ -80,21 +105,23 @@
 | `src/components/SignalBadge.tsx` | Thêm mapping `CAUTION` |
 | `src/components/ui/Tooltip.tsx` | Tạo component Tooltip mới |
 | `src/app/coin/[id]/page.tsx` | Áp dụng tooltip, format indicator, import Tooltip |
-| `src/app/admin/page.tsx` | Hỗ trợ màu `CAUTION` trong rule list |
+| `src/app/admin/page.tsx` | Hỗ trợ màu `CAUTION` trong rule list, fix modal placement |
 | `src/app/snapshots/page.tsx` | Hỗ trợ màu `CAUTION` trong snapshot coin list |
 | `src/app/api/admin/recommendation-rules/route.ts` | Thêm `GET` handler |
-| `backend/scheduler.py` | Thêm logging DB cho `daily_refresh`/`interval_refresh` |
+| `src/app/api/refresh/route.ts` | Đọc `jobName` từ request body thay vì hardcode |
+| `backend/scheduler.py` | Thêm logging DB cho `daily_refresh`/`interval_refresh`, gửi `jobName` trong request |
+| `backend/api/refresh.py` | Thêm import `CoinGeckoCollector`, fix biến undefined `cg_ok` |
 | `scripts/seed-recommendation-rules.ts` | Script seed rules (đã xóa sau khi chạy) |
 | `scripts/update-recommendations.ts` | Script update recommendations (đã xóa sau khi chạy) |
 
 ---
 
-## 7. Trạng thái Build
+## 9. Trạng thái Build
 
 - ✅ `npm run typecheck` pass
 - ✅ `npm run build` pass
 
-## 8. ý nghĩa 1 số trạng thái:
+## 10. ý nghĩa 1 số trạng thái:
 
 Ý nghĩa Events
 
