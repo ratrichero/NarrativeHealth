@@ -3,6 +3,7 @@ export * from "./constituents";
 export * from "./context";
 export * from "./persistence";
 export * from "./windows";
+export * from "./preparation";
 export * from "./breadth";
 
 // P3 Momentum is owned by the existing MomentumService (AD-003). Re-export the
