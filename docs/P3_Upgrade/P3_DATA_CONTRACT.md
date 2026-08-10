@@ -3,7 +3,7 @@
 ## Status
 
 **Status:** Proposed for review and freeze  
-**Task:** P3-01 — P3 Data Contract  
+**Task:** P3-01 â€” P3 Data Contract  
 **Scope:** P3 Narrative Intelligence only  
 **Date:** 2026-08-09
 
@@ -171,6 +171,25 @@ Next.js refresh paths contain volume/price-derived approximate market-cap fallba
 Missing Market Cap != Market Cap = 0
 ```
 
+## Relative Strength / Narrative Return Contract
+
+The finalized P3 Relative Strength contract is:
+
+- **Weighting:** equal-weight across eligible constituents only. For `N_valid` eligible constituents, `weight_i = 1 / N_valid`.
+- **Market cap:** eligibility/data-quality requirement only; never a weighting input. Missing market cap excludes the constituent.
+- **Weight timestamp:** `N/A`, because no market-cap weighting is performed.
+- **Price source:** canonical Coin-USDT perpetual futures instrument only, using its UTC daily close. Spot, quarterly/dated futures, non-USDT futures, and unrelated derivatives are invalid sources.
+- **Spot fallback:** prohibited. Missing or insufficient perpetual-futures history excludes the constituent.
+- **Eligibility:** a constituent must be in the captured P3 snapshot, have valid market cap, valid canonical perpetual-futures daily closes at both window endpoints, and satisfy the window history requirement.
+- **Minimum population:** `N_valid < 3` makes Narrative Return and Relative Strength unavailable. No result is calculated from one or two valid constituents.
+- **Individual return:** `Return_ND = price_end / price_start - 1`.
+- **Narrative return:** arithmetic mean of eligible constituent returns: `sum(return_i) / N_valid`.
+- **Benchmark:** BTC-USDT perpetual futures daily close only. Missing or insufficient BTC history makes BTC Return and Relative Strength unavailable; no zero or alternative benchmark is allowed.
+- **Relative Strength:** `RS_ND = Narrative Return_ND - BTC Return_ND`.
+- **Windows:** 1D, 3D, 7D, and 14D using the P3 UTC endpoint semantics.
+- **Provenance:** preserve snapshot identity, canonical instruments, BTC instrument, window endpoints, eligible/excluded constituents and reasons, equal-weight method, `N_valid`, and algorithm/version references.
+
+Missing market cap, missing/invalid/stale/insufficient perpetual-futures history, and `N_valid < 3` remain explicit unavailable states and never become zero or bearish values.
 ## Volume Contract
 
 P3 must preserve volume type.
@@ -485,7 +504,7 @@ P3-02 may design a schema satisfying this contract after review. It must not rei
 ## Next Task
 
 ```text
-P3-02 — P3 Schema Design
+P3-02 â€” P3 Schema Design
 ```
 
 Do not begin P3-02 until this contract is reviewed and accepted.
