@@ -1,6 +1,6 @@
 ﻿import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { p3ConstituentSnapshotMembers, p3ConstituentSnapshots, p3NarrativeIntelligence } from "@/db/schema";
+import { p3ConstituentSnapshotMembers, p3ConstituentSnapshots, p3LeadershipMembers, p3NarrativeIntelligence } from "@/db/schema";
 import type { P3CalculationContext, P3CalculationResult } from "./context";
 import { calculationIdentity } from "./context";
 
@@ -9,6 +9,11 @@ export interface P3PersistencePayload {
   result: P3CalculationResult;
   membershipSource: string;
   membershipMode: string;
+  leadershipMembers?: readonly {
+    coinId: number; leaderScore: number; leaderRank: number; leadershipStatus: string | null;
+    isEmergingLeader: boolean; leaderDays7d?: number | null; leaderPersistence7d?: number | null;
+    contribution: number; healthScore: number; momentumScore: number; relativeStrengthScore: number; volumeScore: number;
+  }[];
 }
 
 export interface P3PersistenceOutcome {
@@ -59,8 +64,11 @@ export async function persistP3Calculation(payload: P3PersistencePayload): Promi
       relativeStrength3d: metricNumber(result, "relativeStrength3d"),
       relativeStrength7d: metricNumber(result, "relativeStrength7d"),
       relativeStrength14d: metricNumber(result, "relativeStrength14d"),
+      leaderCoinId: result.metrics.leaderCoinId?.state === "VALID" && typeof result.metrics.leaderCoinId.value === "number" ? result.metrics.leaderCoinId.value : null,
+      leaderScore: metricNumber(result, "leaderScore"),
       concentrationTop1: metricNumber(result, "concentrationTop1"),
       concentrationTop3: metricNumber(result, "concentrationTop3"),
+      concentrationClassification: metricString(result, "concentrationClassification"),
       regime: metricString(result, "regime"),
       rotation: metricString(result, "rotation"),
       explanation: result.explanation ?? null,
@@ -93,6 +101,15 @@ export async function persistP3Calculation(payload: P3PersistencePayload): Promi
           inclusionReason: member.inclusionReason ?? null,
           availabilityState: member.availabilityState,
           inputManifest: member.inputManifest ?? null,
+        })));
+      }
+      if (payload.leadershipMembers?.length) {
+        await tx.insert(p3LeadershipMembers).values(payload.leadershipMembers.map((member) => ({
+          intelligenceId: inserted[0].id, coinId: member.coinId, leaderScore: String(member.leaderScore),
+          leaderRank: member.leaderRank, leadershipStatus: member.leadershipStatus, isEmergingLeader: member.isEmergingLeader,
+          leaderDays7d: member.leaderDays7d ?? null, leaderPersistence7d: member.leaderPersistence7d == null ? null : String(member.leaderPersistence7d),
+          contribution: String(member.contribution), healthScore: String(member.healthScore), momentumScore: String(member.momentumScore),
+          relativeStrengthScore: String(member.relativeStrengthScore), volumeScore: String(member.volumeScore),
         })));
       }
       return { intelligenceId: inserted[0].id, identity, inserted: true };

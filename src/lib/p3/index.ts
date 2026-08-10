@@ -23,3 +23,4 @@ export {
 } from "@/lib/services/momentum.service";
 export type { MomentumService } from "@/lib/services/momentum.service";
 export * from "./relative-strength";
+export * from "./leadership";

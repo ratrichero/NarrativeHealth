@@ -177,3 +177,11 @@ Restrictive foreign keys prevent parent deletion from erasing evidence, unique i
 ## Next Task
 
 P3-03 â€” Core Intelligence Engine / according to the approved execution plan
+
+## P3-07 Leadership Extension
+
+Migration `0016_add_p3_leadership.sql` minimally extends the P3 persistence foundation for the finalized P3-07 contract. Narrative-level `leader_coin_id`, `leader_score`, and `concentration_classification` remain directly queryable beside the existing Top-1/Top-3 concentration columns.
+
+`p3_leadership_members` stores the immutable constituent-level Leadership result for each `p3_narrative_intelligence` record: deterministic rank, Leader Score, Leadership status, Emerging Leader flag, contribution, normalized input components, and nullable seven-day persistence evidence. Its composite primary key prevents duplicate members, its per-intelligence rank constraint prevents duplicate ranks, restrictive foreign keys preserve history, and the P3 immutability trigger rejects updates/deletes.
+
+The extension does not create a new calculation identity or version framework. It uses the parent P3 identity and preserves coexistence of algorithm versions. Market cap is not persisted as a weight because P3-07 uses it only as an eligibility gate.

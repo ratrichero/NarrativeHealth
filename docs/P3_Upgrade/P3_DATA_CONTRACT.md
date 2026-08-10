@@ -419,6 +419,40 @@ Formulas not explicitly frozen by `p3.md` remain outside this data contract. Nul
 | P3 | Availability state | Calculation | Taxonomy enum | Calculation time | Required | N/A | Must not be omitted | State/value conflict | Fatal |
 | P3 | Input manifest | Persistence requirement | IDs/digest | Calculation time | Immutable | N/A | Not reproducible | Manifest mismatch | Fatal for audit |
 
+
+## P3-07 Leadership and Concentration Contract
+
+This section appends the approved P3-07 semantics and does not replace or weaken the finalized P3-06 Relative Strength/Narrative Return contract above. P3-06 remains authoritative for equal-weight Narrative Return, market-cap eligibility, Coin-USDT perpetual futures, daily close, no spot fallback, minimum `N_valid = 3`, BTC-USDT perpetual benchmark, and UTC windows.
+
+### Leadership
+
+- Leadership uses the `7D` UTC window only in algorithm version `1`.
+- Constituents come from the captured P3 constituent snapshot; current `coin_narratives` membership is never substituted for historical membership.
+- Required eligibility inputs are historical membership, valid market cap, Coin Health Score, Coin Volume Score, Coin-USDT perpetual daily-close history for 7D, and BTC-USDT perpetual daily-close history for 7D.
+- Market cap is an eligibility gate only. It is not used for weighting, ranking, contribution, or tie-breaking. Missing market cap excludes the constituent. There is no spot fallback.
+- Coin Momentum is the 7D Coin-USDT perpetual return: `Price_end / Price_start - 1`. Coin Relative Strength is `Coin Return_7D - BTC Return_7D`. Missing BTC makes all affected coin RS and Leadership unavailable.
+- Momentum Score is `clip(50 + 2.5 * return_percent, 0, 100)`. RS Score is `clip(50 + 2.5 * rs_percent, 0, 100)`. Health and Volume reuse existing normalized `0-100` scores.
+- Leader Score is `Health * 0.40 + Momentum Score * 0.25 + RS Score * 0.20 + Volume Score * 0.15`; weights are not redistributed when an input is missing.
+- Missing or invalid required components exclude the constituent; partial Leader Scores are not calculated.
+- At least 3 Leadership-eligible constituents are required. Below 3, Leadership and Concentration are unavailable.
+- Ranking is deterministic: Leader Score descending, Health descending, Momentum Score descending, then Coin ID ascending. Rank 1 is `LEADER`; ranks 1-3 are `LEADERS`.
+- `EMERGING_LEADER` requires rank > 3, Momentum Score >= 70, RS Score >= 60, and Health < 70.
+- Leadership persistence is Top-3 presence over seven required daily rankings: `leader_days_7d / 7`. Fewer than seven daily observations makes persistence unavailable; missing days are not treated as non-leader days.
+
+### Concentration
+
+- Concentration uses the complete Leadership-eligible population and Leader Scores only.
+- Constituent contribution is `Leader Score_i / sum(all eligible Leader Scores)`. Market cap, raw return, Health alone, Volume alone, and current portfolio weights are not used.
+- Top-1 is the maximum contribution (equivalently rank-1 contribution). Top-3 is the sum of ranks 1-3 contributions.
+- At least 3 eligible constituents are required. Exactly 3 valid constituents produce Top-3 = 1.0, which is valid.
+- Classification boundaries are: `< 0.40` Broad; `>= 0.40 and < 0.55` Moderate; `>= 0.55 and <= 0.70` Concentrated; `> 0.70` Highly Concentrated.
+- Missing or invalid leadership inputs exclude constituents before the concentration denominator. Missing is never converted to zero.
+
+### P3-07 Provenance and Persistence
+
+P3-07 persists through the shared P3 insert-only persistence boundary with algorithm key `leadership-concentration` and algorithm version `1`. Provenance records the snapshot, 7D UTC window, perpetual instruments, BTC benchmark, health/volume inputs, normalized component scores, ranking, exclusions, contributions, classification, and existing rule/feature/configuration version references.
+
+
 ## Rules For P3 Implementation Agents
 
 1. Do not fabricate data.

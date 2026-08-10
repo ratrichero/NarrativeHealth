@@ -512,8 +512,11 @@ export const p3NarrativeIntelligence = pgTable("p3_narrative_intelligence", {
   relativeStrength3d: decimal("relative_strength_3d", { precision: 12, scale: 6 }),
   relativeStrength7d: decimal("relative_strength_7d", { precision: 12, scale: 6 }),
   relativeStrength14d: decimal("relative_strength_14d", { precision: 12, scale: 6 }),
+  leaderCoinId: integer("leader_coin_id").references(() => coins.id, { onDelete: "restrict" }),
+  leaderScore: decimal("leader_score", { precision: 9, scale: 6 }),
   concentrationTop1: decimal("concentration_top1", { precision: 9, scale: 6 }),
   concentrationTop3: decimal("concentration_top3", { precision: 9, scale: 6 }),
+  concentrationClassification: varchar("concentration_classification", { length: 30 }),
   regime: varchar("regime", { length: 30 }),
   rotation: varchar("rotation", { length: 30 }),
   explanation: jsonb("explanation"),
@@ -552,6 +555,26 @@ export const p3ConstituentSnapshotMembers = pgTable("p3_constituent_snapshot_mem
 }, (table) => ({
   memberPk: primaryKey({ columns: [table.snapshotId, table.coinId] }),
   coinIdx: index("p3_constituent_snapshot_members_coin_idx").on(table.coinId),
+}));
+
+export const p3LeadershipMembers = pgTable("p3_leadership_members", {
+  intelligenceId: integer("intelligence_id").notNull().references(() => p3NarrativeIntelligence.id, { onDelete: "restrict" }),
+  coinId: integer("coin_id").notNull().references(() => coins.id, { onDelete: "restrict" }),
+  leaderScore: decimal("leader_score", { precision: 9, scale: 6 }).notNull(),
+  leaderRank: integer("leader_rank").notNull(),
+  leadershipStatus: varchar("leadership_status", { length: 30 }),
+  isEmergingLeader: boolean("is_emerging_leader").notNull().default(false),
+  leaderDays7d: integer("leader_days_7d"),
+  leaderPersistence7d: decimal("leader_persistence_7d", { precision: 9, scale: 8 }),
+  contribution: decimal("contribution", { precision: 9, scale: 8 }).notNull(),
+  healthScore: decimal("health_score", { precision: 9, scale: 6 }).notNull(),
+  momentumScore: decimal("momentum_score", { precision: 9, scale: 6 }).notNull(),
+  relativeStrengthScore: decimal("relative_strength_score", { precision: 9, scale: 6 }).notNull(),
+  volumeScore: decimal("volume_score", { precision: 9, scale: 6 }).notNull(),
+}, (table) => ({
+  memberPk: primaryKey({ columns: [table.intelligenceId, table.coinId] }),
+  rankUnique: unique("p3_leadership_members_intelligence_rank_unique").on(table.intelligenceId, table.leaderRank),
+  coinIdx: index("p3_leadership_members_coin_idx").on(table.coinId),
 }));
 // ==================== DECISION_SIGNALS ====================
 export const decisionSignals = pgTable("decision_signals", {
