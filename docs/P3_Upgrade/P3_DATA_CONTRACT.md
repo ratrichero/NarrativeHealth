@@ -453,6 +453,33 @@ This section appends the approved P3-07 semantics and does not replace or weaken
 P3-07 persists through the shared P3 insert-only persistence boundary with algorithm key `leadership-concentration` and algorithm version `1`. Provenance records the snapshot, 7D UTC window, perpetual instruments, BTC benchmark, health/volume inputs, normalized component scores, ranking, exclusions, contributions, classification, and existing rule/feature/configuration version references.
 
 
+
+## P3-08 Regime and P3-09 Rotation Contract
+
+This section appends the P3-08/P3-09 execution contract and does not replace the finalized P3-06 Relative Strength or P3-07 Leadership/Concentration contracts.
+
+### Regime
+
+- Regime is one of exactly: `EMERGING`, `STRONG`, `MATURE`, `WEAKENING`, or `DEAD`.
+- Inputs are Health, Health change, Breadth, Breadth change, Momentum, Acceleration, Relative Strength, and optional upstream confidence.
+- Regime uses UTC calculation context and persisted upstream P3 outputs; it does not query current membership or create another ingestion path.
+- Rule thresholds are configuration inputs and must be persisted in provenance. No unapproved numeric threshold is hard-coded by the engine.
+- The specification semantics are: Emerging = improving Health + positive Momentum + increasing Breadth + improving RS; Strong = high Health + high Breadth + positive Momentum + positive RS; Mature = high Health + high Breadth + slowing Momentum + declining Acceleration; Weakening = declining Health or Breadth + weakening Momentum; Dead = low Health + low Breadth + negative Momentum + negative RS.
+- If mandatory inputs are unavailable, the result is unavailable. If zero or multiple configured rules match, the result is not silently guessed; it is `NOT_APPLICABLE` or `AMBIGUOUS` with reasons.
+
+### Rotation
+
+- Rotation is one of exactly: `INFLOW`, `ACCELERATING`, `STABLE`, `DECELERATING`, or `OUTFLOW`.
+- Rotation Score uses fixed weights: Health Momentum 30%, Breadth Momentum 20%, Relative Strength 20%, Volume Expansion 15%, and OI Confirmation 15%; all component values are expected on the caller's normalized 0-100 scale.
+- State thresholds are configuration inputs and must be strictly ordered and persisted in provenance. No unapproved numeric threshold is hard-coded by the engine.
+- Missing OI or another required derivative/input does not become zero; the score and state are unavailable and confidence is preserved as an upstream factor.
+- Rotation uses UTC calculation context, existing P3 outputs, and existing market/derivatives data only. It does not modify Coin Health or create an external API.
+
+### Shared Persistence
+
+Both engines use the shared insert-only P3 persistence boundary, existing calculation identity, algorithm key/version, rule/feature/score configuration references, and immutable provenance.
+
+
 ## Rules For P3 Implementation Agents
 
 1. Do not fabricate data.
@@ -535,10 +562,434 @@ P3-01 changes documentation only. It does not:
 
 P3-02 may design a schema satisfying this contract after review. It must not reinterpret these semantics.
 
+## P3-09 — Rotation Contract
+
+**Status:** FINAL  
+**Task:** P3-10A — Rotation Contract Unblock  
+**Date:** 2026-08-10
+
+### Purpose
+
+This contract defines the complete deterministic semantics for P3-09 Rotation calculation. Rotation is the composite indicator that determines narrative capital flow states (INFLOW, ACCELERATING, STABLE, DECELERATING, OUTFLOW) by aggregating five normalized component metrics.
+
+### Rotation Score Formula
+
+```text
+Rotation Score =
+    Health Momentum      × 30%
+  + Breadth Momentum     × 20%
+  + Relative Strength    × 20%
+  + Volume Expansion     × 15%
+  + OI Confirmation      × 15%
+```
+
+### Component Requirements
+
+Every component must produce a value in the range `[0, 100]` before weighted aggregation. Values outside this range are invalid and result in component unavailability.
+
+### Missing Data Rule
+
+If any required component is unavailable (MISSING, INSUFFICIENT_HISTORY, INVALID, or null):
+
+```text
+Rotation Score = UNAVAILABLE
+Rotation State = null
+```
+
+No automatic weight redistribution. No substitution with zero, neutral (50), or any other value.
+
+### Rotation States
+
+The engine supports exactly five states:
+
+```text
+INFLOW
+ACCELERATING
+STABLE
+DECELERATING
+OUTFLOW
+```
+
+State classification thresholds are configuration-driven and stored in `score_configs`. No additional states may be introduced.
+
+---
+
+## Health Momentum Component
+
+### Source
+
+Narrative Health from the authoritative P3 Health output (`narrative_health` table). This is the aggregate narrative health, not individual coin health.
+
+### Window
+
+7-day comparison using UTC calendar boundaries.
+
+### Formula
+
+```text
+Health Momentum Raw = Narrative Health_current - Narrative Health_7D_ago
+```
+
+Where:
+- `current` = UTC daily observation at `window_end - 1 day`
+- `7D_ago` = UTC daily observation at `window_end - 8 days`
+
+### Normalization
+
+```text
+Health Momentum Component = clip(50 + Health Momentum Raw × 2.5, 0, 100)
+```
+
+This maps:
+- `-20` health points → `0`
+- `0` health points → `50` (no change)
+- `+20` health points → `100`
+
+### Clipping
+
+Strict bounds `[0, 100]`. Values exceeding ±20 health points are clipped to the nearest bound.
+
+### Missing Data
+
+- Missing current Narrative Health → UNAVAILABLE
+- Missing 7D-ago Narrative Health → INSUFFICIENT_HISTORY
+- Insufficient 7D history → INSUFFICIENT_HISTORY
+- Invalid Narrative Health (out of range, non-finite) → INVALID
+
+No zero fallback. No neutral fallback.
+
+---
+
+## Breadth Momentum Component
+
+### Source
+
+P3-04 Breadth result (`bullishRatio` from breadth.ts). Breadth is a ratio in `[0, 1]` representing the proportion of bullish coins in the narrative.
+
+### Window
+
+7-day comparison using UTC calendar boundaries.
+
+### Formula
+
+```text
+Breadth Momentum Raw = Breadth_current - Breadth_7D_ago
+```
+
+Since Breadth is in `[0, 1]`, the raw momentum is in `[-1, +1]`.
+
+### Normalization
+
+```text
+Breadth Momentum Component = clip(50 + Breadth Momentum Raw × 50, 0, 100)
+```
+
+This maps:
+- `-1.0` (complete breadth loss) → `0`
+- `0.0` (no breadth change) → `50`
+- `+1.0` (complete breadth gain) → `100`
+
+### Clipping
+
+Strict bounds `[0, 100]`.
+
+### Missing Data
+
+- Missing current Breadth → UNAVAILABLE
+- Missing 7D-ago Breadth → INSUFFICIENT_HISTORY
+- P3-04 returns unavailable → UNAVAILABLE
+
+No zero fallback. No calculation from partial population unless explicitly permitted by P3-04 contract.
+
+---
+
+## Relative Strength Component
+
+### Source
+
+P3-06 signed Relative Strength result.
+
+### Formula
+
+```text
+RS = Narrative Return_ND - BTC Return_ND
+```
+
+### Market Source
+
+- Narrative constituents: Coin-USDT perpetual futures daily close
+- BTC benchmark: BTC-USDT perpetual futures daily close
+
+Perpetual futures are the authoritative P3 price source. No spot fallback.
+
+### Price
+
+UTC daily close price of the canonical perpetual futures instrument.
+
+### Window
+
+Uses the same approved P3-06 window as the Rotation calculation (typically 7D for Rotation).
+
+### Normalization
+
+```text
+RS Component = clip(50 + RS_percent × 5, 0, 100)
+```
+
+This uses P3-06's approved classification boundaries:
+- `-10%` RS → `0`
+- `0%` RS → `50`
+- `+10%` RS → `100`
+
+Examples:
+- `-10%` → `0`
+- `-5%` → `25`
+- `0%` → `50`
+- `+5%` → `75`
+- `+10%` → `100`
+
+Values below `-10%` remain `0`. Values above `+10%` remain `100`.
+
+### Clipping
+
+Strict bounds `[0, 100]` with explicit clipping at ±10% RS boundaries.
+
+### Missing Data
+
+- Missing Narrative Return → UNAVAILABLE
+- Missing BTC Return → UNAVAILABLE
+- Missing constituent price → INSUFFICIENT_HISTORY
+- Missing BTC futures price → MISSING
+- Insufficient constituents (<3) → INSUFFICIENT_HISTORY
+
+No zero substitution. No spot substitution. No alternative benchmark.
+
+---
+
+## Volume Expansion Component
+
+### Instrument
+
+Coin-USDT perpetual futures volume from `market_price_daily.volume`.
+
+### Constituent Eligibility
+
+Uses the captured P3 historical constituent snapshot. A constituent must satisfy P3 eligibility requirements. Market cap must exist for eligibility. No fabricated market cap.
+
+### Aggregation
+
+Equal-weight aggregation across eligible constituents:
+
+```text
+Narrative Volume = mean(valid eligible constituent futures volumes)
+```
+
+A constituent with missing volume is excluded from the aggregate for that calculation. Missing volume is NOT treated as zero.
+
+The final aggregate must satisfy the P3 minimum valid constituent requirement (<3 valid constituents → UNAVAILABLE).
+
+### Current Volume
+
+Narrative aggregate volume at the current UTC calculation boundary.
+
+### Baseline
+
+7-day average of the narrative aggregate volume, derived from the seven preceding valid daily observations.
+
+### Formula
+
+```text
+Volume Expansion Ratio = Current Narrative Volume / 7D Average Narrative Volume
+```
+
+### Normalization
+
+```text
+Volume Component = clip(Volume Expansion Ratio × 50, 0, 100)
+```
+
+This maps:
+- `0.0x` → `0`
+- `0.5x` → `25`
+- `1.0x` → `50` (no expansion)
+- `1.5x` → `75`
+- `2.0x` → `100`
+
+Values above `2.0x` remain `100`.
+
+### Invalid Baseline
+
+If `7D average <= 0` or baseline is otherwise invalid → UNAVAILABLE. No division by zero. No fabricated baseline.
+
+### Missing Data
+
+- Missing current volume → MISSING
+- Missing historical baseline → INSUFFICIENT_HISTORY
+- Insufficient history → INSUFFICIENT_HISTORY
+- Insufficient valid constituents (<3) → INSUFFICIENT_HISTORY
+
+---
+
+## OI Confirmation Component
+
+### Semantic Definition
+
+OI Confirmation is the confirmation of narrative price direction by narrative Open Interest direction. It uses both price and OI direction, not OI alone.
+
+### Instrument
+
+Coin-USDT perpetual futures Open Interest from `coin_metrics.openInterest`.
+
+### Aggregation
+
+Equal-weight aggregation across eligible constituents:
+
+```text
+Narrative OI = mean(valid eligible constituent OI)
+```
+
+Same historical constituent snapshot and eligibility rules apply.
+
+### Window
+
+7-day comparison using UTC calendar boundaries.
+
+### Formula
+
+Calculate two directional changes:
+
+```text
+Price Change = Narrative Price_current - Narrative Price_7D_ago
+OI Change = Narrative OI_current - Narrative OI_7D_ago
+```
+
+Direction is determined by sign: positive, zero, or negative.
+
+### Confirmation Matrix
+
+The following deterministic mapping is authoritative:
+
+| Price Direction | OI Direction | OI Confirmation |
+| --------------- | ------------ | --------------: |
+| Positive        | Positive     |             100 |
+| Positive        | Zero         |              75 |
+| Positive        | Negative     |              50 |
+| Zero            | Positive     |              50 |
+| Zero            | Zero         |              50 |
+| Zero            | Negative     |              50 |
+| Negative        | Positive     |               0 |
+| Negative        | Zero         |              25 |
+| Negative        | Negative     |              50 |
+
+Interpretation:
+- Price ↑ + OI ↑ → strong positive confirmation (100)
+- Price ↓ + OI ↑ → strong negative confirmation (0)
+- Price ↑ + OI ↓ → not positive OI confirmation (50)
+- Price ↓ + OI ↓ → no directional OI confirmation (50)
+
+### Clipping
+
+Output is already in `[0, 100]` by matrix definition. No additional clipping required.
+
+### Missing Data
+
+- Missing current OI → UNAVAILABLE
+- Missing historical OI → INSUFFICIENT_HISTORY
+- Missing current narrative price → MISSING
+- Missing historical narrative price → INSUFFICIENT_HISTORY
+
+No zero fallback. No neutral fallback. No weight redistribution.
+
+---
+
+## Global Semantics
+
+### Timezone
+
+- Calculation/data time: UTC
+- Scheduler time: Asia/Ho_Chi_Minh (scheduler-only)
+
+`Asia/Ho_Chi_Minh` is NOT used for:
+- Price boundaries
+- Volume boundaries
+- OI boundaries
+- Historical windows
+- Aggregation
+- Daily close
+- Persistence semantics
+
+All Rotation windows derive from the P3 UTC kernel.
+
+### Market Data Sources
+
+- Price: Coin-USDT perpetual futures daily close
+- BTC benchmark: BTC-USDT perpetual futures daily close
+- Volume: Coin-USDT perpetual futures volume
+- OI: Coin-USDT perpetual futures Open Interest
+
+Perpetual futures are authoritative. No spot fallback unless explicitly approved elsewhere.
+
+### Constituent Snapshot
+
+All Rotation constituent calculations use the historical P3 constituent snapshot (`p3_constituent_snapshots` and `p3_constituent_snapshot_members`). Do NOT reconstruct from current `coin_narratives`.
+
+### Market Cap Eligibility
+
+Market cap is an eligibility requirement, NOT a weighting mechanism. A constituent without valid market cap is excluded from the eligible population. No fabricated market cap, no `price × volume` approximation.
+
+### Minimum Valid Constituents
+
+For Rotation components requiring constituent aggregation, the P3 minimum valid population rule applies:
+
+```text
+N_valid < 3 → component = UNAVAILABLE
+```
+
+Unless an existing P3 contract explicitly defines a different component-specific requirement.
+
+### Versioning
+
+- `algorithm_key = "rotation"`
+- `algorithm_version = "1"`
+- Reuse existing `feature_versions`, `rule_versions`, `score_configs` for thresholds and weights
+- No separate Rotation versioning framework
+
+### Provenance
+
+Final Rotation result must preserve:
+- `algorithm_key`, `algorithm_version`
+- `calculation_mode`
+- `window_start`, `window_end`
+- UTC semantics
+- Constituent snapshot identity
+- Component inputs and values
+- Configuration/version identity
+- All individual component provenance
+
+Historical P3 intelligence remains immutable. No overwriting of historical Rotation results.
+
+---
+
+## Persistence Semantics
+
+Rotation results are persisted through the P3 persistence boundary (`p3_narrative_intelligence` table) with:
+- Rotation Score in numeric field
+- Rotation State in classification field
+- Full component breakdown in metrics/provenance
+- Availability state preserved
+- All UTC timestamps
+- Version references
+
+---
+
+## Implementation Notes
+
+The contract is deterministic and complete. Two independent engineers implementing from this contract must produce identical results given the same inputs.
+
 ## Next Task
 
 ```text
-P3-02 â€” P3 Schema Design
+P3-10 — P3 Execution Orchestrator
 ```
 
 Do not begin P3-02 until this contract is reviewed and accepted.

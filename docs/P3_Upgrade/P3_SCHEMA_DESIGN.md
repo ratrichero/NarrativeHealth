@@ -185,3 +185,10 @@ Migration `0016_add_p3_leadership.sql` minimally extends the P3 persistence foun
 `p3_leadership_members` stores the immutable constituent-level Leadership result for each `p3_narrative_intelligence` record: deterministic rank, Leader Score, Leadership status, Emerging Leader flag, contribution, normalized input components, and nullable seven-day persistence evidence. Its composite primary key prevents duplicate members, its per-intelligence rank constraint prevents duplicate ranks, restrictive foreign keys preserve history, and the P3 immutability trigger rejects updates/deletes.
 
 The extension does not create a new calculation identity or version framework. It uses the parent P3 identity and preserves coexistence of algorithm versions. Market cap is not persisted as a weight because P3-07 uses it only as an eligibility gate.
+
+
+## P3-08/P3-09 Extension
+
+The existing `regime` and `rotation` columns on `p3_narrative_intelligence` are reused. Migration `0017_add_p3_rotation_score.sql` adds only the normalized `rotation_score` column required by the Rotation result contract. Regime thresholds and Rotation thresholds remain configuration/provenance data; no parallel threshold or version framework is created.
+
+Both engines persist through the existing immutable calculation identity. Missing values remain NULL, and `AMBIGUOUS`/`NOT_APPLICABLE` states are represented through `availability_state` and provenance rather than defaulting to a regime or rotation state.

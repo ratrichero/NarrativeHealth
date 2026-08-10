@@ -71,6 +71,7 @@ export async function persistP3Calculation(payload: P3PersistencePayload): Promi
       concentrationClassification: metricString(result, "concentrationClassification"),
       regime: metricString(result, "regime"),
       rotation: metricString(result, "rotation"),
+      rotationScore: metricNumber(result, "rotationScore"),
       explanation: result.explanation ?? null,
       provenance: result.provenance,
       calculatedAt: context.calculatedAt,

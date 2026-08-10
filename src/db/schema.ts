@@ -519,6 +519,7 @@ export const p3NarrativeIntelligence = pgTable("p3_narrative_intelligence", {
   concentrationClassification: varchar("concentration_classification", { length: 30 }),
   regime: varchar("regime", { length: 30 }),
   rotation: varchar("rotation", { length: 30 }),
+  rotationScore: decimal("rotation_score", { precision: 9, scale: 6 }),
   explanation: jsonb("explanation"),
   provenance: jsonb("provenance").notNull(),
   calculatedAt: timestamp("calculated_at").notNull(),
