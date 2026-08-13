@@ -72,6 +72,18 @@ describe("P3 Relative Strength", () => {
     expect(calculateRelativeStrengthWindow("7D", END, members, btc(100, 110)).relativeStrength).toBeCloseTo(0);
   });
 
+  test("uses a global BTC benchmark even when BTC is not a narrative constituent", () => {
+    const members = [coin(11, 100, 110), coin(12, 100, 105), coin(13, 100, 100)];
+    const benchmark = { coinId: 987, instrument: BTC_PERPETUAL_INSTRUMENT, prices: prices(100, 102) };
+
+    expect(members.some((member) => member.coinId === benchmark.coinId)).toBe(false);
+    expect(calculateRelativeStrengthWindow("7D", END, members, benchmark)).toMatchObject({
+      state: "VALID",
+      validConstituents: 3,
+      btcReturn: { state: "VALID" },
+    });
+  });
+
   test.each([
     [0.10, "strong_outperform"], [0.0999, "outperform"], [0.05, "outperform"], [0.0499, "neutral"],
     [-0.0499, "neutral"], [-0.05, "underperform"], [-0.10, "underperform"], [-0.1001, "strong_underperform"],
@@ -86,7 +98,65 @@ describe("P3 Relative Strength", () => {
     expect(first.metrics.relativeStrength7d.state).toBe("VALID");
   });
 
-  test("uses exact UTC window boundaries", () => {
-    expect(() => calculateAssetReturn("7D", new Date("2026-08-09T07:00:00Z"), prices(100, 110))).toThrow("UTC day boundary");
+  describe("adaptive window semantics (P3-10E.25/26)", () => {
+    test("14D MISSING does not block stage when 1D/3D/7D are VALID", () => {
+      const members: RSConstituentInput[] = [
+        { coinId: 1, instrument: "C1USDT", marketCapAvailable: true, prices: [
+          { date: "2026-08-01", close: 100 }, { date: "2026-08-05", close: 105 },
+          { date: "2026-08-07", close: 108 }, { date: "2026-08-08", close: 110 },
+        ]},
+        { coinId: 2, instrument: "C2USDT", marketCapAvailable: true, prices: [
+          { date: "2026-08-01", close: 100 }, { date: "2026-08-05", close: 103 },
+          { date: "2026-08-07", close: 106 }, { date: "2026-08-08", close: 108 },
+        ]},
+        { coinId: 3, instrument: "C3USDT", marketCapAvailable: true, prices: [
+          { date: "2026-08-01", close: 100 }, { date: "2026-08-05", close: 98 },
+          { date: "2026-08-07", close: 96 }, { date: "2026-08-08", close: 95 },
+        ]},
+      ];
+      const btcPrices = [
+        { date: "2026-08-01", close: 100 },
+        { date: "2026-08-05", close: 105 },
+        { date: "2026-08-07", close: 108 },
+        { date: "2026-08-08", close: 110 },
+      ];
+      const result = calculateRelativeStrengthResult(context(), members, { coinId: 99, instrument: BTC_PERPETUAL_INSTRUMENT, prices: btcPrices });
+      expect(result.metrics.relativeStrength14d.state).toBe("INSUFFICIENT_HISTORY");
+      expect(result.metrics.relativeStrength7d.state).toBe("VALID");
+      expect(result.metrics.relativeStrength3d.state).toBe("VALID");
+      expect(result.metrics.relativeStrength1d.state).toBe("VALID");
+      expect(result.availabilityState).toBe("VALID");
+      expect(result.provenance).toMatchObject({
+        stageAvailability: "VALID",
+        mandatoryWindows: ["1D", "3D", "7D"],
+      });
+    });
+
+    test("missing mandatory 7D window blocks stage even when 1D/3D/14D are VALID", () => {
+      const members: RSConstituentInput[] = [
+        { coinId: 1, instrument: "C1USDT", marketCapAvailable: true, prices: [
+          { date: "2026-08-05", close: 100 }, { date: "2026-08-07", close: 105 }, { date: "2026-08-08", close: 110 },
+        ]},
+        { coinId: 2, instrument: "C2USDT", marketCapAvailable: true, prices: [
+          { date: "2026-08-05", close: 100 }, { date: "2026-08-07", close: 105 }, { date: "2026-08-08", close: 110 },
+        ]},
+        { coinId: 3, instrument: "C3USDT", marketCapAvailable: true, prices: [
+          { date: "2026-08-05", close: 100 }, { date: "2026-08-07", close: 105 }, { date: "2026-08-08", close: 110 },
+        ]},
+      ];
+      const btcPrices = [
+        { date: "2026-08-05", close: 100 },
+        { date: "2026-07-25", close: 90 },
+        { date: "2026-08-07", close: 105 },
+        { date: "2026-08-08", close: 110 },
+      ];
+      const result = calculateRelativeStrengthResult(context(), members, { coinId: 99, instrument: BTC_PERPETUAL_INSTRUMENT, prices: btcPrices });
+      expect(result.metrics.relativeStrength7d.state).toBe("INSUFFICIENT_HISTORY");
+      expect(result.availabilityState).toBe("INSUFFICIENT_HISTORY");
+    });
+
+    test("uses exact UTC window boundaries", () => {
+      expect(() => calculateAssetReturn("7D", new Date("2026-08-09T07:00:00Z"), prices(100, 110))).toThrow("UTC day boundary");
+    });
   });
 });

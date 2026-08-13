@@ -8,7 +8,7 @@ export const P3_ROTATION_ALGORITHM_VERSION = "1";
 export const P3_ROTATION_STATES = ["INFLOW", "ACCELERATING", "STABLE", "DECELERATING", "OUTFLOW"] as const;
 export type P3RotationState = (typeof P3_ROTATION_STATES)[number];
 
-export interface RotationInputs { healthMomentum: number | null; breadthMomentum: number | null; relativeStrength: number | null; volumeExpansion: number | null; oiConfirmation: number | null; confidence?: number | null; availabilityState?: P3AvailabilityState; }
+export interface RotationInputs { healthMomentum: number | null; breadthMomentum: number | null; relativeStrength: number | null; volumeExpansion: number | null; oiConfirmation: number | null; confidence?: number | null; availabilityState?: P3AvailabilityState; firstRun?: boolean; }
 export interface RotationThresholds { acceleratingMin: number; inflowMin: number; stableMin: number; deceleratingMin: number; }
 export interface RotationResult { score: number | null; state: P3RotationState | null; availabilityState: P3AvailabilityState; reasons: readonly string[]; confidence: number | null; provenance: Record<string, unknown>; }
 
@@ -93,7 +93,35 @@ function validateContext(context: P3CalculationContext): void {
 export function calculateRotation(inputs: RotationInputs, thresholds: RotationThresholds): RotationResult {
   const values = [inputs.healthMomentum, inputs.breadthMomentum, inputs.relativeStrength, inputs.volumeExpansion, inputs.oiConfirmation];
   const missing = values.filter((value) => !valid(value)).length;
-  if (missing) return { score: null, state: null, availabilityState: inputs.availabilityState && inputs.availabilityState !== "VALID" ? inputs.availabilityState : "MISSING", reasons: [`${missing}_required_rotation_inputs_unavailable`], confidence: inputs.confidence ?? null, provenance: { module: "rotation", thresholds, missingInputs: missing, weights: { healthMomentum: 0.3, breadthMomentum: 0.2, relativeStrength: 0.2, volumeExpansion: 0.15, oiConfirmation: 0.15 } } };
+  const isFirstRun = inputs.firstRun === true;
+  const breadthMomentumMissing = !valid(inputs.breadthMomentum);
+
+  if (missing) {
+    // First-run bootstrap: allow missing breadthMomentum when no VALID historical P3 baseline exists
+    if (isFirstRun && missing === 1 && breadthMomentumMissing) {
+      const availableInputs = {
+        healthMomentum: inputs.healthMomentum as number,
+        relativeStrength: inputs.relativeStrength as number,
+        volumeExpansion: inputs.volumeExpansion as number,
+        oiConfirmation: inputs.oiConfirmation as number,
+      };
+      const availableWeights = { healthMomentum: 0.3, relativeStrength: 0.2, volumeExpansion: 0.15, oiConfirmation: 0.15 };
+      const totalWeight = Object.values(availableWeights).reduce((sum, w) => sum + w, 0);
+      const normalizedWeights = Object.fromEntries(Object.entries(availableWeights).map(([k, v]) => [k, v / totalWeight])) as Record<string, number>;
+      const score = availableInputs.healthMomentum * normalizedWeights.healthMomentum + availableInputs.relativeStrength * normalizedWeights.relativeStrength + availableInputs.volumeExpansion * normalizedWeights.volumeExpansion + availableInputs.oiConfirmation * normalizedWeights.oiConfirmation;
+      const matches: Array<{ state: P3RotationState; reason: string }> = [];
+      if (Object.values(thresholds).some((value) => !Number.isFinite(value))) throw new Error("Rotation thresholds must be finite");
+      if (!(thresholds.acceleratingMin > thresholds.inflowMin && thresholds.inflowMin > thresholds.stableMin && thresholds.stableMin > thresholds.deceleratingMin)) throw new Error("Rotation thresholds must be strictly descending");
+      if (score >= thresholds.acceleratingMin) matches.push({ state: "ACCELERATING", reason: "rotation_score_accelerating" });
+      else if (score >= thresholds.inflowMin) matches.push({ state: "INFLOW", reason: "rotation_score_inflow" });
+      else if (score >= thresholds.stableMin) matches.push({ state: "STABLE", reason: "rotation_score_stable" });
+      else if (score >= thresholds.deceleratingMin) matches.push({ state: "DECELERATING", reason: "rotation_score_decelerating" });
+      else matches.push({ state: "OUTFLOW", reason: "rotation_score_outflow" });
+      if (matches.length !== 1) return { score, state: null, availabilityState: matches.length ? "AMBIGUOUS" : "NOT_APPLICABLE", reasons: matches.length ? matches.map((match) => match.reason) : ["No rotation threshold matched"], confidence: inputs.confidence ?? null, provenance: { module: "rotation", thresholds, matches: matches.map((match) => match.state), weights: normalizedWeights, firstRun: true, missingInputs: ["breadthMomentum"] } };
+      return { score, state: matches[0].state, availabilityState: "VALID", reasons: [matches[0].reason], confidence: inputs.confidence ?? null, provenance: { module: "rotation", thresholds, matches: [matches[0].state], weights: normalizedWeights, firstRun: true, missingInputs: ["breadthMomentum"] } };
+    }
+    return { score: null, state: null, availabilityState: inputs.availabilityState && inputs.availabilityState !== "VALID" ? inputs.availabilityState : "MISSING", reasons: [`${missing}_required_rotation_inputs_unavailable`], confidence: inputs.confidence ?? null, provenance: { module: "rotation", thresholds, missingInputs: missing, weights: { healthMomentum: 0.3, breadthMomentum: 0.2, relativeStrength: 0.2, volumeExpansion: 0.15, oiConfirmation: 0.15 } } };
+  }
   if (values.some((value) => (value as number) < 0 || (value as number) > 100)) return { score: null, state: null, availabilityState: "INVALID", reasons: ["Rotation components must be normalized to 0-100"], confidence: inputs.confidence ?? null, provenance: { module: "rotation", thresholds } };
   const score = (inputs.healthMomentum as number) * 0.3 + (inputs.breadthMomentum as number) * 0.2 + (inputs.relativeStrength as number) * 0.2 + (inputs.volumeExpansion as number) * 0.15 + (inputs.oiConfirmation as number) * 0.15;
   const matches: Array<{ state: P3RotationState; reason: string }> = [];

@@ -5,7 +5,7 @@ import { persistP3Calculation, type P3PersistenceOutcome } from "./persistence";
 
 export const P3_REGIME_ALGORITHM_KEY = "regime";
 export const P3_REGIME_ALGORITHM_VERSION = "1";
-export const P3_REGIMES = ["EMERGING", "STRONG", "MATURE", "WEAKENING", "DEAD"] as const;
+export const P3_REGIMES = ["EMERGING", "STRONG", "MATURE", "WEAKENING", "DEAD", "NEUTRAL"] as const;
 export type P3Regime = (typeof P3_REGIMES)[number];
 
 export interface RegimeInputs {
@@ -19,6 +19,7 @@ export interface RegimeInputs {
   relativeStrengthChange: number | null;
   confidence?: number | null;
   availabilityState?: P3AvailabilityState;
+  firstRun?: boolean;
 }
 
 export interface RegimeThresholds {
@@ -62,17 +63,34 @@ function unavailable(inputs: RegimeInputs): RegimeResult {
 
 export function classifyRegime(inputs: RegimeInputs, thresholds: RegimeThresholds): RegimeResult {
   validateThresholds(thresholds);
-  const values = [inputs.health, inputs.healthChange, inputs.breadth, inputs.breadthChange, inputs.momentum, inputs.acceleration, inputs.relativeStrength, inputs.relativeStrengthChange];
-  if (values.some((value) => !valid(value))) return unavailable(inputs);
-  const h = inputs.health as number, dh = inputs.healthChange as number, b = inputs.breadth as number, db = inputs.breadthChange as number, m = inputs.momentum as number, a = inputs.acceleration as number, rs = inputs.relativeStrength as number, drs = inputs.relativeStrengthChange as number;
+  const firstRun = inputs.firstRun === true;
+  const requiredValues = firstRun
+    ? [inputs.health, inputs.healthChange, inputs.breadth, inputs.momentum, inputs.acceleration, inputs.relativeStrength]
+    : [inputs.health, inputs.healthChange, inputs.breadth, inputs.breadthChange, inputs.momentum, inputs.acceleration, inputs.relativeStrength, inputs.relativeStrengthChange];
+  if (requiredValues.some((value) => !valid(value))) return unavailable(inputs);
+  const h = inputs.health as number, dh = inputs.healthChange as number, b = inputs.breadth as number, db = inputs.breadthChange, m = inputs.momentum as number, a = inputs.acceleration as number, rs = inputs.relativeStrength as number, drs = inputs.relativeStrengthChange;
   const matches: Array<{ regime: P3Regime; reasons: string[] }> = [];
-  if (dh >= thresholds.healthImproving && m > thresholds.momentumPositive && db >= thresholds.breadthIncreasing && drs >= thresholds.relativeStrengthImproving) matches.push({ regime: "EMERGING", reasons: ["health_improving", "momentum_positive", "breadth_increasing", "relative_strength_improving"] });
+  // On first-run, null change fields are acceptable for EMERGING classification
+  // as long as current conditions (healthChange, momentum, relativeStrength) are positive
+  const emergingChangeMatch = firstRun
+    ? (dh >= thresholds.healthImproving && m > thresholds.momentumPositive && rs > thresholds.relativeStrengthPositive)
+    : (dh >= thresholds.healthImproving && m > thresholds.momentumPositive && (db != null && db >= thresholds.breadthIncreasing) && (drs != null && drs >= thresholds.relativeStrengthImproving));
+  if (emergingChangeMatch) matches.push({ regime: "EMERGING", reasons: firstRun ? ["health_improving", "momentum_positive", "relative_strength_positive"] : ["health_improving", "momentum_positive", "breadth_increasing", "relative_strength_improving"] });
   if (h >= thresholds.healthHigh && b >= thresholds.breadthHigh && m > thresholds.momentumPositive && rs > thresholds.relativeStrengthPositive) matches.push({ regime: "STRONG", reasons: ["health_high", "breadth_high", "momentum_positive", "relative_strength_positive"] });
   if (h >= thresholds.healthHigh && b >= thresholds.breadthHigh && m <= thresholds.momentumPositive && a <= thresholds.accelerationDeclining) matches.push({ regime: "MATURE", reasons: ["health_high", "breadth_high", "momentum_slowing", "acceleration_declining"] });
-  if ((dh <= thresholds.healthDeclining || db <= thresholds.breadthDeclining) && m <= thresholds.momentumWeakening) matches.push({ regime: "WEAKENING", reasons: ["health_or_breadth_declining", "momentum_weakening"] });
+  // On first-run, WEAKENING can match based on healthChange alone (breadthChange may be null)
+  const weakeningMatch = firstRun
+    ? (dh <= thresholds.healthDeclining && m <= thresholds.momentumWeakening)
+    : ((dh <= thresholds.healthDeclining || (db != null && db <= thresholds.breadthDeclining)) && m <= thresholds.momentumWeakening);
+  if (weakeningMatch) matches.push({ regime: "WEAKENING", reasons: firstRun ? ["health_declining", "momentum_weakening"] : ["health_or_breadth_declining", "momentum_weakening"] });
   if (h <= thresholds.healthLow && b <= thresholds.breadthLow && m < thresholds.momentumNegative && rs < thresholds.relativeStrengthNegative) matches.push({ regime: "DEAD", reasons: ["health_low", "breadth_low", "momentum_negative", "relative_strength_negative"] });
-  if (matches.length !== 1) return { regime: null, availabilityState: matches.length === 0 ? "NOT_APPLICABLE" : "AMBIGUOUS", reasons: matches.length === 0 ? ["No regime rule matched"] : matches.flatMap((match) => [`matched_${match.regime.toLowerCase()}`, ...match.reasons]), confidence: inputs.confidence ?? null, provenance: { module: "regime", thresholds, matched: matches.map((match) => match.regime) } };
-  return { regime: matches[0].regime, availabilityState: "VALID", reasons: matches[0].reasons, confidence: inputs.confidence ?? null, provenance: { module: "regime", thresholds, matched: [matches[0].regime] } };
+  // NEUTRAL: All mandatory current inputs are valid, but no directional regime rule matched
+  // This represents mixed/transition market states that are not directionally classifiable
+  if (matches.length === 0) {
+    return { regime: "NEUTRAL", availabilityState: "VALID", reasons: ["no_directional_regime_matched"], confidence: inputs.confidence ?? null, provenance: { module: "regime", thresholds, matched: ["NEUTRAL"], firstRun, historicalP3BaselineAvailable: !firstRun, breadthChange: db, relativeStrengthChange: drs } };
+  }
+  if (matches.length !== 1) return { regime: null, availabilityState: "AMBIGUOUS", reasons: matches.flatMap((match) => [`matched_${match.regime.toLowerCase()}`, ...match.reasons]), confidence: inputs.confidence ?? null, provenance: { module: "regime", thresholds, matched: matches.map((match) => match.regime), firstRun, historicalP3BaselineAvailable: !firstRun, breadthChange: db, relativeStrengthChange: drs } };
+  return { regime: matches[0].regime, availabilityState: "VALID", reasons: matches[0].reasons, confidence: inputs.confidence ?? null, provenance: { module: "regime", thresholds, matched: [matches[0].regime], firstRun, historicalP3BaselineAvailable: !firstRun, breadthChange: db, relativeStrengthChange: drs } };
 }
 
 function metric(name: string, value: string | null, state: P3AvailabilityState, reason?: string): P3MetricResult<string> { return { metric: name, value, state, ...(reason ? { reason } : {}) }; }

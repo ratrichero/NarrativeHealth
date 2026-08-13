@@ -22,6 +22,16 @@ export interface P3PersistenceOutcome {
   inserted: boolean;
 }
 
+/**
+ * Error thrown when persistence is attempted on an incomplete P3 calculation.
+ */
+export class P3PersistenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "P3PersistenceError";
+  }
+}
+
 function metricNumber(result: P3CalculationResult, key: string): string | null {
   const metric = result.metrics[key];
   return metric?.state === "VALID" && typeof metric.value === "number" ? String(metric.value) : null;
@@ -35,12 +45,22 @@ function metricString(result: P3CalculationResult, key: string): string | null {
 export async function persistP3Calculation(payload: P3PersistencePayload): Promise<P3PersistenceOutcome> {
   const { context, result } = payload;
   const identity = calculationIdentity(context);
+
+  // Defense-in-depth: P3 historical intelligence may only be persisted when
+  // all mandatory stages are VALID. Reject incomplete results at the
+  // persistence boundary so that even callers bypassing the orchestrator
+  // gate cannot write invalid historical artifacts.
+  if (result.availabilityState !== "VALID") {
+    throw new P3PersistenceError(
+      `Refusing to persist P3 result with availabilityState=${result.availabilityState} for identity=${identity}`
+    );
+  }
   if (result.narrativeId !== context.narrativeId || result.windowEnd.getTime() !== context.windowEnd.getTime()) {
     throw new Error("Result does not match calculation context");
   }
 
   return db.transaction(async (tx) => {
-    const inserted = await tx.insert(p3NarrativeIntelligence).values({
+    const upserted = await tx.insert(p3NarrativeIntelligence).values({
       narrativeId: context.narrativeId,
       windowEnd: context.windowEnd,
       periodStart: context.windowStart,
@@ -50,6 +70,7 @@ export async function persistP3Calculation(payload: P3PersistencePayload): Promi
       ruleVersionId: context.ruleVersionId ?? null,
       featureVersionId: context.featureVersionId ?? null,
       scoreConfigId: context.scoreConfigId ?? null,
+      membershipSnapshotId: context.membershipSnapshotId ?? null,
       calculationMode: context.calculationMode,
       availabilityState: result.availabilityState,
       confidence: result.confidence == null ? null : String(result.confidence),
@@ -75,17 +96,42 @@ export async function persistP3Calculation(payload: P3PersistencePayload): Promi
       explanation: result.explanation ?? null,
       provenance: result.provenance,
       calculatedAt: context.calculatedAt,
-    }).onConflictDoNothing({ target: [
+    }).onConflictDoUpdate({ target: [
       p3NarrativeIntelligence.narrativeId,
       p3NarrativeIntelligence.windowEnd,
       p3NarrativeIntelligence.algorithmKey,
       p3NarrativeIntelligence.algorithmVersion,
       p3NarrativeIntelligence.calculationMode,
-    ] }).returning({ id: p3NarrativeIntelligence.id });
+    ], set: {
+      availabilityState: result.availabilityState,
+      confidence: result.confidence == null ? null : String(result.confidence),
+      breadth: metricNumber(result, "breadth"),
+      strongBreadth: metricNumber(result, "strongBreadth"),
+      momentum1d: metricNumber(result, "momentum1d"),
+      momentum3d: metricNumber(result, "momentum3d"),
+      momentum7d: metricNumber(result, "momentum7d"),
+      momentum14d: metricNumber(result, "momentum14d"),
+      acceleration: metricNumber(result, "acceleration"),
+      relativeStrength1d: metricNumber(result, "relativeStrength1d"),
+      relativeStrength3d: metricNumber(result, "relativeStrength3d"),
+      relativeStrength7d: metricNumber(result, "relativeStrength7d"),
+      relativeStrength14d: metricNumber(result, "relativeStrength14d"),
+      leaderCoinId: result.metrics.leaderCoinId?.state === "VALID" && typeof result.metrics.leaderCoinId.value === "number" ? result.metrics.leaderCoinId.value : null,
+      leaderScore: metricNumber(result, "leaderScore"),
+      concentrationTop1: metricNumber(result, "concentrationTop1"),
+      concentrationTop3: metricNumber(result, "concentrationTop3"),
+      concentrationClassification: metricString(result, "concentrationClassification"),
+      regime: metricString(result, "regime"),
+      rotation: metricString(result, "rotation"),
+      rotationScore: metricNumber(result, "rotationScore"),
+      explanation: result.explanation ?? null,
+      provenance: result.provenance,
+      calculatedAt: context.calculatedAt,
+    } }).returning({ id: p3NarrativeIntelligence.id });
 
-    if (inserted[0]) {
+    if (upserted[0]) {
       const [snapshot] = await tx.insert(p3ConstituentSnapshots).values({
-        intelligenceId: inserted[0].id,
+        intelligenceId: upserted[0].id,
         capturedAt: context.calculatedAt,
         membershipSource: payload.membershipSource,
         membershipMode: payload.membershipMode,
@@ -106,14 +152,14 @@ export async function persistP3Calculation(payload: P3PersistencePayload): Promi
       }
       if (payload.leadershipMembers?.length) {
         await tx.insert(p3LeadershipMembers).values(payload.leadershipMembers.map((member) => ({
-          intelligenceId: inserted[0].id, coinId: member.coinId, leaderScore: String(member.leaderScore),
+          intelligenceId: upserted[0].id, coinId: member.coinId, leaderScore: String(member.leaderScore),
           leaderRank: member.leaderRank, leadershipStatus: member.leadershipStatus, isEmergingLeader: member.isEmergingLeader,
           leaderDays7d: member.leaderDays7d ?? null, leaderPersistence7d: member.leaderPersistence7d == null ? null : String(member.leaderPersistence7d),
           contribution: String(member.contribution), healthScore: String(member.healthScore), momentumScore: String(member.momentumScore),
           relativeStrengthScore: String(member.relativeStrengthScore), volumeScore: String(member.volumeScore),
         })));
       }
-      return { intelligenceId: inserted[0].id, identity, inserted: true };
+      return { intelligenceId: upserted[0].id, identity, inserted: true };
     }
 
     const [existing] = await tx.select({ id: p3NarrativeIntelligence.id }).from(p3NarrativeIntelligence).where(and(

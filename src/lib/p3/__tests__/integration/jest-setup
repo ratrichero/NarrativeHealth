@@ -1,0 +1,17 @@
+/**
+ * Jest Setup for P3 Integration Tests
+ *
+ * This file runs before integration tests to ensure database safety.
+ */
+
+// Run safety guard for integration tests only
+const testPath = process.env.npm_config_argv || process.argv.join(' ');
+if (testPath && testPath.includes('integration')) {
+  try {
+    const { ensureTestDatabaseSafety } = require('./test-setup');
+    ensureTestDatabaseSafety();
+  } catch (error) {
+    console.error('Integration test safety check failed:', error.message);
+    process.exit(1);
+  }
+}

@@ -20,6 +20,7 @@ export interface P3CalculationContext {
   ruleVersionId?: number | null;
   featureVersionId?: number | null;
   scoreConfigId?: number | null;
+  membershipSnapshotId?: number | null;
   constituents: readonly P3Constituent[];
   sourceAvailability: Readonly<Record<string, P3Availability<unknown>>>;
   btcBenchmark?: P3Availability<unknown>;

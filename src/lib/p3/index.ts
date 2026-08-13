@@ -4,7 +4,25 @@ export * from "./context";
 export * from "./persistence";
 export * from "./windows";
 export * from "./preparation";
+export * from "./membership";
+export {
+  loadRegimeThresholds,
+  loadRotationThresholds,
+} from "./preparation";
 export * from "./breadth";
+
+// P3 Orchestrator
+export {
+  runP3AuthoritativeExecution,
+  createP3ModuleContext,
+  type P3ExecutionConfig,
+  type P3ExecutionResult,
+  P3ConfigurationError,
+  P3InputPreparationError,
+  P3InsufficientDataError,
+  P3CalculationError,
+  P3PersistenceError,
+} from "./orchestrator";
 
 // P3 Momentum is owned by the existing MomentumService (AD-003). Re-export the
 // P3-facing API so kernel consumers share one engine — no parallel Momentum path.

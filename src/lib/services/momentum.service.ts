@@ -391,8 +391,11 @@ export function calculateP3Momentum(
   const acceleration = calculateAcceleration(momentum3d, momentum1d, thresholds);
 
   const windows = [momentum1d, momentum3d, momentum7d, momentum14d];
-  const states: P3AvailabilityState[] = [...windows.map((w) => w.state), acceleration.state];
-  const availabilityState = worstAvailability(states);
+  const mandatoryWindows = [momentum1d, momentum3d, momentum7d];
+  const mandatoryStates: P3AvailabilityState[] = [...mandatoryWindows.map((w) => w.state), acceleration.state];
+  const optionalStates: P3AvailabilityState[] = [momentum14d.state];
+  const stageAvailability = worstAvailability(mandatoryStates);
+  const windowAvailability = worstAvailability([...mandatoryStates, ...optionalStates]);
   const firstUnavailable = [...windows, acceleration].find((item) => item.state !== "VALID");
 
   const indexed = indexObservations(observations);
@@ -410,11 +413,11 @@ export function calculateP3Momentum(
     momentum7d,
     momentum14d,
     acceleration,
-    availabilityState,
-    ...(availabilityState !== "VALID" && firstUnavailable && "reason" in firstUnavailable && firstUnavailable.reason
+    availabilityState: stageAvailability,
+    ...(stageAvailability !== "VALID" && firstUnavailable && "reason" in firstUnavailable && firstUnavailable.reason
       ? { availabilityReason: firstUnavailable.reason }
-      : availabilityState !== "VALID"
-        ? { availabilityReason: "One or more momentum windows or acceleration is unavailable" }
+      : stageAvailability !== "VALID"
+        ? { availabilityReason: "One or more mandatory momentum windows or acceleration is unavailable" }
         : {}),
     observationCount,
     fullSevenObservationCoverage,
@@ -433,6 +436,8 @@ export function calculateP3Momentum(
       fullSevenObservationCoverage,
       windowEnd: windowEnd.toISOString(),
       degradedWindows: windows.filter((w) => w.degradedCoverage).map((w) => w.window),
+      stageAvailability,
+      windowAvailability,
       legacyNote:
         "P0-P2 MomentumService.calculateNarrativeMomentum remains a separate compatibility path and is not this formula",
     },

@@ -348,4 +348,76 @@ describe("P3 Momentum (extended MomentumService)", () => {
       expect(projectP3ToLegacy(p3)).toBeNull();
     });
   });
+
+  describe("adaptive window semantics (P3-10E.25/26)", () => {
+    test("14D MISSING does not block stage when 1D/3D/7D/acceleration are VALID", () => {
+      // Observations cover 2026-08-01 through 2026-08-08.
+      // 14D start target = 2026-07-25 (missing) → 14D MISSING
+      // 7D start target = 2026-08-01 (present) → 7D VALID
+      // 3D start target = 2026-08-05 (present) → 3D VALID
+      // 1D start target = 2026-08-07 (present) → 1D VALID
+      const observations = [
+        obs("2026-08-01", 50),
+        obs("2026-08-05", 55),
+        obs("2026-08-07", 58),
+        obs("2026-08-08", 60),
+      ];
+      const result = calculateP3Momentum(WINDOW_END, observations);
+      expect(result.momentum14d.state).toBe("MISSING");
+      expect(result.momentum7d.state).toBe("VALID");
+      expect(result.momentum3d.state).toBe("VALID");
+      expect(result.momentum1d.state).toBe("VALID");
+      expect(result.acceleration.state).toBe("VALID");
+      expect(result.availabilityState).toBe("VALID");
+    });
+
+    test("missing mandatory 7D window blocks stage even when 1D/3D/14D are VALID", () => {
+      // No observation at or before 7D start target (2026-08-01).
+      const observations = [
+        obs("2026-08-05", 55),
+        obs("2026-08-07", 58),
+        obs("2026-08-08", 60),
+      ];
+      const result = calculateP3Momentum(WINDOW_END, observations);
+      expect(result.momentum7d.state).toBe("MISSING");
+      expect(result.availabilityState).toBe("MISSING");
+    });
+
+    test("missing mandatory 1D window blocks stage and acceleration", () => {
+      // Only end target present; all start targets missing → MISSING.
+      const observations = [
+        obs("2026-08-08", 60),
+      ];
+      const result = calculateP3Momentum(WINDOW_END, observations);
+      expect(result.momentum1d.state).toBe("MISSING");
+      expect(result.acceleration.state).toBe("MISSING");
+      expect(result.availabilityState).toBe("MISSING");
+    });
+
+    test("14D MISSING is not fabricated as zero", () => {
+      const observations = [
+        obs("2026-08-01", 50),
+        obs("2026-08-05", 55),
+        obs("2026-08-07", 58),
+        obs("2026-08-08", 60),
+      ];
+      const result = calculateP3Momentum(WINDOW_END, observations);
+      expect(result.momentum14d.value).toBeNull();
+      expect(result.momentum14d.state).toBe("MISSING");
+    });
+
+    test("stage provenance records both stage and window availability", () => {
+      const observations = [
+        obs("2026-08-01", 50),
+        obs("2026-08-05", 55),
+        obs("2026-08-07", 58),
+        obs("2026-08-08", 60),
+      ];
+      const result = calculateP3Momentum(WINDOW_END, observations);
+      expect(result.provenance).toMatchObject({
+        stageAvailability: "VALID",
+        windowAvailability: "MISSING",
+      });
+    });
+  });
 });

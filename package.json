@@ -7,7 +7,20 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "jest"
+    "test": "jest",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "test:db:migrate": "drizzle-kit migrate --config=drizzle.config.test.json",
+    "test:db:push": "drizzle-kit push --config=drizzle.config.test.json",
+    "test:integration": "jest src/lib/p3/__tests__/integration",
+    "test:smoke": "jest src/lib/p3/__tests__/integration/smoke.test.ts",
+    "audit:production": "node src/lib/p3/__tests__/production-audit.js",
+    "audit:migration": "node src/lib/p3/__tests__/migration-audit.js",
+    "audit:score-configs": "node src/lib/p3/__tests__/score-configs-audit.js",
+    "check:backup": "node src/lib/p3/__tests__/check-backup.js",
+    "migrate:p3": "node src/lib/p3/__tests__/execute-migrations.js"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
@@ -39,6 +52,7 @@
     "postcss": "8.5.8",
     "tailwindcss": "4.1.17",
     "ts-jest": "^29.4.12",
+    "ts-node": "^10.9.2",
     "typescript": "5.9.3"
   }
 }

@@ -1,6 +1,8 @@
 import {
   pgTable,
   serial,
+  bigserial,
+  bigint,
   varchar,
   text,
   boolean,
@@ -13,8 +15,9 @@ import {
   primaryKey,
   index,
   unique,
+  check,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
 // ==================== NARRATIVE ====================
 export const narratives = pgTable("narratives", {
@@ -486,6 +489,74 @@ export const narrativeMomentum = pgTable("narrative_momentum", {
   narrativeIdx: index("narrative_momentum_narrative_idx").on(table.narrativeId),
 }));
 
+// ==================== AUTHORITATIVE NARRATIVE MEMBERSHIP ====================
+export const narrativeMembershipEvents = pgTable("narrative_membership_events", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  narrativeId: integer("narrative_id").notNull().references(() => narratives.id, { onDelete: "restrict" }),
+  coinId: integer("coin_id").notNull().references(() => coins.id, { onDelete: "restrict" }),
+  eventType: varchar("event_type", { length: 30 }).notNull(),
+  isPrimary: boolean("is_primary"),
+  effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+  recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  source: varchar("source", { length: 50 }).notNull(),
+  sourceRef: varchar("source_ref", { length: 200 }),
+  actor: varchar("actor", { length: 100 }),
+  idempotencyKey: varchar("idempotency_key", { length: 200 }).notNull().unique(),
+  provenance: jsonb("provenance").notNull(),
+}, (table) => ({
+  eventTypeCheck: check("narrative_membership_events_type_check", sql`${table.eventType} IN ('ADDED', 'REMOVED', 'PRIMARY_SET')`),
+  primaryCheck: check("narrative_membership_events_primary_check", sql`${table.eventType} = 'REMOVED' OR ${table.isPrimary} IS NOT NULL`),
+  narrativeEffectiveIdx: index("narrative_membership_events_narrative_effective_idx").on(table.narrativeId, table.effectiveAt, table.id),
+  narrativeCoinEffectiveIdx: index("narrative_membership_events_narrative_coin_effective_idx").on(table.narrativeId, table.coinId, table.effectiveAt, table.id),
+  coinEffectiveIdx: index("narrative_membership_events_coin_effective_idx").on(table.coinId, table.effectiveAt),
+}));
+
+export const narrativeMembershipCoverage = pgTable("narrative_membership_coverage", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  narrativeId: integer("narrative_id").notNull().references(() => narratives.id, { onDelete: "restrict" }),
+  historyCoverageStart: timestamp("history_coverage_start", { withTimezone: true }).notNull(),
+  source: varchar("source", { length: 50 }).notNull(),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }).notNull().defaultNow(),
+  verifiedBy: varchar("verified_by", { length: 100 }),
+  provenance: jsonb("provenance").notNull(),
+}, (table) => ({
+  identityUnique: unique("narrative_membership_coverage_unique").on(table.narrativeId, table.historyCoverageStart),
+  narrativeStartIdx: index("narrative_membership_coverage_narrative_start_idx").on(table.narrativeId, table.historyCoverageStart),
+}));
+
+export const narrativeMembershipSnapshots = pgTable("narrative_membership_snapshots", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  narrativeId: integer("narrative_id").notNull().references(() => narratives.id, { onDelete: "restrict" }),
+  windowEnd: timestamp("window_end", { withTimezone: true }).notNull(),
+  snapshotRevision: integer("snapshot_revision").notNull().default(1),
+  membershipMode: varchar("membership_mode", { length: 30 }).notNull(),
+  membershipSource: varchar("membership_source", { length: 50 }).notNull(),
+  ledgerCutoffEventId: bigint("ledger_cutoff_event_id", { mode: "number" }).references(() => narrativeMembershipEvents.id, { onDelete: "restrict" }),
+  memberCount: integer("member_count").notNull(),
+  memberDigest: varchar("member_digest", { length: 128 }).notNull(),
+  capturedAt: timestamp("captured_at", { withTimezone: true }).notNull().defaultNow(),
+  provenance: jsonb("provenance").notNull(),
+}, (table) => ({
+  identityUnique: unique("narrative_membership_snapshots_identity_unique").on(table.narrativeId, table.windowEnd, table.snapshotRevision, table.membershipMode),
+  revisionCheck: check("narrative_membership_snapshots_revision_check", sql`${table.snapshotRevision} > 0`),
+  countCheck: check("narrative_membership_snapshots_count_check", sql`${table.memberCount} >= 0`),
+  narrativeWindowIdx: index("narrative_membership_snapshots_narrative_window_idx").on(table.narrativeId, table.windowEnd),
+  windowIdx: index("narrative_membership_snapshots_window_idx").on(table.windowEnd),
+}));
+
+export const narrativeMembershipSnapshotMembers = pgTable("narrative_membership_snapshot_members", {
+  snapshotId: bigint("snapshot_id", { mode: "number" }).notNull().references(() => narrativeMembershipSnapshots.id, { onDelete: "restrict" }),
+  coinId: integer("coin_id").notNull().references(() => coins.id, { onDelete: "restrict" }),
+  isPrimary: boolean("is_primary").notNull(),
+  membershipState: varchar("membership_state", { length: 30 }).notNull().default("MEMBER"),
+  sourceEventId: bigint("source_event_id", { mode: "number" }).references(() => narrativeMembershipEvents.id, { onDelete: "restrict" }),
+  provenance: jsonb("provenance"),
+}, (table) => ({
+  memberPk: primaryKey({ columns: [table.snapshotId, table.coinId] }),
+  stateCheck: check("narrative_membership_snapshot_members_state_check", sql`${table.membershipState} = 'MEMBER'`),
+  coinSnapshotIdx: index("narrative_membership_snapshot_members_coin_snapshot_idx").on(table.coinId, table.snapshotId),
+}));
+
 // ==================== P3_NARRATIVE_INTELLIGENCE ====================
 export const p3NarrativeIntelligence = pgTable("p3_narrative_intelligence", {
   id: serial("id").primaryKey(),
@@ -498,6 +569,7 @@ export const p3NarrativeIntelligence = pgTable("p3_narrative_intelligence", {
   ruleVersionId: integer("rule_version_id").references(() => ruleVersions.id, { onDelete: "restrict" }),
   featureVersionId: integer("feature_version_id").references(() => featureVersions.id, { onDelete: "restrict" }),
   scoreConfigId: integer("score_config_id").references(() => scoreConfigs.id, { onDelete: "restrict" }),
+  membershipSnapshotId: bigint("membership_snapshot_id", { mode: "number" }).references(() => narrativeMembershipSnapshots.id, { onDelete: "restrict" }),
   calculationMode: varchar("calculation_mode", { length: 30 }).notNull().default("observed"),
   availabilityState: varchar("availability_state", { length: 30 }).notNull(),
   confidence: decimal("confidence", { precision: 7, scale: 4 }),
@@ -529,6 +601,7 @@ export const p3NarrativeIntelligence = pgTable("p3_narrative_intelligence", {
   narrativeWindowIdx: index("p3_narrative_intelligence_narrative_window_idx").on(table.narrativeId, table.windowEnd),
   algorithmIdx: index("p3_narrative_intelligence_algorithm_idx").on(table.algorithmKey, table.algorithmVersion),
   windowIdx: index("p3_narrative_intelligence_window_idx").on(table.windowEnd),
+  membershipSnapshotIdx: index("p3_narrative_intelligence_membership_snapshot_idx").on(table.membershipSnapshotId),
 }));
 
 // ==================== P3_CONSTITUENT_SNAPSHOTS ====================
@@ -577,6 +650,23 @@ export const p3LeadershipMembers = pgTable("p3_leadership_members", {
   rankUnique: unique("p3_leadership_members_intelligence_rank_unique").on(table.intelligenceId, table.leaderRank),
   coinIdx: index("p3_leadership_members_coin_idx").on(table.coinId),
 }));
+// ==================== P3_HISTORICAL_CORRECTIONS ====================
+export const p3HistoricalCorrections = pgTable("p3_historical_corrections", {
+  id: serial("id").primaryKey(),
+  originalIntelligenceId: integer("original_intelligence_id").notNull().references(() => p3NarrativeIntelligence.id, { onDelete: "restrict" }),
+  originalSnapshotId: bigint("original_snapshot_id", { mode: "number" }).references(() => narrativeMembershipSnapshots.id, { onDelete: "restrict" }),
+  correctedSnapshotId: bigint("corrected_snapshot_id", { mode: "number" }).references(() => narrativeMembershipSnapshots.id, { onDelete: "restrict" }),
+  reason: text("reason").notNull(),
+  correctedAt: timestamp("corrected_at", { withTimezone: true }).notNull().defaultNow(),
+  algorithmKey: varchar("algorithm_key", { length: 100 }),
+  algorithmVersion: varchar("algorithm_version", { length: 50 }),
+  correctedBy: varchar("corrected_by", { length: 100 }),
+  provenance: jsonb("provenance").notNull(),
+}, (table) => ({
+  originalIntelligenceIdx: index("p3_historical_corrections_original_idx").on(table.originalIntelligenceId),
+  originalSnapshotIdx: index("p3_historical_corrections_original_snapshot_idx").on(table.originalSnapshotId),
+}));
+
 // ==================== DECISION_SIGNALS ====================
 export const decisionSignals = pgTable("decision_signals", {
   id: serial("id").primaryKey(),
@@ -739,9 +829,19 @@ export type CoinCorrelation = typeof coinCorrelations.$inferSelect;
 export type NewCoinCorrelation = typeof coinCorrelations.$inferInsert;
 export type NarrativeMomentum = typeof narrativeMomentum.$inferSelect;
 export type NewNarrativeMomentum = typeof narrativeMomentum.$inferInsert;
+export type NarrativeMembershipEvent = typeof narrativeMembershipEvents.$inferSelect;
+export type NewNarrativeMembershipEvent = typeof narrativeMembershipEvents.$inferInsert;
+export type NarrativeMembershipCoverage = typeof narrativeMembershipCoverage.$inferSelect;
+export type NewNarrativeMembershipCoverage = typeof narrativeMembershipCoverage.$inferInsert;
+export type NarrativeMembershipSnapshot = typeof narrativeMembershipSnapshots.$inferSelect;
+export type NewNarrativeMembershipSnapshot = typeof narrativeMembershipSnapshots.$inferInsert;
+export type NarrativeMembershipSnapshotMember = typeof narrativeMembershipSnapshotMembers.$inferSelect;
+export type NewNarrativeMembershipSnapshotMember = typeof narrativeMembershipSnapshotMembers.$inferInsert;
 export type DecisionSignal = typeof decisionSignals.$inferSelect;
 export type NewDecisionSignal = typeof decisionSignals.$inferInsert;
 export type AlertRule = typeof alertRules.$inferSelect;
 export type NewAlertRule = typeof alertRules.$inferInsert;
 export type AlertHistory = typeof alertHistory.$inferSelect;
 export type NewAlertHistory = typeof alertHistory.$inferInsert;
+export type P3HistoricalCorrection = typeof p3HistoricalCorrections.$inferSelect;
+export type NewP3HistoricalCorrection = typeof p3HistoricalCorrections.$inferInsert;

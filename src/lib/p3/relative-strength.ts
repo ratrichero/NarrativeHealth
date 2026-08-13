@@ -43,6 +43,7 @@ export interface RSWindowResult {
   classification: RSClassification | null;
   validConstituents: number;
   excludedConstituents: Array<{ coinId: number; reason: string }>;
+  constituentReturns: ReadonlyMap<number, number>;
 }
 
 const WINDOWS: readonly P3Window[] = ["1D", "3D", "7D", "14D"];
@@ -90,12 +91,14 @@ export function classifyRelativeStrength(value: number): RSClassification {
 export function calculateRelativeStrengthWindow(window: P3Window, windowEnd: Date, constituents: readonly RSConstituentInput[], btc: RSBenchmarkInput): RSWindowResult {
   const excludedConstituents: Array<{ coinId: number; reason: string }> = [];
   const returns: number[] = [];
+  const constituentReturns = new Map<number, number>();
   for (const constituent of [...constituents].sort((a, b) => a.coinId - b.coinId)) {
     if (!constituent.marketCapAvailable) { excludedConstituents.push({ coinId: constituent.coinId, reason: "missing_market_cap" }); continue; }
     if (!isCanonicalUsdtPerpetual(constituent.instrument)) { excludedConstituents.push({ coinId: constituent.coinId, reason: "missing_canonical_usdt_perpetual" }); continue; }
     const result = calculateAssetReturn(window, windowEnd, constituent.prices);
     if (result.state !== "VALID" || result.value == null) { excludedConstituents.push({ coinId: constituent.coinId, reason: result.reason ?? result.state }); continue; }
     returns.push(result.value);
+    constituentReturns.set(constituent.coinId, result.value);
   }
   const narrativeReturn: ReturnResult = returns.length < MIN_VALID_RS_CONSTITUENTS
     ? { value: null, state: "INSUFFICIENT_HISTORY", reason: "Fewer than three eligible constituents", startPrice: null, endPrice: null, startDate: null, endDate: null }
@@ -104,19 +107,21 @@ export function calculateRelativeStrengthWindow(window: P3Window, windowEnd: Dat
   const btcReturn = btc.instrument === BTC_PERPETUAL_INSTRUMENT
     ? calculateAssetReturn(window, windowEnd, btc.prices)
     : { value: null, state: "MISSING" as const, reason: "BTC-USDT perpetual benchmark is unavailable", startPrice: null, endPrice: null, startDate: null, endDate: null };
-  if (narrativeReturn.state !== "VALID" || narrativeReturn.value == null) return { window, narrativeReturn, btcReturn, relativeStrength: null, state: narrativeReturn.state, classification: null, validConstituents: returns.length, excludedConstituents };
-  if (btcReturn.state !== "VALID" || btcReturn.value == null) return { window, narrativeReturn, btcReturn, relativeStrength: null, state: btcReturn.state, classification: null, validConstituents: returns.length, excludedConstituents };
+  if (narrativeReturn.state !== "VALID" || narrativeReturn.value == null) return { window, narrativeReturn, btcReturn, relativeStrength: null, state: narrativeReturn.state, classification: null, validConstituents: returns.length, excludedConstituents, constituentReturns: Object.freeze(new Map(constituentReturns)) };
+  if (btcReturn.state !== "VALID" || btcReturn.value == null) return { window, narrativeReturn, btcReturn, relativeStrength: null, state: btcReturn.state, classification: null, validConstituents: returns.length, excludedConstituents, constituentReturns: Object.freeze(new Map(constituentReturns)) };
   const relativeStrength = narrativeReturn.value - btcReturn.value;
-  return { window, narrativeReturn, btcReturn, relativeStrength, state: "VALID", classification: classifyRelativeStrength(relativeStrength), validConstituents: returns.length, excludedConstituents };
+  return { window, narrativeReturn, btcReturn, relativeStrength, state: "VALID", classification: classifyRelativeStrength(relativeStrength), validConstituents: returns.length, excludedConstituents, constituentReturns: Object.freeze(new Map(constituentReturns)) };
 }
 
 function metric(name: string, result: RSWindowResult): P3MetricResult<number> { return { metric: name, value: result.relativeStrength, state: result.state, ...(result.state !== "VALID" ? { reason: result.narrativeReturn.reason ?? result.btcReturn.reason } : {}) }; }
 
 export function calculateRelativeStrengthResult(context: P3CalculationContext, constituents: readonly RSConstituentInput[], btc: RSBenchmarkInput): P3CalculationResult {
   const results = Object.fromEntries(WINDOWS.map((window) => [window, calculateRelativeStrengthWindow(window, context.windowEnd, constituents, btc)])) as Record<P3Window, RSWindowResult>;
-  const firstUnavailable = WINDOWS.map((window) => results[window]).find((item) => item.state !== "VALID");
+  const MANDATORY_WINDOWS: readonly P3Window[] = ["1D", "3D", "7D"];
+  const firstUnavailableMandatory = MANDATORY_WINDOWS.map((window) => results[window]).find((item) => item.state !== "VALID");
+  const stageAvailability = firstUnavailableMandatory?.state ?? "VALID";
   return normalizeResult(context, {
-    availabilityState: firstUnavailable?.state ?? "VALID",
+    availabilityState: stageAvailability,
     confidence: null,
     metrics: {
       relativeStrength1d: metric("relativeStrength1d", results["1D"]),
@@ -124,7 +129,7 @@ export function calculateRelativeStrengthResult(context: P3CalculationContext, c
       relativeStrength7d: metric("relativeStrength7d", results["7D"]),
       relativeStrength14d: metric("relativeStrength14d", results["14D"]),
     },
-    explanation: { windows: results },
+    explanation: { windows: results, stageAvailability, mandatoryWindows: MANDATORY_WINDOWS },
     provenance: {
       module: "relative_strength",
       algorithmKey: context.algorithmKey,
@@ -135,6 +140,9 @@ export function calculateRelativeStrengthResult(context: P3CalculationContext, c
       marketCapRole: "eligibility_only",
       minimumValidConstituents: MIN_VALID_RS_CONSTITUENTS,
       windows: results,
+      stageAvailability,
+      mandatoryWindows: MANDATORY_WINDOWS,
+      constituentReturns7d: Object.freeze(new Map(results["7D"].constituentReturns)),
     },
   });
 }

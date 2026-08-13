@@ -247,7 +247,7 @@ async def refresh_data(db: AsyncSession):
                 else:
                     print(f"No Binance Futures symbol configured for {coin.symbol}")
 
-                # Get FDV from CoinGecko (only FDV, not Market Cap)
+                # Get FDV and Market Cap from CoinGecko
                 if coin.coingecko_id and coin.coingecko_id in cg_data:
                     cgd = cg_data[coin.coingecko_id]
                     # Check if metrics already exist and update
@@ -263,15 +263,17 @@ async def refresh_data(db: AsyncSession):
                     cg_metrics = existing_cg_metrics.scalar_one_or_none()
 
                     if cg_metrics:
+                        cg_metrics.market_cap = str(cgd.get("market_cap")) if cgd.get("market_cap") else None
                         cg_metrics.fully_diluted_valuation = str(cgd.get("fully_diluted_valuation")) if cgd.get("fully_diluted_valuation") else None
                     else:
                         db.add(CoinMetrics(
                             coin_id=coin.id,
                             date=today,
+                            market_cap=str(cgd.get("market_cap")) if cgd.get("market_cap") else None,
                             fully_diluted_valuation=str(cgd.get("fully_diluted_valuation")) if cgd.get("fully_diluted_valuation") else None,
                             source="coingecko",
                         ))
-                    print(f"Successfully updated CoinGecko FDV for {coin.symbol}")
+                    print(f"Successfully updated CoinGecko metrics for {coin.symbol}")
 
                 # Get price data for feature calculation
                 price_result = await db.execute(
