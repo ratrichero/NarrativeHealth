@@ -8,7 +8,7 @@
 
 ### 1.2 Production Database
 
-- **URL**: `postgresql+asyncpg://upaper:Dotask24h@168.138.179.192:5432/mdd`
+- **URL**: `postgresql+asyncpg://upaper:****@168.138.179.192:5432/mdd`
 - **Schema**: `public`
 - **Total tables**: 31
 

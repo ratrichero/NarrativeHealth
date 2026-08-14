@@ -26,7 +26,7 @@ P3-10E.39 successfully restored PostgreSQL connectivity and executed the authori
 
 **Root cause:** Database connection string was pointing to wrong host
 - Expected: `postgresql://postgres:postgres@localhost:5432/narrative_health`
-- Actual (from drizzle.config.json): `postgresql://upaper:Dotask24h@168.138.179.192:5432/mdd`
+- Actual (from drizzle.config.json): `postgresql://upaper:****@168.138.179.192:5432/mdd`
 
 ### A.2 Resolution
 
