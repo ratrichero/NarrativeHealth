@@ -308,6 +308,7 @@ export async function runP3AuthoritativeExecution(
     volumeExpansion,
     oiConfirmation,
     firstRun: rotationInputs.firstRun,
+    bootstrapPhase: rotationInputs.bootstrapPhase,
   };
 
   const rotationContext = createP3ModuleContext(

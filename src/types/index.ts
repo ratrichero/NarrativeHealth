@@ -1,4 +1,9 @@
 // Dashboard Types
+import type { P3IntelligenceViewModel } from "@/lib/types/p3-intelligence";
+import type { P3IntelligenceHistoryViewModel } from "@/lib/types/p3-intelligence-history";
+
+export type { P3IntelligenceViewModel, P3IntelligenceHistoryViewModel };
+
 export interface DashboardData {
   date: string;
   narratives: NarrativeSummary[];
@@ -117,6 +122,10 @@ export interface NarrativeDetail {
   avgConfidence: number | null;
   coins: CoinInNarrative[];
   healthHistory: HealthHistoryPoint[];
+  /** Latest VALID P3 Intelligence artifact for this narrative, or null. */
+  p3Intelligence: P3IntelligenceViewModel | null;
+  /** Same-identity P3 historical series + trend, or null when unavailable. */
+  p3IntelligenceHistory: P3IntelligenceHistoryViewModel | null;
 }
 
 export interface CoinInNarrative {

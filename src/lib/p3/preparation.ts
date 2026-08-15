@@ -15,7 +15,7 @@
  * - Reuse existing P3CalculationContext
  */
 
-import { and, eq, gte, lte, desc, inArray } from "drizzle-orm";
+import { and, eq, gte, lte, desc, inArray, count } from "drizzle-orm";
 import { db } from "@/db";
 import {
   coins,
@@ -38,6 +38,7 @@ import type { BreadthConstituent } from "./breadth";
 import type { LeadershipConstituentInput } from "./leadership";
 import { loadRelativeStrengthInputs, type RSConstituentInput, type RSBenchmarkInput, P3_FUTURES_PRICE_SOURCE, BTC_COINGECKO_ID, BTC_PERPETUAL_INSTRUMENT, calculateAssetReturn, type FuturesCloseObservation } from "./relative-strength";
 import { resolveP3Membership, type P3MembershipResolution } from "./membership";
+import { rotationBootstrapPhase, type P3RotationBootstrapPhase } from "./rotation";
 
 // ---------------------------------------------------------------------------
 // Execution Context Configuration
@@ -107,6 +108,8 @@ export interface PreparedRotationInputs {
   volumeExpansion: number | null;
   oiConfirmation: number | null;
   firstRun: boolean;
+  /** P3-16 bootstrap phase derived from the narrative's persisted VALID artifact count. */
+  bootstrapPhase: P3RotationBootstrapPhase;
 }
 
 // ---------------------------------------------------------------------------
@@ -767,6 +770,20 @@ export async function prepareRotationInputs(
 
   const rotationFirstRun = historicalBreadthData.length === 0;
 
+  // P3-16: derive the rotation bootstrap phase from the narrative's total persisted
+  // VALID artifact count. 0 → FIRST_RUN, 1 → SECOND_RUN (bounded second bootstrap),
+  // ≥2 → NORMAL (breadthMomentum mandatory, no further bootstrap exceptions).
+  const [validArtifactRow] = await db
+    .select({ artifactCount: count() })
+    .from(p3NarrativeIntelligence)
+    .where(and(
+      eq(p3NarrativeIntelligence.narrativeId, narrativeId),
+      eq(p3NarrativeIntelligence.availabilityState, "VALID"),
+    ));
+  const bootstrapPhase: P3RotationBootstrapPhase = rotationBootstrapPhase(
+    Number(validArtifactRow?.artifactCount ?? 0)
+  );
+
   if (historicalBreadthData.length >= 2) {
     const breadthNow = historicalBreadthData[historicalBreadthData.length - 1].breadth;
     const breadth7dAgo = historicalBreadthData[0].breadth;
@@ -938,6 +955,7 @@ export async function prepareRotationInputs(
     volumeExpansion,
     oiConfirmation,
     firstRun: rotationFirstRun,
+    bootstrapPhase,
   };
 }
 

@@ -8,7 +8,27 @@ export const P3_ROTATION_ALGORITHM_VERSION = "1";
 export const P3_ROTATION_STATES = ["INFLOW", "ACCELERATING", "STABLE", "DECELERATING", "OUTFLOW"] as const;
 export type P3RotationState = (typeof P3_ROTATION_STATES)[number];
 
-export interface RotationInputs { healthMomentum: number | null; breadthMomentum: number | null; relativeStrength: number | null; volumeExpansion: number | null; oiConfirmation: number | null; confidence?: number | null; availabilityState?: P3AvailabilityState; firstRun?: boolean; }
+/**
+ * P3-16 — Bounded rotation bootstrap phases.
+ *
+ * - FIRST_RUN:  zero persisted VALID artifacts → original bootstrap (breadthMomentum may be missing).
+ * - SECOND_RUN: exactly one persisted VALID artifact → bounded second bootstrap (breadthMomentum may
+ *               be missing; the other 4 mandatory inputs remain required). Explicitly authorized by P3-16.
+ * - NORMAL:     ≥2 persisted VALID artifacts → no bootstrap exceptions; breadthMomentum is mandatory.
+ */
+export type P3RotationBootstrapPhase = "FIRST_RUN" | "SECOND_RUN" | "NORMAL";
+
+/**
+ * Derives the bootstrap phase from the narrative's persisted VALID artifact count.
+ * 0 → FIRST_RUN, 1 → SECOND_RUN, ≥2 → NORMAL (no further bootstrap exceptions).
+ */
+export function rotationBootstrapPhase(validArtifactCount: number): P3RotationBootstrapPhase {
+  if (validArtifactCount <= 0) return "FIRST_RUN";
+  if (validArtifactCount === 1) return "SECOND_RUN";
+  return "NORMAL";
+}
+
+export interface RotationInputs { healthMomentum: number | null; breadthMomentum: number | null; relativeStrength: number | null; volumeExpansion: number | null; oiConfirmation: number | null; confidence?: number | null; availabilityState?: P3AvailabilityState; firstRun?: boolean; bootstrapPhase?: P3RotationBootstrapPhase; }
 export interface RotationThresholds { acceleratingMin: number; inflowMin: number; stableMin: number; deceleratingMin: number; }
 export interface RotationResult { score: number | null; state: P3RotationState | null; availabilityState: P3AvailabilityState; reasons: readonly string[]; confidence: number | null; provenance: Record<string, unknown>; }
 
@@ -94,11 +114,16 @@ export function calculateRotation(inputs: RotationInputs, thresholds: RotationTh
   const values = [inputs.healthMomentum, inputs.breadthMomentum, inputs.relativeStrength, inputs.volumeExpansion, inputs.oiConfirmation];
   const missing = values.filter((value) => !valid(value)).length;
   const isFirstRun = inputs.firstRun === true;
+  const isSecondRun = inputs.bootstrapPhase === "SECOND_RUN";
   const breadthMomentumMissing = !valid(inputs.breadthMomentum);
+  // P3-16 bounded bootstrap: FIRST_RUN (no VALID artifacts) and SECOND_RUN (exactly one VALID
+  // artifact) may both omit breadthMomentum. All other mandatory inputs remain required, and no
+  // bootstrap exception exists from the third execution onward (NORMAL).
+  const canBootstrapBreadth = (isFirstRun || isSecondRun) && missing === 1 && breadthMomentumMissing;
 
   if (missing) {
-    // First-run bootstrap: allow missing breadthMomentum when no VALID historical P3 baseline exists
-    if (isFirstRun && missing === 1 && breadthMomentumMissing) {
+    if (canBootstrapBreadth) {
+      const bootstrapPhase: P3RotationBootstrapPhase = isFirstRun ? "FIRST_RUN" : "SECOND_RUN";
       const availableInputs = {
         healthMomentum: inputs.healthMomentum as number,
         relativeStrength: inputs.relativeStrength as number,
@@ -117,8 +142,9 @@ export function calculateRotation(inputs: RotationInputs, thresholds: RotationTh
       else if (score >= thresholds.stableMin) matches.push({ state: "STABLE", reason: "rotation_score_stable" });
       else if (score >= thresholds.deceleratingMin) matches.push({ state: "DECELERATING", reason: "rotation_score_decelerating" });
       else matches.push({ state: "OUTFLOW", reason: "rotation_score_outflow" });
-      if (matches.length !== 1) return { score, state: null, availabilityState: matches.length ? "AMBIGUOUS" : "NOT_APPLICABLE", reasons: matches.length ? matches.map((match) => match.reason) : ["No rotation threshold matched"], confidence: inputs.confidence ?? null, provenance: { module: "rotation", thresholds, matches: matches.map((match) => match.state), weights: normalizedWeights, firstRun: true, missingInputs: ["breadthMomentum"] } };
-      return { score, state: matches[0].state, availabilityState: "VALID", reasons: [matches[0].reason], confidence: inputs.confidence ?? null, provenance: { module: "rotation", thresholds, matches: [matches[0].state], weights: normalizedWeights, firstRun: true, missingInputs: ["breadthMomentum"] } };
+      const bootstrapProvenance = { module: "rotation", thresholds, matches: matches.map((match) => match.state), weights: normalizedWeights, firstRun: isFirstRun, bootstrapPhase, missingInputs: ["breadthMomentum"] as const };
+      if (matches.length !== 1) return { score, state: null, availabilityState: matches.length ? "AMBIGUOUS" : "NOT_APPLICABLE", reasons: matches.length ? matches.map((match) => match.reason) : ["No rotation threshold matched"], confidence: inputs.confidence ?? null, provenance: bootstrapProvenance };
+      return { score, state: matches[0].state, availabilityState: "VALID", reasons: [matches[0].reason], confidence: inputs.confidence ?? null, provenance: bootstrapProvenance };
     }
     return { score: null, state: null, availabilityState: inputs.availabilityState && inputs.availabilityState !== "VALID" ? inputs.availabilityState : "MISSING", reasons: [`${missing}_required_rotation_inputs_unavailable`], confidence: inputs.confidence ?? null, provenance: { module: "rotation", thresholds, missingInputs: missing, weights: { healthMomentum: 0.3, breadthMomentum: 0.2, relativeStrength: 0.2, volumeExpansion: 0.15, oiConfirmation: 0.15 } } };
   }

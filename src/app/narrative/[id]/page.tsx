@@ -8,6 +8,7 @@ import { HealthBadge } from "@/components/HealthBadge";
 import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { CoinRankingTable } from "@/components/CoinRankingTable";
+import { P3IntelligencePanel } from "@/components/P3IntelligencePanel";
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import {
   LineChart,
@@ -136,6 +137,13 @@ export default function NarrativeDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* P3 Intelligence */}
+      <P3IntelligencePanel
+        narrativeName={narrative.name}
+        viewModel={narrative.p3Intelligence ?? null}
+        history={narrative.p3IntelligenceHistory ?? null}
+      />
 
       {/* Correlation Matrix */}
       <CorrelationHeatmap data={correlation ?? null} isLoading={correlationLoading} />

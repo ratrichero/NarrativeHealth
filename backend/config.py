@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     scheduler_interval_hours: int = 0  # Run every X hours (0 = use daily time)
     scheduler_timeout: int = 600  # Timeout in seconds (default 10 minutes)
     
+    # P3 Historical Execution Loop (P3-15)
+    # Triggers POST /api/admin/p3/execute (Next.js) on the same schedule.
+    # Idempotency is enforced server-side: a window already persisted is skipped.
+    scheduler_p3_enabled: bool = True
+    scheduler_p3_interval_hours: int = 48  # Every 2 days (0 = run daily after refresh)
+
     class Config:
         env_file = ".env"
         extra = "ignore"

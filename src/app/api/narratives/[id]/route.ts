@@ -11,6 +11,10 @@ import {
 } from "@/db/schema";
 import { eq, and, desc, gte, sql } from "drizzle-orm";
 import { getHealthStatus } from "@/lib/utils";
+import { getLatestValidP3Intelligence } from "@/lib/services/p3-intelligence.service";
+import { getP3IntelligenceHistory } from "@/lib/services/p3-intelligence-history.service";
+import type { P3IntelligenceViewModel } from "@/lib/types/p3-intelligence";
+import type { P3IntelligenceHistoryViewModel } from "@/lib/types/p3-intelligence-history";
 
 export const dynamic = "force-dynamic";
 
@@ -120,6 +124,24 @@ export async function GET(
     // Sort by health score descending
     coinDetails.sort((a, b) => b.healthScore - a.healthScore);
 
+    // Read-only P3 Intelligence (latest VALID artifact). A P3 read failure
+    // must never take down the narrative page — degrade to null instead.
+    let p3Intelligence: P3IntelligenceViewModel | null = null;
+    try {
+      p3Intelligence = await getLatestValidP3Intelligence(narrativeId);
+    } catch (error) {
+      console.error("P3 Intelligence read failed:", error);
+    }
+
+    // Read-only P3 Historical Intelligence (same-identity series + trend).
+    // Same degradation contract: any failure yields null, never a 500.
+    let p3IntelligenceHistory: P3IntelligenceHistoryViewModel | null = null;
+    try {
+      p3IntelligenceHistory = await getP3IntelligenceHistory(narrativeId);
+    } catch (error) {
+      console.error("P3 Intelligence History read failed:", error);
+    }
+
     return NextResponse.json({
       success: true,
       data: {
@@ -141,6 +163,8 @@ export async function GET(
           date: h.date,
           score: h.score,
         })),
+        p3Intelligence,
+        p3IntelligenceHistory,
       },
     });
   } catch (error) {

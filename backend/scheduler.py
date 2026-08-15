@@ -79,6 +79,36 @@ class DataRefreshScheduler:
             )
             print(f"Scheduler started - will run daily at {settings.scheduler_hour:02d}:{settings.scheduler_minute:02d} Vietnam time")
 
+        # P3 Historical Execution Loop (P3-15)
+        # Every scheduler_p3_interval_hours (default 48h = 2 days), or daily after
+        # the main refresh when interval is 0. The endpoint is idempotent.
+        if settings.scheduler_p3_enabled:
+            if settings.scheduler_p3_interval_hours > 0:
+                self.scheduler.add_job(
+                    self._run_p3_execution,
+                    trigger='interval',
+                    hours=settings.scheduler_p3_interval_hours,
+                    id='p3_execution_loop',
+                    name=f'P3 Execution Loop (every {settings.scheduler_p3_interval_hours}h)',
+                    replace_existing=True
+                )
+                print(f"P3 scheduler started - will run every {settings.scheduler_p3_interval_hours} hours")
+            else:
+                self.scheduler.add_job(
+                    self._run_p3_execution,
+                    trigger=CronTrigger(
+                        hour=settings.scheduler_hour,
+                        minute=min(59, settings.scheduler_minute + 5),
+                        timezone=self.vietnam_tz
+                    ),
+                    id='p3_execution_loop',
+                    name='P3 Execution Loop (daily after refresh)',
+                    replace_existing=True
+                )
+                print(f"P3 scheduler started - will run daily at {settings.scheduler_hour:02d}:{min(59, settings.scheduler_minute + 5):02d} Vietnam time")
+        else:
+            print("P3 scheduler disabled in config")
+
         self.scheduler.start()
         jobs = self.scheduler.get_jobs()
         logger.info(
@@ -100,6 +130,10 @@ class DataRefreshScheduler:
                 pass
             try:
                 self.scheduler.remove_job('interval_refresh')
+            except:
+                pass
+            try:
+                self.scheduler.remove_job('p3_execution_loop')
             except:
                 pass
             self.scheduler.shutdown()
@@ -224,6 +258,53 @@ class DataRefreshScheduler:
                 logger.error("Scheduled refresh failed: %s", error_message)
             else:
                 logger.info("Scheduled refresh completed in %ds: %s", duration, result_message)
+
+    async def _run_p3_execution(self):
+        """Run the P3 historical execution loop via the Next.js API."""
+        started_at = datetime.now(self.vietnam_tz)
+        timeout = settings.scheduler_timeout
+        error_message = None
+        result_message = None
+        completed_at = datetime.now(self.vietnam_tz)
+
+        logger.info(
+            "P3 execution loop fired at %s; endpoint=http://localhost:3000/api/admin/p3/execute",
+            started_at.isoformat(),
+        )
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "http://localhost:3000/api/admin/p3/execute",
+                    json={},
+                    timeout=timeout,
+                )
+                if response.status_code == 200:
+                    data = response.json().get('data', {})
+                    result_message = (
+                        f"executed={data.get('executed')} skipped={data.get('skipped')} "
+                        f"notEligible={data.get('notEligible')} failed={data.get('failed')} "
+                        f"windowEnd={data.get('windowEnd')}"
+                    )
+                    print(f"P3 execution loop completed: {result_message}")
+                else:
+                    error_message = f"P3 API returned status {response.status_code}: {response.text}"
+                    print(error_message)
+        except ConnectError as e:
+            error_message = f"P3 API connection failed: {e}"
+            print(error_message)
+        except TimeoutException as e:
+            error_message = f"P3 API timeout: {e}"
+            print(error_message)
+        except Exception as e:
+            error_message = f"P3 API error: {e}"
+            print(error_message)
+
+        duration = int((completed_at - started_at).total_seconds())
+        if error_message:
+            logger.error("P3 execution loop failed: %s", error_message)
+        else:
+            logger.info("P3 execution loop completed in %ds: %s", duration, result_message)
 
 
 # Global scheduler instance
