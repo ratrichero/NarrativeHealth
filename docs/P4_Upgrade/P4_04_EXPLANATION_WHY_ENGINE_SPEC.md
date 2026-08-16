@@ -76,11 +76,13 @@ sourceLayer | sourceType | sourceId | artifactIdentity | narrativeIdentity
   | windowOrDate | field | status | interpretationRole
 ```
 
-**Proposed contract amendment (documented, not implicit):** add optional
-`humanValue: string | null` (display string for the referenced value, e.g.
-"momentum −2.40") to allow templates to render values without re-formatting.
-This is a **PROPOSED CONTRACT AMENDMENT** for P4-02; it does not change any
-frozen semantics and must be approved with P4-04-IMPL.
+**Resolved contract amendment (P4-04-IMPL):** the proposed `humanValue`
+amendment (`humanValue: string | null` on EvidenceReference) is
+**REJECTED / CLOSED** by the P4 Master decision (§16/§25 Master). Display
+values are resolved **outside** EvidenceReference at template-render time
+(Alternative B — implemented in `src/lib/p4/explanation/resolver.ts`) from
+the in-memory P3 read models' deterministic display fields
+(`display`/`scoreDisplay`). `humanValue` is NOT added to any contract.
 
 ## 4. Evidence selection rules (deterministic, presentation limits)
 
@@ -163,8 +165,9 @@ evidence P4-03 already used gets rendered first.
 ## 9. Human-language templates
 
 Template families — every sentence must be reconstructible from actual
-evidence values (placeholders filled from EvidenceReference.humanValue /
-values; no free prose).
+evidence values (placeholders filled from resolved display values per
+Alternative B, §3.2 — values keyed by evidence identity and resolved outside
+EvidenceReference; no free prose).
 
 ### 9.1 Direction
 
@@ -454,7 +457,9 @@ P4-04 specification is complete when:
 
 The implementation task is identified separately:
 **P4-04-IMPL — Explanation / Why Engine Implementation** (read-only engine,
-templates, selection/ranking, failure isolation, tests). Not implemented now.
+templates, selection/ranking, failure isolation, tests). **Implemented —
+COMPLETE** (see `P4_MASTER_SPECIFICATION.md` §19A "P4-04-IMPL Implementation
+Status"; 38/38 P4 tests passing, `npx tsc --noEmit` → 0 errors).
 
 ## 24. Strict non-goals
 
@@ -465,10 +470,18 @@ dimensions.
 
 ## 25. Verification record
 
+Specification task record (historical):
 - Baseline contracts P4-01/P4-01A/P4-02/P4-03 read and honored verbatim;
-  EvidenceReference reused, one PROPOSED contract amendment (humanValue)
-  documented in §3.2.
-- Document-only task: only `docs/P4_Upgrade/P4_04_EXPLANATION_WHY_ENGINE_SPEC.md`
-  added; no change under `src/`, `backend/`, `drizzle/`, configs, API, UI,
-  or tests.
-- P3/P2 untouched; no scoring introduced; P4-04-IMPL NOT started.
+  EvidenceReference reused; the proposed `humanValue` amendment (§3.2) is now
+  **RESOLVED — REJECTED / CLOSED** per the P4 Master decision (Alternative B).
+- Document-only task at the time: only this spec file added; no change under
+  `src/`, `backend/`, `drizzle/`, configs, API, UI, or tests.
+
+P4-04-IMPL implementation record (see `P4_MASTER_SPECIFICATION.md` §19A):
+- Implementation COMPLETE under `src/lib/p4/` (types, evidence
+  selection/ranking, resolver, templates, engine) with semantic tests
+  (`npx jest src/lib/p4` → 38/38 passing; `npx tsc --noEmit` → 0 errors).
+- Determinism: same (interpretation, evidence snapshot, version tuple) ⇒
+  identical semantic output; `generatedAt` is metadata excluded from
+  semantic equality.
+- P3/P2 untouched; no scoring introduced; no semantic deviation reported.

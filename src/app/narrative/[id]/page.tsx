@@ -9,6 +9,7 @@ import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { CoinRankingTable } from "@/components/CoinRankingTable";
 import { P3IntelligencePanel } from "@/components/P3IntelligencePanel";
+import { P4DecisionSupportPanel } from "@/components/P4DecisionSupportPanel";
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import {
   LineChart,
@@ -144,6 +145,9 @@ export default function NarrativeDetailPage() {
         viewModel={narrative.p3Intelligence ?? null}
         history={narrative.p3IntelligenceHistory ?? null}
       />
+
+      {/* P4 Decision Support (P4-02 §11 — between P3 Intelligence and CorrelationHeatmap) */}
+      <P4DecisionSupportPanel viewModel={narrative.p4DecisionSupport ?? null} />
 
       {/* Correlation Matrix */}
       <CorrelationHeatmap data={correlation ?? null} isLoading={correlationLoading} />

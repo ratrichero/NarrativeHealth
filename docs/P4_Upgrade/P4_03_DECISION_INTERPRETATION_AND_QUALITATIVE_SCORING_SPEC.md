@@ -333,7 +333,12 @@ Direction is never Regime lookup (Q2); Regime contributes only `regimeMove`.
 Test scenarios (S1–S8):
 
 1. S1 — regime NEUTRAL→NEUTRAL, rotation STABLE→STABLE, momentum 0Δ, breadth 0Δ, RS 0Δ → NEUTRAL.
-2. S2 — regime NEUTRAL→NEUTRAL, momentum +5Δ, breadth +0.1Δ, rotation score +2Δ → NEUTRAL (no move beyond ε; valid, no conclusion).
+2. S2 — regime NEUTRAL→NEUTRAL, momentum +0.5Δ, breadth +0.04Δ, rotation
+   score +2Δ → NEUTRAL (no move beyond ε; valid, no conclusion).
+   [CORRECTED by P4-05A SEMANTIC RESOLUTION §21/C5 — the previous draft's
+   deltas (momentum +5Δ, breadth +0.1Δ) exceed the frozen ε (momentum 1.0,
+   breadth 0.05) and would produce POSITIVE moves, making the stated NEUTRAL
+   outcome unreachable under the frozen rules.]
 3. S3 — regime WEAKENING→WEAKENING, momentum −2Δ, rotation −6Δ, breadth −0.1Δ → NEGATIVE (dominant core).
 4. S4 — regime EMERGING→STRONG, momentum +3Δ, breadth +0.2Δ, rotation +8Δ, RS −0.02Δ → POSITIVE (dominant; RS conflict minor).
 5. S5 — regime NEUTRAL, momentum +4Δ, rotation score −7Δ, breadth UNKNOWN, RS +0.03Δ → MIXED (core split 1-1).
@@ -367,9 +372,7 @@ Test scenarios (S1–S8):
 | Historical support | ≥2 confirming steps | 1 step | 0 steps |
 | Provenance integrity | identity clean | — | mixed identity (⇒ UNKNOWN for that conclusion) |
 
-**Combination (deterministic):** base = Coverage; then: material conflict ⇒
-LOW; minor conflict ⇒ −1 level; historical support HIGH and coverage HIGH ⇒
-+0 (no boost beyond HIGH); stale ⇒ cap MEDIUM; insufficient history ⇒ LOW.
+**Combination (deterministic):** base = Coverage; then: material conflict ⇒ cap MEDIUM (never HIGH) [SUPERSEDED BY P4-05A SEMANTIC RESOLUTION §21/C2 — the previous draft's "material ⇒ LOW" is superseded; the canonical Scenario 6 articulation "material conflict ⇒ not HIGH" is authoritative]; minor conflict ⇒ −1 level; historical support HIGH and coverage HIGH ⇒ +0 (no boost beyond HIGH); stale ⇒ cap MEDIUM; insufficient history ⇒ LOW.
 UNKNOWN only when coverage makes the interpretation uncomputable (UNKNOWN
 Direction and no determinable evidence strength — i.e., Coverage = LOW with
 load-bearing gap ⇒ Confidence = LOW, not UNKNOWN; Confidence = UNKNOWN only
@@ -403,10 +406,14 @@ NOT buy/sell/short/exit/allocate.
 
 - **Firing:** ≥1 POSITIVE and ≥1 NEGATIVE among the five moves (both VALID)
   in the latest step.
-- **Materiality:** material if the conflict involves the direction core
-  (any pair within {regimeMove, rotationScoreMove, momentumMove}) OR
-  core-vs-breadth; minor otherwise (corroborator-vs-corroborator, e.g.,
-  RS vs breadth).
+- **Materiality:** material only for an opposite-sign pair WITHIN the
+  {regimeMove, rotationScoreMove, momentumMove} direction core (a core
+  split); minor otherwise (core-vs-breadth, core-vs-RS,
+  corroborator-vs-corroborator).
+  [SUPERSEDED BY P4-05A SEMANTIC RESOLUTION §21/C1 — the previous draft's
+  "OR core-vs-breadth" clause is superseded: canonical Scenarios 2 and 5
+  label breadth-vs-core conflicts minor, and §9.3 severity is defined over
+  core pairs (breadth-vs-core has zero core pairs).]
 - **Severity:** material with ≥2 conflicting core pairs → HIGH; material with
   1 → MEDIUM; minor → LOW.
 - **Impact on Direction:** per §4 (may yield MIXED or merely reduce
@@ -414,7 +421,7 @@ NOT buy/sell/short/exit/allocate.
 - **Impact on Opportunity:** material conflict ⇒ Opportunity cannot be HIGH.
 - **Impact on Risk:** never alone ⇒ Risk HIGH; only the structural NEGATIVE
   evidence side contributes to Risk.
-- **Impact on Confidence:** minor −1; material ⇒ LOW.
+- **Impact on Confidence:** minor −1; material ⇒ cap MEDIUM (never HIGH). [SUPERSEDED BY P4-05A SEMANTIC RESOLUTION §21/C2 — the previous draft's "material ⇒ LOW" is superseded.]
 - **Impact on Actionability:** material ⇒ never HIGH.
 - Conflict is interpretation uncertainty, not automatically Risk = HIGH.
 
@@ -550,25 +557,31 @@ Confidence HIGH. Actionability HIGH.
 
 **Scenario 2 — Strong but concentrated.** Same as S1 but breadth 0.30
 (−0.10Δ ⇒ NARROWING) and constituents count low (leadership concentrated).
-→ Signals: NARRATIVE_IMPROVEMENT, NARROWING. Direction POSITIVE (dominant
-core; breadth opposes → minor conflict, Confidence −1). Opportunity MEDIUM
-(positive direction but narrowing participation suppresses HIGH). Risk MEDIUM
-(narrowing). Confidence MEDIUM. Actionability MEDIUM.
+→ Signals: NARRATIVE_IMPROVEMENT, NARROWING, EVIDENCE_CONFLICT (minor —
+momentum POSITIVE vs breadth NEGATIVE fires §3.9). Direction POSITIVE
+(dominant core; breadth opposes → minor conflict, Confidence −1).
+Opportunity MEDIUM (positive direction but narrowing participation suppresses
+HIGH). Risk MEDIUM (narrowing). Confidence MEDIUM. Actionability MEDIUM.
+[Signal list completed by P4-05A SEMANTIC RESOLUTION §21/C4.]
 
 **Scenario 3 — Clear deterioration.** regime WEAKENING (NEUTRAL→WEAKENING),
 rotation STABLE score 49 (−11Δ), breadth 0 (−0.14Δ), momentum −2.4 (−1.4Δ),
 RS +0.040 (−0.008Δ STABLE), trend DETERIORATING, 3 artifacts.
 → Signals: NARRATIVE_DETERIORATION, REGIME_CHANGE, NARROWING. Direction
-NEGATIVE. Opportunity LOW. Risk HIGH. Confidence MEDIUM (RS stable/conflict
-minor). Actionability HIGH.
+NEGATIVE. Opportunity LOW. Risk HIGH. Confidence HIGH (RS STABLE is not a
+§3.9 directional conflict — it has no opposing sign; the superseded
+parenthetical suggesting MEDIUM is removed by P4-05A SEMANTIC RESOLUTION
+§21/C3). Actionability HIGH.
 
 **Scenario 4 — Weakening with still-positive RS.** regime WEAKENING→WEAKENING
 (regimeMove NEUTRAL), momentum −2.4 (−1.4Δ), rotation −6Δ, breadth −0.1Δ, RS
 +0.05 (+0.02Δ IMPROVING), trend DETERIORATING. → Signals:
 NARRATIVE_DETERIORATION (trend DET + momentum DET; regimeMove not POSITIVE),
-EVIDENCE_CONFLICT (RS vs core, minor). Direction NEGATIVE (dominant core;
+EVIDENCE_CONFLICT (RS vs core, minor), NARROWING (breadth −0.14Δ ⇒ NEGATIVE
+beyond ε fires §3.5). Direction NEGATIVE (dominant core;
 RS opposing → conflict, Confidence −1). Risk HIGH. Opportunity LOW.
 Confidence MEDIUM. Actionability HIGH.
+[Signal list completed by P4-05A SEMANTIC RESOLUTION §21/C4.]
 
 **Scenario 5 — Neutral regime with mixed metrics.** regime NEUTRAL→NEUTRAL,
 rotation score +3Δ (NEUTRAL), momentum +4Δ (POSITIVE), breadth −0.12Δ
@@ -629,6 +642,9 @@ heuristics; not derived from frozen P3 semantics):
    base + split corroborators → MIXED).
 2. Conflict materiality definition (core-vs-breadth vs corroborator-only)
    and severity mapping (§9).
+   [v1 semantic content FROZEN by P4-05A SEMANTIC RESOLUTION §21/C1 — the
+   PROVISIONAL marker now refers only to the future historical-validation
+   review trigger, not to unresolved semantics.]
 3. P2 scope tiers: multi-coin (≥2 constituents) and narrative-wide
    (+1 tier, cap HIGH, never sole HIGH) (§10, §11).
 4. Opportunity base/suppression ladder (HIGH requires Direction POSITIVE +
@@ -637,6 +653,9 @@ heuristics; not derived from frozen P3 semantics):
 5. Risk base thresholds (≥2 structural DET ⇒ HIGH; 1 ⇒ MEDIUM; 0 ⇒ LOW)
    (§12).
 6. Confidence dimension combination table and caps (§7).
+   [v1 semantic content FROZEN by P4-05A SEMANTIC RESOLUTION §21/C2 — the
+   PROVISIONAL marker now refers only to the future historical-validation
+   review trigger, not to unresolved semantics.]
 7. Actionability table (§8).
 8. Opportunity × Risk explanation matrix (§13).
 9. Signal corroboration minimums for NARRATIVE_* (§3.10).
@@ -694,3 +713,158 @@ contracts.
 - [x] No numeric composite formula introduced.
 - [x] No production code changed.
 - [x] P4-04 implementation NOT started.
+- [x] P4-05A semantic conflict resolution recorded (§21).
+
+---
+
+## 21. P4-05A Semantic Conflict Resolution
+
+**Status:** FROZEN v1 semantic contract (P4-05A-REVIEW). Authoritative
+resolution record for the five prose-vs-canonical-scenario contradictions
+found by the P4-05A implementation audit. The Master specification §19B is
+the phase-level authoritative record; this section is the task-level detail.
+
+**Decision hierarchy applied (Master §1):** frozen rules > deterministic
+mathematical/threshold rules inherited from P3 > detailed prose > canonical
+examples. Canonical examples MUST NOT override a frozen deterministic rule —
+where an example conflicted with one, the example was corrected; where the
+prose was internally inconsistent or contradicted every scenario vector, the
+internally-consistent reading was adopted and the prose clause superseded.
+
+### C1 — Core-vs-breadth conflict materiality → MINOR (core split = material)
+
+- **Issue:** §9.2 prose included "OR core-vs-breadth" in the material set;
+  canonical Scenarios 2 and 5 both label breadth-vs-core conflicts "minor".
+- **Conflicting statements:** §9.2 "material ... OR core-vs-breadth" vs
+  Scenario 2 "breadth opposes → minor conflict" and Scenario 5
+  "EVIDENCE_CONFLICT (minor)" for momentum-vs-breadth.
+- **Evidence:** §9.3 defines severity over conflicting CORE pairs (≥2 pairs
+  ⇒ HIGH, 1 ⇒ MEDIUM, minor ⇒ LOW); a breadth-vs-core conflict has zero core
+  pairs, so its severity is undefined under the prose reading — an internal
+  contradiction within §9 itself. §4 Step 3 and §3.10 design breadth/RS as
+  corroborators that never flip a dominant core lean, so corroborator
+  opposition is structurally minor. All canonical scenarios treat
+  breadth-vs-core as minor.
+- **Final decision:** material = an opposite-sign pair WITHIN the direction
+  core {regimeMove, rotationScoreMove, momentumMove} (a core split).
+  Core-vs-breadth, core-vs-RS and corroborator-vs-corroborator are MINOR.
+- **Rationale:** internal consistency with §9.3 (severity over core pairs),
+  §4 corroborator semantics and §3.10 balance; consistent with every
+  canonical scenario.
+- **Impact on implementation:** none — P4-05A already implements
+  core-split-only materiality (`detectConflict`: `material = corePairs > 0`).
+- **Required test update:** none — tests already assert minor severity for
+  breadth-vs-core (Scenarios 2/5).
+- **Status:** FROZEN (v1). The §17 historical-validation review trigger
+  remains as a future review gate only.
+
+### C2 — Material conflict and Confidence → cap MEDIUM (never HIGH)
+
+- **Issue:** §7/§9 prose said "material conflict ⇒ Confidence LOW"; Scenario 6
+  says "Confidence MEDIUM (material conflict ⇒ not HIGH)".
+- **Conflicting statements:** §7 combination "material conflict ⇒ LOW" and
+  §9 "Impact on Confidence: minor −1; material ⇒ LOW" vs Scenario 6
+  "Confidence MEDIUM (material conflict ⇒ not HIGH)".
+- **Evidence:** §14 records conflicting-evidence Confidence as "−1/LOW"
+  (ambiguous). Scenario 6 is the only canonical vector covering
+  material-conflict confidence and is explicit. Under "material ⇒ LOW", a
+  full-coverage material conflict (Scenario 6: all five moves VALID) would be
+  indistinguishable from a coverage-gapped interpretation — collapsing
+  distinct evidence states; §9 states conflict is interpretation uncertainty,
+  not missing evidence.
+- **Final decision:** a material conflict CAPS Confidence at MEDIUM (never
+  HIGH). A minor conflict reduces one level. Coverage floors remain: with
+  coverage LOW, a material conflict stays LOW.
+- **Rationale:** preserves the confidence ladder's expressiveness (HIGH =
+  clean, MEDIUM = conflicted, LOW = coverage-gapped), matches the only
+  canonical vector, and keeps §14's "−1/LOW" reading coherent.
+- **Impact on implementation:** none — P4-05A already caps at MEDIUM
+  (`interpretConfidence`: `if (conflict.material) tier = capTier(tier, MEDIUM)`).
+- **Required test update:** none — Scenario 6 test asserts MEDIUM.
+- **Status:** FROZEN (v1). Historical-validation review trigger remains.
+
+### C3 — Scenario 3 Confidence → HIGH
+
+- **Issue:** Scenario 3 stated "Confidence MEDIUM (RS stable/conflict minor)".
+- **Conflicting statements:** the parenthetical vs §3.9 (conflict requires
+  opposing signs) and Scenario 3's own signals list (no EVIDENCE_CONFLICT).
+- **Evidence:** RS STABLE has no opposing sign, so it is NOT a directional
+  conflict under §3.9; it does not fire EVIDENCE_CONFLICT (the scenario's own
+  signals list confirms none fired); it does not flip or reduce Direction
+  (only VALID non-UNKNOWN *opposing* corroborators count, §4 Step 3).
+  Coverage is full (all five moves VALID); no opposing corroborator; no
+  historical divergence ⇒ Confidence HIGH.
+- **Final decision:** Scenario 3 Confidence = HIGH. The "RS stable/conflict
+  minor" parenthetical is removed (it treated neutral evidence as conflict,
+  contradicting §3.9).
+- **Impact on implementation:** none — P4-05A already produces HIGH.
+- **Required test update:** none — the S3 test asserts HIGH.
+- **Status:** FROZEN (scenario corrected).
+
+### C4 — Missing signals in canonical scenarios → scenarios completed
+
+- **Issue:** Scenario 2 omits EVIDENCE_CONFLICT although momentum POSITIVE vs
+  breadth NEGATIVE satisfies the §3.9 firing rule (both VALID, opposing
+  signs); Scenario 4 omits NARROWING although breadth −0.14Δ is NEGATIVE
+  beyond the frozen ε 0.05 (fires §3.5).
+- **Conflicting statements:** the scenario signal lists vs the deterministic
+  §3 signal rules.
+- **Evidence:** the §3 rules are unambiguous and are not weakened by this
+  resolution; the scenarios' parentheticals reference the very conflicts they
+  omit from the signal lists.
+- **Final decision:** the deterministic signal rules stand; the scenarios are
+  incomplete. Scenario 2 signals = NARRATIVE_IMPROVEMENT, NARROWING,
+  EVIDENCE_CONFLICT (minor). Scenario 4 signals = NARRATIVE_DETERIORATION,
+  EVIDENCE_CONFLICT (minor), NARROWING.
+- **Rationale:** per P4-05A-REVIEW — do not weaken signal rules to preserve
+  scenario text; scenario completeness follows deterministic signal rules.
+- **Impact on implementation:** none — P4-05A already fires both signals.
+- **Required test update:** none — tests assert EVIDENCE_CONFLICT in S2 and
+  NARROWING in S4.
+- **Status:** FROZEN (scenarios completed).
+
+### C5 — §5 Scenario S2 mathematical contradiction → scenario defect, corrected
+
+- **Issue:** S2 specifies momentum +5Δ and breadth +0.1Δ yet concludes
+  NEUTRAL "(no move beyond ε; valid, no conclusion)".
+- **Conflicting statements:** the S2 deltas vs the frozen epsilons (momentum
+  1.0, breadth 0.05) and §2.3/§4 deterministic rules.
+- **Evidence:** +5Δ > 1.0 ⇒ momentumMove POSITIVE; +0.1Δ > 0.05 ⇒ breadthMove
+  POSITIVE. A NEUTRAL outcome is mathematically unreachable under the frozen
+  rules — the parenthetical is factually wrong for the stated deltas.
+- **Final decision:** S2 is a canonical scenario defect. The frozen epsilons
+  are NOT modified. S2 is corrected to within-ε deltas preserving the
+  intended NEUTRAL outcome: regime NEUTRAL→NEUTRAL, momentum +0.5Δ, breadth
+  +0.04Δ, rotation score +2Δ ⇒ all moves NEUTRAL ⇒ Direction NEUTRAL.
+- **Rationale:** canonical examples must not override frozen deterministic
+  (threshold) rules; the scenario text is corrected to match its stated
+  intent.
+- **Impact on implementation:** none — S2 is a test vector, not
+  implementation logic.
+- **Required test update:** none — no test asserted the defective vector.
+- **Status:** FROZEN (scenario corrected; frozen ε untouched).
+
+---
+
+### Superseded-clause registry (in-place annotations above)
+
+| Location | Superseded clause | Final rule |
+|---|---|---|
+| §9.2 Materiality | "material ... OR core-vs-breadth" | Material = core split only (C1) |
+| §7 Combination | "material conflict ⇒ LOW" | Material ⇒ cap MEDIUM, never HIGH (C2) |
+| §9 Impact on Confidence | "material ⇒ LOW" | Material ⇒ cap MEDIUM, never HIGH (C2) |
+| §16 Scenario 3 | "Confidence MEDIUM (RS stable/conflict minor)" | Confidence HIGH (C3) |
+| §16 Scenarios 2/4 | signal lists omitting fired signals | Lists completed per §3 rules (C4) |
+| §5 Scenario S2 | deltas exceeding frozen ε | Deltas corrected within ε (C5) |
+
+### Frozen-status summary
+
+- Frozen epsilons, ranks, trend states, UNKNOWN gates, NEUTRAL/MIXED/UNKNOWN
+  separation, Direction core composition, P2 provenance and signal identity:
+  UNCHANGED (never touched by this resolution).
+- Signal firing rules (§3): UNCHANGED — scenarios completed, not weakened.
+- Conflict materiality (C1) and Confidence caps (C2): v1 semantic content
+  FROZEN; the §17 PROVISIONAL marker now refers only to the future
+  P4 historical-validation review trigger.
+- P4-05A implementation status: **A. APPROVED** — the implementation already
+  matches every final decision; no code change required.

@@ -1,8 +1,9 @@
 // Dashboard Types
 import type { P3IntelligenceViewModel } from "@/lib/types/p3-intelligence";
 import type { P3IntelligenceHistoryViewModel } from "@/lib/types/p3-intelligence-history";
+import type { P4DecisionSupportViewModel } from "@/lib/p4/types";
 
-export type { P3IntelligenceViewModel, P3IntelligenceHistoryViewModel };
+export type { P3IntelligenceViewModel, P3IntelligenceHistoryViewModel, P4DecisionSupportViewModel };
 
 export interface DashboardData {
   date: string;
@@ -126,6 +127,8 @@ export interface NarrativeDetail {
   p3Intelligence: P3IntelligenceViewModel | null;
   /** Same-identity P3 historical series + trend, or null when unavailable. */
   p3IntelligenceHistory: P3IntelligenceHistoryViewModel | null;
+  /** P4 Decision Support ViewModel (read-time derived), or null when unavailable. */
+  p4DecisionSupport: P4DecisionSupportViewModel | null;
 }
 
 export interface CoinInNarrative {

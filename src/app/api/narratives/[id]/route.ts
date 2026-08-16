@@ -13,8 +13,10 @@ import { eq, and, desc, gte, sql } from "drizzle-orm";
 import { getHealthStatus } from "@/lib/utils";
 import { getLatestValidP3Intelligence } from "@/lib/services/p3-intelligence.service";
 import { getP3IntelligenceHistory } from "@/lib/services/p3-intelligence-history.service";
+import { getP4DecisionSupport } from "@/lib/p4/service";
 import type { P3IntelligenceViewModel } from "@/lib/types/p3-intelligence";
 import type { P3IntelligenceHistoryViewModel } from "@/lib/types/p3-intelligence-history";
+import type { P4DecisionSupportViewModel } from "@/lib/p4/types";
 
 export const dynamic = "force-dynamic";
 
@@ -142,6 +144,16 @@ export async function GET(
       console.error("P3 Intelligence History read failed:", error);
     }
 
+    // P4 Decision Support (read-time derived; P4-02 §10 — additive field).
+    // The service already degrades to null internally; the route-level guard
+    // keeps the endpoint resilient even if the service boundary changes.
+    let p4DecisionSupport: P4DecisionSupportViewModel | null = null;
+    try {
+      p4DecisionSupport = await getP4DecisionSupport(narrativeId);
+    } catch (error) {
+      console.error("P4 Decision Support read failed:", error);
+    }
+
     return NextResponse.json({
       success: true,
       data: {
@@ -165,6 +177,7 @@ export async function GET(
         })),
         p3Intelligence,
         p3IntelligenceHistory,
+        p4DecisionSupport,
       },
     });
   } catch (error) {
