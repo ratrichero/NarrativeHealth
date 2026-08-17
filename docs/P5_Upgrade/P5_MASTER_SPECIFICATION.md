@@ -1,8 +1,8 @@
 # P5 MASTER SPECIFICATION
 
 **Phase:** P5 — Action / Automation Decision Support
-**Task:** P5-00 — P5 Master Specification
-**Status:** MASTER FROZEN FOR IMPLEMENTATION PLANNING (P5 implementation NOT STARTED)
+**Task:** P5-00 — P5 Master Specification (R2 — final revision at freeze gate)
+**Status:** MASTER READY FOR FREEZE (P5 implementation NOT STARTED; freeze pending explicit owner approval)
 **Master version:** `p5-master/1` (P5_MASTER_VERSION = "1")
 **Authoritative location:** `docs/P5_Upgrade/`
 
@@ -65,7 +65,7 @@ separately approved P4 process, never a P5 decision.
 | P4 phase | **CLOSED** (`P4_08_CLOSURE_DECISION.md`; Master §19K) |
 | P4-06 validation track | **OPEN / DATA ACCRUAL** (parallel maintenance track; revalidation trigger defined) |
 | All 9 P4-03 provisional rules | **INSUFFICIENT_EVIDENCE** (NOT promoted; NOT modified by P5) |
-| P5 | **NOT STARTED — MASTER FROZEN FOR IMPLEMENTATION PLANNING** |
+| P5 | **NOT STARTED — MASTER READY FOR FREEZE (pending explicit owner approval)** |
 | P5-01 | READY (candidate roadmap — see §32) |
 | P4 interpretationRuleVersion | `p4-03/v1` — **unchanged by P5** (§25) |
 
@@ -80,6 +80,21 @@ P5 determines, for a given narrative and its P4 Decision Support snapshot:
 5. whether **human approval** is required (§16);
 6. whether it is **advisory only** or **potentially executable** (§17–§18);
 7. the traceable rationale for each of the above (§19, §20, §24).
+
+### Objectives
+
+(The review structure's "Objectives" section is satisfied here — merged into
+§4/§6/§7 per the freeze-gate review, which permits merge/split.)
+
+1. Consume the frozen P4 Decision Support contract as-is — never re-derive
+   or reinterpret P3/P4 semantics.
+2. Produce deterministic, policy-bound action decisions (including
+   NO_ACTION) with full traceability.
+3. Separate decision, authorization, execution, and execution result.
+4. Fail closed for consequential actions whenever P4 evidence is unknown,
+   degraded, null, stale, invalid, or insufficient.
+5. Keep every candidate concept (taxonomy, state machine, automation modes,
+   approval mappings) explicitly CANDIDATE until a later P5 task freezes it.
 
 P5 produces a **decision**, not a market prediction. P5 does not forecast
 returns; it does not convert qualitative P4 values into numeric scores; it
@@ -131,8 +146,7 @@ Candidate non-goals — to be confirmed by P5-01 contract audit:
 10. Inventing financial return predictions.
 11. Using price returns as hidden validation labels.
 12. An LLM making untraceable action decisions (no untraceable decision logic).
-13. Introducing hidden action/priority/execution scores (§15 of the P5 task
-    instructions — see §15 of this Master).
+13. Introducing hidden action/priority/execution scores (§15 of this Master).
 
 These are CANDIDATE non-goals and are only frozen by an explicit P5 task
 decision after repository/spec review.
@@ -144,12 +158,13 @@ decision after repository/spec review.
 2. **Deterministic policy first.** Policy/eligibility/guardrail evaluation is
    deterministic rule evaluation over the P4 ViewModel — not free-form
    judgement. No LLM decision logic is assumed.
-3. **Fail closed.** P4 UNKNOWN / DEGRADED / null must never be silently
-   converted into an action; where execution could otherwise occur, P5 fails
-   closed (§15, §21).
+3. **Fail closed.** Unknown, degraded, null, stale, invalid, or insufficient
+   P4 evidence must never be silently converted into a consequential action;
+   where execution could otherwise occur, P5 fails closed (§15, §21).
 4. **Traceable.** Every action decision traces to its P4 snapshot, evidence,
    policy version, guardrail version, approval state (§19, §24).
-5. **Qualitative stays qualitative.** No hidden numeric scoring (§15).
+5. **Qualitative stays qualitative.** No hidden action/risk/priority score,
+   no composite BUY/SELL score, no invented numeric threshold (§15).
 6. **Separation of concerns.** Action decision ≠ action execution (§12, §18).
 7. **No invented thresholds.** Numeric thresholds are only added by explicit
    frozen specifications, not by this Master.
@@ -182,6 +197,18 @@ Terminology is refined by task specs; the separation of concerns is frozen
 as the architecture. The pipeline produces an **ActionDecision** (§12, §26)
 at every step; "no action" is a valid terminal decision.
 
+**Frozen separation invariants (P5-00):**
+- Policy MUST NOT bypass Safety.
+- Approval MUST NOT bypass Safety.
+- Execution Permission MUST NOT bypass Safety.
+- LLM-based logic MUST NOT override Policy, Safety, Approval, or Execution
+  Authorization.
+- Automation mode, action type, approval state, and execution state are
+  distinct dimensions and must not be conflated (§17).
+
+These invariants freeze the separation of concerns, NOT the detailed
+thresholds (which remain CANDIDATE for P5-02/P5-03/P5-04).
+
 ## 10. Action Model
 
 - An **ActionCandidate** is produced from the P4 ViewModel by deterministic
@@ -194,9 +221,16 @@ at every step; "no action" is a valid terminal decision.
 
 ## 11. Action Taxonomy (CANDIDATE)
 
-Initial candidate taxonomy — **CANDIDATE, not frozen**:
+Initial candidate taxonomy — **CANDIDATE, not frozen**. Every row is
+**CANDIDATE / ILLUSTRATIVE ONLY**: the intent, prerequisite, evidence, and
+approval columns are illustrative candidate shapes, NOT frozen policy. In
+particular, the evidence conditions shown for REDUCE_EXPOSURE /
+INCREASE_EXPOSURE / REBALANCE are illustrative candidates only — no
+action-class eligibility, approval, or automation rule is frozen here; all
+such mappings are deferred to P5-02/P5-03 (semantics/eligibility) and P5-04
+(approval). Nothing in this taxonomy implies execution.
 
-| Action | Intent | Prerequisites | Evidence requirements | Safety implications | Human approval | Execution in scope (v1) | Automatable | Advisory only |
+| Action | Intent | Prerequisites | Evidence requirements (ILLUSTRATIVE) | Safety implications (ILLUSTRATIVE) | Human approval (ILLUSTRATIVE) | Execution in scope (v1) | Automatable (ILLUSTRATIVE) | Advisory only |
 |---|---|---|---|---|---|---|---|---|
 | NO_ACTION | no warranted action | P4 available or deliberately degraded | none beyond P4 snapshot | none | no | no | n/a | yes |
 | MONITOR | observe over next window(s) | P4 snapshot present | direction/confidence not unknown | low | no | no | yes | yes |
@@ -285,10 +319,14 @@ First-class guardrail categories (CANDIDATE list):
 - unmet approval requirements;
 - execution-environment availability (for executable actions — v1 n/a).
 
-**CRITICAL:** P4 UNKNOWN / DEGRADED / null MUST NOT be silently converted
-into an action. Where action execution could otherwise occur, P5 **fails
-closed** (the default outcome is NO_ACTION or REVIEW/INVESTIGATE, not an
-exposure-changing action). No numerical thresholds are invented here.
+**CRITICAL — frozen invariant:** Unknown, degraded, null, stale, invalid,
+or insufficient P4 evidence MUST NEVER be silently converted into a
+**consequential** action. Where execution could otherwise occur, P5 **fails
+closed**: the condition is passed to policy evaluation, and possible
+outcomes include NO_ACTION, REVIEW, INVESTIGATE, ESCALATE, BLOCKED, or
+another explicitly permitted action state. The final semantic treatment of
+UNKNOWN/DEGRADED conditions is NOT decided by this Master — it is deferred
+to P5-02/P5-04. No numeric "low confidence" threshold is invented here.
 
 ## 16. Human Approval (human-in-the-loop)
 
@@ -301,11 +339,18 @@ Human approval is a first-class concept. The Master distinguishes:
 5. action executable (EXECUTABLE);
 6. action executed (EXECUTED).
 
-These states are NOT collapsed. Exposure-changing action classes
-(REDUCE_EXPOSURE, INCREASE_EXPOSURE, REBALANCE, EXECUTE) require human
-approval by default; NO_ACTION/MONITOR/REVIEW/INVESTIGATE/ESCALATE do not
-require approval (they are advisory/observation actions). The approval
-record is part of the audit trail (§24).
+These states are NOT collapsed.
+
+**Frozen principle (P5-00):** any consequential action must be subject to an
+explicit approval and authority policy before execution.
+
+**NOT frozen in P5-00:** the detailed mapping of action class → approval
+required? / approval level? / automation allowed? / conditions? — including
+any claim that a specific class (e.g. REDUCE_EXPOSURE / INCREASE_EXPOSURE /
+REBALANCE / EXECUTE) is always or never approval-required. That mapping is
+deferred to P5-02/P5-04. Approval must remain explicit, auditable, bound to
+the exact action candidate/version, and invalidated if material action
+parameters change. The approval record is part of the audit trail (§24).
 
 ## 17. Automation Modes (CANDIDATE)
 
@@ -316,11 +361,11 @@ Candidate modes:
   anything executable.
 - **AUTONOMOUS** — P5 executes without per-action human approval.
 
-**P5 v1 determination (PROVISIONAL): ADVISORY only.** ASSISTED may be
-considered by a later explicitly approved task; AUTONOMOUS is NOT assumed
-permitted. No evidence/specification currently justifies autonomous
-execution — it remains CANDIDATE-blocked until a frozen decision says
-otherwise.
+**P5 v1 determination (PROVISIONAL): ADVISORY-ONLY DEFAULT.** ASSISTED and
+AUTONOMOUS remain future CANDIDATES requiring explicit approval and
+separate implementation/safety contracts. No execution mechanism is
+invented. Automation mode is a dimension distinct from action type,
+approval state, and execution state — they must not be conflated.
 
 ## 18. Execution Boundary
 
@@ -362,15 +407,23 @@ interpretation logic and never rewrites the evidence.
 - P5 explanations are deterministic and template/policy-derived. No LLM-based
   decision logic is assumed; no untraceable reasoning.
 
-## 21. UNKNOWN / DEGRADED Handling
+## 21. UNKNOWN / Degraded / Null Semantics
 
 - P4 UNKNOWN / DEGRADED / null is a **first-class input state**, never a
   silent action trigger.
-- Default outcomes for unusable P4 states: NO_ACTION, or MONITOR /
-  REVIEW / INVESTIGATE with the degradation reason surfaced.
-- Exposure-changing actions are **blocked** when P4 is UNKNOWN/DEGRADED/null
-  (fail closed).
-- The reason must be preserved and explained (degradation codes surfaced).
+- **Frozen invariant:** unknown, degraded, null, stale, invalid, or
+  insufficient P4 evidence must never be silently converted into a
+  **consequential** action. This Master does NOT hard-code
+  UNKNOWN → NO_ACTION, DEGRADED → NO_ACTION, or NULL → NO_ACTION.
+- Instead, P5 **policy evaluates the condition**; possible outcomes include
+  NO_ACTION, REVIEW, INVESTIGATE, ESCALATE, BLOCKED, or another explicitly
+  permitted action state. The final semantic mapping is deferred to
+  P5-02/P5-04 — not decided by this Master.
+- Consequential (exposure-changing / executable) actions are **blocked**
+  when P4 is UNKNOWN/DEGRADED/null (fail closed for consequential actions).
+- The degradation reason must be preserved and explained (degradation codes
+  surfaced).
+- No numeric "low confidence" cutoff is defined here.
 
 ## 22. Idempotency (contract requirement, NOT implemented)
 
@@ -391,7 +444,9 @@ P5-00.
 
 Define failure semantics for (each CANDIDATE until task specs):
 
-- P4 unavailable → decision = NO_ACTION / blocked-with-reason; never action;
+- P4 unavailable → decision = blocked-with-reason; outcome per policy
+  (e.g. NO_ACTION / REVIEW / ESCALATE — mapping deferred to P5-02/P5-04);
+  never a consequential action;
 - policy evaluation failure → decision failure, recorded, no action;
 - guardrail failure → fail closed, recorded;
 - approval failure (denied/expired) → CANCELLED/blocked, recorded;
@@ -508,14 +563,20 @@ authority to change P3/P4 semantics.
 - P4-06 remains OPEN / DATA ACCRUAL (parallel track; not closed, not
   promoted);
 - P4 semantics are not modified by P5;
-- no hidden action score (§15);
+- no BUY/SELL shortcut (§5, §8);
+- no hidden action/risk/priority score, no composite BUY/SELL score, no
+  invented numeric threshold (§8, §15);
 - no autonomous execution assumption (§17);
-- P4 UNKNOWN/DEGRADED/null never silently becomes an action (§15/§21);
-- decision ≠ execution (§12).
+- safety separation: policy/approval/execution-permission never bypass
+  safety; LLM never overrides policy/safety/approval/authorization (§9);
+- unknown/degraded/null/stale/invalid/insufficient P4 evidence never
+  silently becomes a consequential action (§15, §21);
+- decision ≠ authorization ≠ execution ≠ execution result (§12);
+- auditability principle (§19, §24).
 
 **PROVISIONAL (require future validation/decision):**
-- P5 v1 automation mode = ADVISORY only (may be revised by an explicit
-  approved task);
+- P5 v1 automation mode = ADVISORY-ONLY DEFAULT (may be revised by an
+  explicit approved task);
 - action policy/guardrail rule sets (P5-03/P5-04);
 - approval model details (P5-04);
 - audit persistence model (P5-05);
@@ -527,6 +588,7 @@ authority to change P3/P4 semantics.
 - eligibility rules (§13);
 - policy architecture (§14);
 - guardrail categories (§15);
+- action-class approval mapping (§16);
 - automation modes beyond v1 advisory (§17);
 - execution model (§18);
 - data model objects (§26);
@@ -608,5 +670,32 @@ At P5 closure:
 - Statuses in this document reflect verified repository facts; anything not
   verifiable is marked CANDIDATE/PROVISIONAL, never assumed frozen.
 
-*End of P5 Master Specification. P5 implementation NOT STARTED; P5-01 READY
-after this Master is accepted.*
+### P5-00 R2 — Freeze-gate revision (documentation-only)
+
+Applied at the P5-00 final-revision gate:
+1. Master status corrected: "MASTER FROZEN" → **MASTER READY FOR FREEZE**
+   (pending explicit owner approval); the Master is NOT claimed frozen.
+2. UNKNOWN / DEGRADED / null handling corrected: no hard-coded
+   UNKNOWN → NO_ACTION / DEGRADED → NO_ACTION / NULL → NO_ACTION mapping;
+   the frozen invariant (never silently convert unusable P4 evidence into a
+   consequential action; fail closed for consequential actions) is stated,
+   and the outcome mapping is deferred to P5-02/P5-04.
+3. Approval freeze corrected: only the principle ("any consequential action
+   requires an explicit approval/authority policy before execution") is
+   frozen; per-action-class approval mappings are explicitly NOT frozen.
+4. Taxonomy clarified: every row of §11 is labeled CANDIDATE / ILLUSTRATIVE
+   ONLY, including the REDUCE_EXPOSURE / INCREASE_EXPOSURE / REBALANCE
+   evidence conditions.
+5. Safety-separation invariants added (§9): policy/approval/execution-
+   permission never bypass safety; LLM never overrides
+   policy/safety/approval/authorization.
+6. Objectives coverage merged into §4 (per the review structure, which
+   permits merge/split); no speculative sections added.
+7. No hidden scores, no invented thresholds, no execution mechanism, no
+   P4/P3/P2/DB/API/UI change. P4-06 remains OPEN / DATA ACCRUAL; the 9
+   provisional rules remain INSUFFICIENT_EVIDENCE.
+
+*End of P5 Master Specification (R2). P5 implementation NOT STARTED. This
+Master is READY FOR FREEZE pending explicit owner approval — it is NOT yet
+frozen, and P5-01 must not begin until freeze is confirmed by the project
+owner.*

@@ -10,6 +10,7 @@ import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { CoinRankingTable } from "@/components/CoinRankingTable";
 import { P3IntelligencePanel } from "@/components/P3IntelligencePanel";
 import { P4DecisionSupportPanel } from "@/components/P4DecisionSupportPanel";
+import { P5ActionDecisionPanel } from "@/components/P5ActionDecisionPanel";
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import {
   LineChart,
@@ -148,6 +149,9 @@ export default function NarrativeDetailPage() {
 
       {/* P4 Decision Support (P4-02 §11 — between P3 Intelligence and CorrelationHeatmap) */}
       <P4DecisionSupportPanel viewModel={narrative.p4DecisionSupport ?? null} />
+
+      {/* P5 Action Decision (P5-06C — read-only action decision surface) */}
+      <P5ActionDecisionPanel narrativeId={id} />
 
       {/* Correlation Matrix */}
       <CorrelationHeatmap data={correlation ?? null} isLoading={correlationLoading} />

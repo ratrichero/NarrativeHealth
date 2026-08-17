@@ -710,6 +710,156 @@ export const alertHistory = pgTable("alert_history", {
   triggeredIdx: index("alert_history_triggered_idx").on(table.triggeredAt),
 }));
 
+// ==================== P5 HISTORICAL ARTIFACTS (P5-08) ====================
+// Persistence for P5-07 replay validation. Artifacts are stored verbatim as
+// jsonb payloads; identity/version columns enable exact reference resolution
+// (P5-07 §5). Append-only by contract: the store/writer expose no
+// UPDATE/DELETE surface and migration 0021 adds DB-level immutability
+// triggers. contentHash stays PROVISIONAL (P5-02 AD-014) — the column is
+// nullable and never computed here.
+
+export const p5DecisionRecords = pgTable(
+  "p5_decision_records",
+  {
+    id: serial("id").primaryKey(),
+    identityKey: varchar("identity_key", { length: 255 }).notNull().unique(),
+    decisionId: varchar("decision_id", { length: 100 }).notNull(),
+    narrativeId: integer("narrative_id").notNull(),
+    outcome: varchar("outcome", { length: 30 }).notNull(),
+    suppressed: boolean("suppressed").notNull().default(false),
+    blockerSource: varchar("blocker_source", { length: 20 }),
+    blockerRef: varchar("blocker_ref", { length: 255 }),
+    actionType: varchar("action_type", { length: 40 }),
+    decisionState: varchar("decision_state", { length: 30 }).notNull(),
+    approvalState: varchar("approval_state", { length: 30 }).notNull(),
+    executionState: varchar("execution_state", { length: 30 }).notNull(),
+    permissionResult: varchar("permission_result", { length: 30 }).notNull(),
+    record: jsonb("record").notNull(),
+    decisionAt: timestamp("decision_at", { withTimezone: true }),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    narrativeIdx: index("p5_decision_records_narrative_idx").on(table.narrativeId),
+  })
+);
+
+export const p5P4Snapshots = pgTable(
+  "p5_p4_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    identityKey: varchar("identity_key", { length: 255 }).notNull().unique(),
+    narrativeId: integer("narrative_id").notNull(),
+    window: varchar("window", { length: 20 }).notNull(),
+    algorithmKey: varchar("algorithm_key", { length: 100 }).notNull(),
+    algorithmVersion: varchar("algorithm_version", { length: 50 }).notNull(),
+    calculationMode: varchar("calculation_mode", { length: 30 }).notNull(),
+    semanticVersion: varchar("semantic_version", { length: 50 }),
+    asOf: timestamp("as_of", { withTimezone: true }),
+    status: varchar("status", { length: 30 }),
+    contentHash: varchar("content_hash", { length: 128 }),
+    snapshot: jsonb("snapshot").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    narrativeWindowIdx: index("p5_p4_snapshots_narrative_window_idx").on(table.narrativeId, table.window),
+  })
+);
+
+export const p5Policies = pgTable(
+  "p5_policies",
+  {
+    id: serial("id").primaryKey(),
+    identityKey: varchar("identity_key", { length: 255 }).notNull().unique(),
+    policyId: varchar("policy_id", { length: 100 }).notNull(),
+    policyVersion: varchar("policy_version", { length: 50 }).notNull(),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }),
+    evaluationAt: timestamp("evaluation_at", { withTimezone: true }),
+    policy: jsonb("policy").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    policyIdIdx: index("p5_policies_policy_id_idx").on(table.policyId),
+  })
+);
+
+export const p5Guardrails = pgTable(
+  "p5_guardrails",
+  {
+    id: serial("id").primaryKey(),
+    identityKey: varchar("identity_key", { length: 255 }).notNull().unique(),
+    guardrailId: varchar("guardrail_id", { length: 100 }).notNull(),
+    version: varchar("version", { length: 50 }),
+    outcome: varchar("outcome", { length: 30 }),
+    evaluatedAt: timestamp("evaluated_at", { withTimezone: true }),
+    guardrail: jsonb("guardrail").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    guardrailIdIdx: index("p5_guardrails_guardrail_id_idx").on(table.guardrailId),
+  })
+);
+
+export const p5Approvals = pgTable(
+  "p5_approvals",
+  {
+    id: serial("id").primaryKey(),
+    identityKey: varchar("identity_key", { length: 255 }).notNull().unique(),
+    approvalId: varchar("approval_id", { length: 100 }).notNull(),
+    decisionIdRef: varchar("decision_id_ref", { length: 100 }),
+    state: varchar("state", { length: 30 }),
+    authorityRef: varchar("authority_ref", { length: 100 }),
+    actor: varchar("actor", { length: 100 }),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    approvalPolicyVersion: varchar("approval_policy_version", { length: 50 }),
+    approval: jsonb("approval").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    decisionRefIdx: index("p5_approvals_decision_id_ref_idx").on(table.decisionIdRef),
+  })
+);
+
+export const p5Permissions = pgTable(
+  "p5_permissions",
+  {
+    id: serial("id").primaryKey(),
+    identityKey: varchar("identity_key", { length: 255 }).notNull().unique(),
+    ref: varchar("ref", { length: 255 }).notNull(),
+    result: varchar("result", { length: 30 }),
+    evaluatedAt: timestamp("evaluated_at", { withTimezone: true }),
+    permission: jsonb("permission").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    refIdx: index("p5_permissions_ref_idx").on(table.ref),
+  })
+);
+
+export const p5AuditEvents = pgTable(
+  "p5_audit_events",
+  {
+    id: serial("id").primaryKey(),
+    identityKey: varchar("identity_key", { length: 255 }).notNull().unique(),
+    eventId: varchar("event_id", { length: 100 }).notNull(),
+    decisionIdRef: varchar("decision_id_ref", { length: 100 }).notNull(),
+    eventType: varchar("event_type", { length: 50 }).notNull(),
+    eventAt: timestamp("event_at", { withTimezone: true }),
+    actor: varchar("actor", { length: 100 }),
+    previousState: varchar("previous_state", { length: 30 }),
+    newState: varchar("new_state", { length: 30 }),
+    reason: text("reason"),
+    policyVersionRef: varchar("policy_version_ref", { length: 50 }),
+    guardrailRef: varchar("guardrail_ref", { length: 100 }),
+    approvalRef: varchar("approval_ref", { length: 100 }),
+    event: jsonb("event").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    decisionRefIdx: index("p5_audit_events_decision_id_ref_idx").on(table.decisionIdRef),
+    eventTypeIdx: index("p5_audit_events_type_idx").on(table.eventType),
+  })
+);
+
 // ==================== RELATIONS ====================
 export const narrativesRelations = relations(narratives, ({ many }) => ({
   coinNarratives: many(coinNarratives),
@@ -845,3 +995,17 @@ export type AlertHistory = typeof alertHistory.$inferSelect;
 export type NewAlertHistory = typeof alertHistory.$inferInsert;
 export type P3HistoricalCorrection = typeof p3HistoricalCorrections.$inferSelect;
 export type NewP3HistoricalCorrection = typeof p3HistoricalCorrections.$inferInsert;
+export type P5DecisionRecordRow = typeof p5DecisionRecords.$inferSelect;
+export type NewP5DecisionRecordRow = typeof p5DecisionRecords.$inferInsert;
+export type P5P4SnapshotRow = typeof p5P4Snapshots.$inferSelect;
+export type NewP5P4SnapshotRow = typeof p5P4Snapshots.$inferInsert;
+export type P5PolicyRow = typeof p5Policies.$inferSelect;
+export type NewP5PolicyRow = typeof p5Policies.$inferInsert;
+export type P5GuardrailRow = typeof p5Guardrails.$inferSelect;
+export type NewP5GuardrailRow = typeof p5Guardrails.$inferInsert;
+export type P5ApprovalRow = typeof p5Approvals.$inferSelect;
+export type NewP5ApprovalRow = typeof p5Approvals.$inferInsert;
+export type P5PermissionRow = typeof p5Permissions.$inferSelect;
+export type NewP5PermissionRow = typeof p5Permissions.$inferInsert;
+export type P5AuditEventRow = typeof p5AuditEvents.$inferSelect;
+export type NewP5AuditEventRow = typeof p5AuditEvents.$inferInsert;
