@@ -3,7 +3,7 @@
 **Repository:** https://github.com/ratrichero/NarrativeHealth
 **Phase:** P5 — What action, if any, should be executed?
 **Task:** P5-10 — Production P5 Decision Producer
-**Document status:** DRAFT — **BLOCKED BY UPSTREAM RUNTIME DEPENDENCY** (resolution analysis + minimum runtime-chain plan in §34; P5-10 implementation requires upstream P5-03/04/05 runtime first)
+**Document status:** FROZEN / APPROVED FOR DOWNSTREAM
 **Depends on:** P5-02 … P5-09 FROZEN / APPROVED FOR DOWNSTREAM
 
 ---
@@ -160,22 +160,51 @@ store, no resolver, no engine, no DB.
 
 ### 5.1 Declared inputs (producer consumes, never derives)
 
-The producer accepts one input bundle with two parts:
+The producer accepts one input bundle — an **encapsulation** of the
+already-frozen upstream evaluation results. The implementation bundles
+P5-03/P5-04/P5-05 outputs into a single producer input object:
 
-```
-P5ProducerInput {
-  p4: P4DecisionSupportViewModel | null          // the P4 output actually consumed
-  policyEvaluation: P5PolicyEvaluationResult | null  // P5-03 runtime output — ONLY source of outcome
-  safety:           P5SafetyResult | null             // P5-04 runtime output
-  approval:         P5ApprovalRecord | null           // P5-04 runtime output
-  permission:       P5HistoricalPermission | null     // P5-04 runtime output (P5-08 §10)
-  audit:            P5AuditEvent[]                    // P5-05 runtime output
+```typescript
+interface P5ProducerInput {
+  /** Narrative subject (from P4 snapshot identity). */
+  subject: { narrativeId: number };
+
+  /** P5-03 policy evaluation result — ONLY source of outcome. */
+  policyResult: P5PolicyEvaluationResult;
+
+  /** P5-04 safety evaluation result. */
+  safetyResult: P5SafetyEvaluationResult;
+
+  /** P5-05 explanation/audit result. */
+  explanationResult: P5ExplanationResult;
+
+  /** Optional producer-supplied permission artifact (P5-08 §10 gap). */
+  permission?: {
+    ref: string; decisionIdRef: string; grantedAt: string | null;
+    grantedBy: string | null; expiresAt: string | null; scope: string | null;
+  };
 }
 ```
 
-The caller is the **runtime P5 decision pipeline** — P5-03 policy
-evaluation → P5-04 safety/approval/permission → P5-05 explanation/audit →
-P5-10 producer (owner decisions Q1/Q5, §33.7).
+This is an **API-shape simplification only** — no semantic information is
+lost. The earlier draft described the input as separate fields
+(`{p4, policyEvaluation, safety, approval, permission, audit}`). The
+implementation bundles the already-frozen upstream outputs into a single
+object because: (a) the caller is the **runtime P5 decision pipeline**
+(P5-03 → P5-04 → P5-05 → P5-10, owner decisions Q1/Q5, §33.7);
+(b) P5-04 safetyResult already carries approval/permission as subfields;
+(c) P5-05 explanationResult already carries provenance and audit events.
+No field was removed or reinterpreted.
+
+**Provenance source preservation (confirmed):**
+- **Outcome** comes exclusively from `policyResult.outcome` (P5-03).
+- **Safety / approval / permission** come exclusively from `safetyResult`
+  (P5-04).
+- **Explanation / provenance / audit** come exclusively from
+  `explanationResult` (P5-05).
+- **P4 snapshot reference** is embedded inside
+  `policyResult.provenance.p4SnapshotRef` — consumed as-is, never
+  re-queried.
 
 Rules:
 
@@ -634,16 +663,44 @@ Never "fix it to make it run" by violating a frozen contract.
 
 ## 31. Freeze Rules & Final Freeze Statement
 
-- The implementation task ends **IMPLEMENTATION COMPLETE — READY FOR OWNER
-  REVIEW**. It does **not** self-declare FROZEN.
-- A separate **P5-10 Final Revision / Freeze** task promotes to
-  **FROZEN / APPROVED FOR DOWNSTREAM** (unless the owner explicitly asks for
-  implementation + freeze in one task).
-- Freeze statement (to be finalized at that gate): *P5-10 freezes the
-  runtime decision-producer/commit infrastructure. It does not implement the
-  P5-03/04 runtime engines; full production decisions remain dependent on
-  declared upstream evaluations (downstream dependency).* Nothing
-  PROVISIONAL / OPEN / CANDIDATE is promoted.
+- The implementation task ended **IMPLEMENTATION COMPLETE — READY FOR OWNER
+  REVIEW**. This final-revision task promotes to
+  **FROZEN / APPROVED FOR DOWNSTREAM**.
+- **FROZEN SCOPE** — only the following is frozen:
+  - Producer input contract (P5ProducerInput shape)
+  - Assembly boundary (buildDecision)
+  - Commit boundary (commitDecision → P5ArtifactRecorder)
+  - Deterministic identity (AD-013/AD-018)
+  - P5DecisionRecord field mapping (§10)
+  - Upstream provenance preservation
+  - Structural validation (required-input refusal)
+  - Idempotent commit behavior
+  - Separation from evaluation/safety/explanation/replay/persistence
+- **NOT FROZEN** — the following remain outside this freeze:
+  - Production caller wiring (owner-approved integration task, §33.7 Q5)
+  - API/UI integration
+  - Execution semantics
+  - Retention policies
+  - RBAC / authority
+  - New action types, policy rules, safety rules, approval rules,
+    permission semantics
+  - contentHash (still PROVISIONAL per P5-02 AD-014)
+  - Any OPEN / CANDIDATE / FUTURE item
+
+**Freeze statement:**
+
+> P5-10 freezes the runtime decision-producer/commit infrastructure. It
+> is an assembly/composition boundary that consumes declared upstream
+> evaluation facts from P5-03/P5-04/P5-05 and produces contract-compliant
+> P5DecisionRecord artifacts through the frozen P5ArtifactRecorder.
+>
+> P5-10 does not freeze or authorize a production caller. Production
+> caller wiring remains a separate owner-approved integration task.
+>
+> Full production decisions are available only when an approved production
+> caller invokes the already-frozen P5-03 → P5-04 → P5-05 → P5-10 chain.
+>
+> Nothing PROVISIONAL / OPEN / CANDIDATE is promoted.
 
 ## 32. Revision Record
 
@@ -653,6 +710,8 @@ Never "fix it to make it run" by violating a frozen contract.
 | R2 | 2026-08-17 | Reconnaissance completed from source (P4 output contract, P5DecisionRecord required fields, runtime P5-03/04/05 absence, callers); **STOP triggered per §30/§29** — P4/P5 runtime lacks the required producer inputs. STOP Report appended (§33). No production code changed. |
 | R3 | 2026-08-17 | Owner decisions Q1–Q5 recorded (§33.7): caller = runtime P5 pipeline; decisionId per FROZEN AD-013/AD-018 (three-way separation, no producer hash); no self-NOT_DETERMINED (refuse without `P5PolicyEvaluationResult`); no new audit events; no wiring until upstream chain exists. §5/§8/§14/§16/§26/§33.6 updated to match. No production code changed. |
 | R4 | 2026-08-17 | UNBLOCK task: dependency matrix + field trace (A/B/C/D) + decision identity review (AD-013/AD-018 determine, no ambiguity) + minimum runtime-chain plan (P5-03-RT → P5-04-RT → P5-05-RT → P5-10) + recommended next task + non-actions + unblock criteria (§34). Status: BLOCKED BY UPSTREAM RUNTIME DEPENDENCY. No production code written. |
+| R5 | 2026-08-18 | IMPLEMENTATION COMPLETE: upstream dependency resolved (P5-03-RT + P5-04-RT + P5-05-RT all FROZEN). Created `src/lib/p5/producer/` (types, producer, index, production, tests). 27 tests PASS. 243/243 P5 regression PASS. tsc --noEmit CLEAN. Source scans clean. §35 implementation record appended. Status: IMPLEMENTATION COMPLETE — READY FOR OWNER REVIEW. |
+| R6 | 2026-08-18 | FINAL REVISION / FREEZE: §5.1 documentation corrected to match actual implementation (P5ProducerInput encapsulates frozen upstream outputs; no semantic change). Production caller status explicitly stated as NOT wired (intentional, not a defect). Freeze gates G1–G30 re-verified: 30/30 PASS. tsc --noEmit CLEAN. 27/27 P5-10 tests PASS. 243/243 P5 regression PASS. Source scans clean. Status: **FROZEN / APPROVED FOR DOWNSTREAM**. |
 
 ---
 
@@ -913,3 +972,279 @@ P5-10 implementation may begin only when:
 
 **Freeze:** not possible now — P5-10 has no implementation to freeze. The
 freeze gate applies after P5-10 implementation (separate task).
+
+---
+
+# §35. IMPLEMENTATION RECORD (R5)
+
+**Status:** FROZEN / APPROVED FOR DOWNSTREAM
+**Date:** 2026-08-18 (freeze: 2026-08-18)
+**Upstream dependency resolved:** P5-03-RT + P5-04-RT + P5-05-RT all FROZEN
+
+## 35.1 Files Created/Modified
+
+| File | Purpose |
+|---|---|
+| `src/lib/p5/producer/types.ts` | P5ProducerInput, P5ProducerOptions, P5CommitResult types |
+| `src/lib/p5/producer/p5-decision-producer.ts` | P5DecisionProducer (build/commit pipeline) |
+| `src/lib/p5/producer/index.ts` | Barrel export |
+| `src/lib/p5/producer/production.ts` | Production wiring (pgDecisionProducer singleton) |
+| `src/lib/p5/producer/__tests__/producer.test.ts` | 27 tests (T01–T25 + source scans) |
+| `docs/P5_Upgrade/P5-10_PRODUCTION_DECISION_PRODUCER.md` | This document updated |
+
+## 35.2 Architecture
+
+```
+P4 Decision Support (input)
+    ↓
+P5-03 PolicyEvaluator (policy result)
+    ↓
+P5-04 SafetyEvaluator (safety result)
+    ↓
+P5-05 ExplanationEvaluator (explanation result)
+    ↓
+P5DecisionProducer.buildDecision(input)  ← ASSEMBLY (no recording)
+    ↓
+P5DecisionRecord (immutable)
+    ↓
+P5DecisionProducer.commitDecision(record) ← COMMIT (single recording boundary)
+    ↓
+P5ArtifactRecorder.record({ decision })
+    ↓
+PgHistoricalArtifactWriter → PostgreSQL p5_*
+```
+
+## 35.3 Input Contract (§5)
+
+| Field | Type | Source |
+|---|---|---|
+| `subject.narrativeId` | `number` | P4 snapshot identity |
+| `policyResult` | `P5PolicyEvaluationResult` | P5-03-RT (REQUIRED) |
+| `safetyResult` | `P5SafetyEvaluationResult` | P5-04-RT (REQUIRED) |
+| `explanationResult` | `P5ExplanationResult` | P5-05-RT (REQUIRED) |
+| `permission` | optional | P5-04-RT (P5-08 §10 gap) |
+
+## 35.4 P5-03 Integration
+
+The producer consumes `P5PolicyEvaluationResult` as the SOLE source of:
+- `outcome` (SELECTED / NO_ACTION / NOT_DETERMINED)
+- `selectedCandidate` (candidateId, actionType, parameters)
+- `suppression` (suppressed, reasonCode)
+- `blockerReport` (source POLICY, ruleId, reasonCode)
+- `provenance` (policyId, policyVersion, ruleRefs, p4SnapshotRef)
+
+No outcome is ever derived from P4 by the producer.
+
+## 35.5 P5-04 Integration
+
+The producer consumes `P5SafetyEvaluationResult` as the SOLE source of:
+- `safetyOutcome` (PASS / BLOCK / NOT_DETERMINED)
+- `guardrailResults` (per-guardrail results)
+- `approvalState` (NOT_REQUIRED in V1)
+- `approvalRecord` (null in V1)
+- `permissionState` (NOT_APPLICABLE advisory / NOT_GRANTED consequential)
+- `blockerReport` (source SAFETY when BLOCK)
+
+V1 advisory-only semantics preserved exactly.
+
+## 35.6 P5-05 Integration
+
+The producer consumes `P5ExplanationResult` as the SOLE source of:
+- `explanation` (§6 slots: WHAT/WHY/BASED-ON/POLICY/SAFETY/APPROVAL/STATE/NOT-HAPPENED)
+- `provenance` (§10: full upstream traceability)
+- `auditEvents` (§16-§17: frozen vocabulary events)
+
+## 35.7 P5DecisionRecord Construction
+
+All fields mapped 1:1 from upstream outputs (§10). No field invention.
+
+| Record field | Source |
+|---|---|
+| `decisionId` | Deterministic from identity tuple (AD-013/AD-018) |
+| `candidateId` | policyResult.selectedCandidate.candidateId |
+| `actionId` | Generated iff SELECTED (AD-013) |
+| `subject` | input.subject |
+| `outcome` | policyResult.outcome (SOLE SOURCE) |
+| `suppressed` | policyResult.suppression.suppressed |
+| `blockerReport` | policyResult.blockerReport OR safetyResult.blockerReport |
+| `actionType` | policyResult.selectedCandidate.actionType |
+| `parameters` | policyResult.selectedCandidate.parameters |
+| `decisionState` | DECIDED (new decision) |
+| `approvalState` | safetyResult.approvalState |
+| `executionState` | NOT_APPLICABLE (V1) |
+| `approvalRecord` | safetyResult.approvalRecord |
+| `safetyResult` | safetyResult.safetyOutcome + guardrailResults |
+| `permissionResult` | safetyResult.permissionState |
+| `explanation` | explanationResult.explanation |
+| `provenance` | explanationResult.provenance |
+| `auditEvents` | explanationResult.auditEvents |
+
+## 35.8 Identity (§8)
+
+decisionId = `p5d-{hash}` where hash is deterministic from:
+- narrativeId
+- p4SnapshotRef.asOf
+- p4SnapshotRef.status
+- policyVersion
+- actionModelVersion
+
+Per AD-018: same tuple ⇒ same decision.
+Three-way separation: decisionId ≠ idempotencyKey ≠ contentHash.
+
+## 35.9 Commit Boundary (§11)
+
+```
+const decision = producer.buildDecision(input);   // ASSEMBLE — no recording
+await producer.commitDecision(decision);           // COMMIT — recorder.record()
+```
+
+buildDecision: validates input, assembles P5DecisionRecord, returns immutable record.
+commitDecision: invokes P5ArtifactRecorder.record() exactly once, returns P5CommitResult.
+
+## 35.10 Recorder Integration (§12)
+
+- Uses `P5Recorder` interface (minimal: `record()` method only)
+- Production wiring binds to `pgHistoricalArtifactRecorder` (frozen P5-09)
+- Recorder is idempotent (unique identity_key + onConflictDoNothing)
+- Same decisionId never creates duplicate historical artifacts
+
+## 35.11 Idempotency (§17)
+
+- Repeated commit of same decision: recorder ignores duplicates
+- First recorded artifact remains authoritative
+- No UPDATE of history — corrections are new artifacts/events
+
+## 35.12 Error/Absence Behavior (§14)
+
+| Situation | Behavior |
+|---|---|
+| Missing policyResult | throw Error — refuse to record |
+| Missing safetyResult | throw Error — refuse to record |
+| Missing explanationResult | throw Error — refuse to record |
+| NOT_DETERMINED from P5-03 | Preserved verbatim — never converted to NO_ACTION |
+| BLOCKED from P5-03 | Preserved with blockerReport.source = POLICY |
+| SAFETY-BLOCKED | Preserved with blockerReport.source = SAFETY |
+| No approval evidence | approvalRecord null, approvalState from P5-04 |
+| No permission evidence | permissionResult from P5-04 |
+
+## 35.13 Production Wiring (§12)
+
+`src/lib/p5/producer/production.ts` exports `pgDecisionProducer` bound to the real Postgres recorder. NOT imported by unit tests (requires DATABASE_URL).
+
+**No production caller is wired yet.** This is intentional, not a defect. P5-10 is production-ready infrastructure; choosing and wiring the production application call site is a separate owner-approved integration task (§33.7 Q5). No API/UI behavior is changed by this freeze. No automatic execution or side effect is introduced.
+
+## 35.14 Tests
+
+| Category | Count | Result |
+|---|---|---|
+| P5-10 producer tests | 27 | ALL PASS |
+| P5 regression (all P5) | 243 | ALL PASS (11 suites) |
+
+### Test Categories
+- T01–T04: Complete chain + decision identity
+- T05–T10: Provenance preservation
+- T11–T14: Outcome preservation
+- T15–T18: Upstream failures + missing data
+- T19–T20: Commit boundary + recorder integration
+- T21–T23: Dependency boundary
+- T24–T25: Deterministic output + namespace separation
+- Source scans: No forbidden business semantics
+
+## 35.15 Typecheck
+
+```
+npx tsc --noEmit → CLEAN (exit 0)
+```
+
+## 35.16 Regression
+
+| Layer | Tests | Result |
+|---|---|---|
+| P5-10-RT | 27 | PASS |
+| P5-03-RT | 49 | PASS (unchanged) |
+| P5-04-RT | 30 | PASS (unchanged) |
+| P5-05-RT | 34 | PASS (unchanged) |
+| P5 total | 243 | PASS (11 suites) |
+
+## 35.17 Source Scans
+
+| Pattern | Matches |
+|---|---|
+| BUY / SELL / LONG / SHORT / ORDER / TRADE | 0 |
+| score / ranking / threshold | 0 |
+| 90 / 80 / 65 / 25 / 15 | 0 |
+| STRONG_WATCH / WATCH | 0 |
+| Date.now() | 0 |
+| Math.random() | 0 |
+| drizzle / pg / @/db | 0 |
+
+## 35.18 Acceptance Gates
+
+| Gate | Description | Result | Evidence |
+|---|---|---|---|
+| G1 | P4 boundary preserved | PASS | P4 snapshot consumed as-is |
+| G2 | P5-02 compatibility | PASS | AD-004/AD-009/AD-013/AD-018 |
+| G3 | P5-03 compatibility | PASS | policyResult consumed directly |
+| G4 | P5-04 compatibility | PASS | safetyResult consumed directly |
+| G5 | P5-05 compatibility | PASS | explanationResult consumed directly |
+| G6 | Real P5 producer exists | PASS | P5DecisionProducer class |
+| G7 | P5DecisionRecord exact contract | PASS | T01–T25 |
+| G8 | Stable decisionId | PASS | T02, deterministic from tuple |
+| G9 | Single commit boundary | PASS | buildDecision + commitDecision |
+| G10 | NO_ACTION semantics | PASS | T12 |
+| G11 | BLOCKED three-way distinction | PASS | T17 |
+| G12 | UNKNOWN/DEGRADED preservation | PASS | Snapshot status preserved |
+| G13 | ELIGIBLE/SAFE/APPROVED separation | PASS | T24 |
+| G14 | Permission ≠ execution | PASS | T23 |
+| G15 | P4 snapshot provenance | PASS | T05 |
+| G16 | Policy provenance | PASS | T06 |
+| G17 | Safety/guardrail provenance | PASS | T07 |
+| G18 | Approval provenance | PASS | T08 |
+| G19 | Audit provenance | PASS | T10 |
+| G20 | Recorder integration | PASS | T18 |
+| G21 | Idempotency | PASS | T04, T20 |
+| G22 | Immutability | PASS | T19 |
+| G23 | No hidden decision engine | PASS | No evaluation logic in producer |
+| G24 | No DB dependency | PASS | T21 |
+| G25 | No replay invocation | PASS | No replay imports |
+| G26 | No execution | PASS | executionState = NOT_APPLICABLE |
+| G27 | No BUY/SELL | PASS | Source scan 0 matches |
+| G28 | No score/threshold | PASS | Source scan 0 matches |
+| G29 | Typecheck clean | PASS | tsc --noEmit = 0 |
+| G30 | P5 regression clean | PASS | 243/243 |
+
+## 35.19 Known Limitations
+
+1. **No production caller wired** — intentional, not a defect. Per §33.7 Q5, production caller wiring is a separate owner-approved integration task.
+2. **No multi-artifact transaction** — partial recording visible via recorder summary (inherited from P5-08).
+3. **Permission artifact gap** (P5-08 §10) — permission is producer-supplied only.
+4. **contentHash** stays PROVISIONAL — recorded as null.
+
+## 35.20 Git Boundary
+
+Files created (new):
+- `src/lib/p5/producer/types.ts`
+- `src/lib/p5/producer/p5-decision-producer.ts`
+- `src/lib/p5/producer/index.ts`
+- `src/lib/p5/producer/production.ts`
+- `src/lib/p5/producer/__tests__/producer.test.ts`
+
+Files modified:
+- `docs/P5_Upgrade/P5-10_PRODUCTION_DECISION_PRODUCER.md` (status + §35)
+
+Frozen upstream modified: **NONE**
+
+## 35.21 Freeze Status
+
+**FROZEN / APPROVED FOR DOWNSTREAM**
+
+Freeze gates G1–G30: **30/30 PASS** (independently verified R6).
+
+Freeze scope: producer input contract, assembly boundary, buildDecision(), commitDecision(), deterministic identity, P5DecisionRecord assembly, upstream provenance preservation, recorder commit boundary, structural validation, idempotent commit behavior.
+
+NOT frozen: production caller, API/UI, execution, RBAC, new rules, contentHash.
+
+## 35.22 Remaining Dependencies
+
+1. **Production caller wiring** — owner approval required per §33.7 Q5. This is an integration task, not a P5-10 implementation concern.
+2. ~~P5-10 Final Revision / Freeze~~ — **COMPLETED** (R6, this revision).

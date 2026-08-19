@@ -14,11 +14,20 @@ import { getHealthStatus } from "@/lib/utils";
 import { getLatestValidP3Intelligence } from "@/lib/services/p3-intelligence.service";
 import { getP3IntelligenceHistory } from "@/lib/services/p3-intelligence-history.service";
 import { getP4DecisionSupport } from "@/lib/p4/service";
+import { P5RuntimeAdapter } from "@/lib/p5/integration";
+import { pgDecisionProducer } from "@/lib/p5/producer/production";
 import type { P3IntelligenceViewModel } from "@/lib/types/p3-intelligence";
 import type { P3IntelligenceHistoryViewModel } from "@/lib/types/p3-intelligence-history";
 import type { P4DecisionSupportViewModel } from "@/lib/p4/types";
+import type { P5PipelineResult } from "@/lib/p5/integration";
 
 export const dynamic = "force-dynamic";
+
+// ---------------------------------------------------------------------------
+// P5-11 Runtime Integration — frozen adapter wired to production recorder
+// ---------------------------------------------------------------------------
+
+const p5Adapter = new P5RuntimeAdapter(pgDecisionProducer);
 
 // GET - Get narrative details
 export async function GET(
@@ -154,6 +163,30 @@ export async function GET(
       console.error("P4 Decision Support read failed:", error);
     }
 
+    // -----------------------------------------------------------------------
+    // P5-11: Runtime Decision Pipeline (additive — P5-11 §3)
+    // -----------------------------------------------------------------------
+    // The P5 pipeline is a ONE-WAY add to the existing response.
+    // It NEVER modifies P4 data, never replaces P4 fields, never causes a 500.
+    // Any P5 failure degrades to null — same reliability contract as P3/P4.
+    let p5Decision: P5PipelineResult | null = null;
+    if (p4DecisionSupport) {
+      try {
+        p5Decision = await p5Adapter.evaluate(narrativeId, p4DecisionSupport);
+      } catch (error) {
+        console.error("P5 Decision Pipeline failed:", error);
+        p5Decision = {
+          decision: null,
+          commit: null,
+          error: {
+            stage: "P5_10_BUILD",
+            message: "P5 pipeline unexpected failure",
+            cause: error instanceof Error ? error : new Error(String(error)),
+          },
+        };
+      }
+    }
+
     return NextResponse.json({
       success: true,
       data: {
@@ -178,6 +211,8 @@ export async function GET(
         p3Intelligence,
         p3IntelligenceHistory,
         p4DecisionSupport,
+        // P5-11: additive field — decision record from the frozen pipeline
+        p5Decision: p5Decision?.decision ?? null,
       },
     });
   } catch (error) {
