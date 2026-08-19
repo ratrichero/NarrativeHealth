@@ -1,112 +1,90 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Card, CardHeader, CardContent, CardTitle } from "./ui/Card";
 import { Badge } from "./ui/Badge";
 import {
   ClipboardList,
-  Eye,
-  History,
+  ChevronDown,
+  ChevronRight,
   Info,
   Lock,
   ShieldAlert,
   XCircle,
+  Clock,
 } from "lucide-react";
 import type {
   P5ActionDecisionReadViewModel,
   P5DisplayState,
   P5ReadAvailability,
 } from "@/lib/p5/types";
+import {
+  buildPresentationModel,
+  type P5DecisionPresentationModel,
+} from "@/lib/p5/read/presentation-model";
 
 // ---------------------------------------------------------------------------
-// P5-06C UI contract — pure presentation of the frozen P5 read model values.
-// No interpretation, no transformation, no recommendation language, no
-// execution surface. "Approved" never means "executed"; "selected" never
-// means "executed"; an absent record is never rendered as "No action."
+// Display state styling — same frozen vocabulary, user-facing labels
 // ---------------------------------------------------------------------------
 
-const DISPLAY_STATE_META: Record<P5DisplayState, { label: string; className: string; note: string }> = {
+const DISPLAY_STATE_META: Record<
+  P5DisplayState,
+  { label: string; className: string; note: string }
+> = {
   NO_ACTION: {
-    label: "NO_ACTION",
+    label: "NO ACTION",
     className: "border-slate-500/40 bg-slate-700/40 text-slate-200",
     note: "Policy evaluation completed; no action was selected.",
   },
   POLICY_BLOCKED: {
-    label: "POLICY-BLOCKED",
+    label: "BLOCKED",
     className: "border-red-500/30 bg-red-500/10 text-red-400",
-    note: "A candidate existed but a policy rule prevented selection.",
+    note: "A policy rule prevented an action.",
   },
   NOT_DETERMINED: {
-    label: "NOT_DETERMINED",
+    label: "UNDETERMINED",
     className: "border-yellow-500/30 bg-yellow-500/10 text-yellow-400",
-    note: "The system could not reliably determine the policy outcome.",
+    note: "Insufficient data for a reliable determination.",
   },
   SUPPRESSED: {
     label: "SUPPRESSED",
     className: "border-yellow-500/30 bg-yellow-500/10 text-yellow-400",
-    note: "Cooldown/duplicate suppression applied — no decision was produced.",
+    note: "Suppressed by cooldown or duplicate detection.",
   },
   SELECTED: {
     label: "SELECTED",
     className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-400",
-    note: "An eligible candidate was selected by policy. Selection is not approval and not execution.",
+    note: "An action was selected by the policy system.",
   },
   SAFETY_BLOCKED: {
-    label: "SAFETY-BLOCKED",
+    label: "SAFETY BLOCKED",
     className: "border-red-500/30 bg-red-500/10 text-red-400",
-    note: "The safety/guardrail layer rejected the action — safety constraints were not satisfied.",
+    note: "Safety constraints were not satisfied.",
   },
   APPROVAL_DENIED: {
-    label: "APPROVAL-DENIED",
+    label: "APPROVAL DENIED",
     className: "border-red-500/30 bg-red-500/10 text-red-400",
-    note: "The required authority/approval was not granted.",
+    note: "Required authorization was not granted.",
   },
   ABSENT: {
-    label: "ABSENT",
+    label: "NO DECISION",
     className: "border-slate-600/40 bg-slate-800/60 text-slate-400",
-    note: "No P5 action decision record exists for this narrative.",
+    note: "No decision has been made for this narrative yet.",
   },
   UNAVAILABLE: {
     label: "UNAVAILABLE",
     className: "border-slate-600/40 bg-slate-800/60 text-slate-400",
-    note: "The read layer could not establish the decision state — see availability below.",
+    note: "Could not determine the decision state.",
   },
 };
 
-const AVAILABILITY_META: Record<
-  P5ReadAvailability,
-  { label: string; className: string; message: string }
-> = {
-  OK: {
-    label: "OK",
-    className: "border-green-500/30 bg-green-500/10 text-green-400",
-    message: "Decision record present and readable.",
-  },
-  NO_DECISION_RECORD: {
-    label: "NO_DECISION_RECORD",
-    className: "border-slate-600/40 bg-slate-800/60 text-slate-400",
-    message:
-      "This narrative has no P5 action decision record. Nothing was selected, blocked, suppressed, denied, or executed. This is an absence of records — not an action outcome.",
-  },
-  DECISION_NOT_FOUND: {
-    label: "DECISION_NOT_FOUND",
-    className: "border-slate-600/40 bg-slate-800/60 text-slate-400",
-    message: "No decision exists for the requested decision identity.",
-  },
-  P4_CONTEXT_UNAVAILABLE: {
-    label: "P4_CONTEXT_UNAVAILABLE",
-    className: "border-yellow-500/30 bg-yellow-500/10 text-yellow-400",
-    message:
-      "No decision record exists and the P4 context could not be derived. This is an unavailability — it is not the same as a completed NO_ACTION evaluation.",
-  },
-  SERVICE_ERROR: {
-    label: "SERVICE_ERROR",
-    className: "border-red-500/30 bg-red-500/10 text-red-400",
-    message: "The read service failed. This is an infrastructure failure — it is not an action outcome.",
-  },
+const CONFIDENCE_STYLES: Record<string, string> = {
+  HIGH: "border-green-500/30 bg-green-500/10 text-green-400",
+  MEDIUM: "border-yellow-500/30 bg-yellow-500/10 text-yellow-400",
+  LOW: "border-red-500/30 bg-red-500/10 text-red-400",
 };
 
-const STATE_CHIP = "px-2 py-0.5 rounded-md bg-slate-800/70 border border-slate-700/60 text-xs text-slate-300";
 const LABEL = "text-xs uppercase tracking-wider text-slate-500 font-medium";
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -118,41 +96,90 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function JsonValue({ value }: { value: unknown }) {
-  return <code className="text-xs text-slate-400 break-all">{JSON.stringify(value)}</code>;
+function CollapsibleSection({
+  open,
+  onToggle,
+  label,
+  children,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/40">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm text-slate-300 hover:text-white transition-colors"
+      >
+        <span>{label}</span>
+        {open ? (
+          <ChevronDown className="h-4 w-4" />
+        ) : (
+          <ChevronRight className="h-4 w-4" />
+        )}
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
+    </div>
+  );
 }
 
-export function P5ActionDecisionPanel({ narrativeId }: { narrativeId: number | string }) {
-  const { data, isLoading } = useQuery<P5ActionDecisionReadViewModel>({
-    queryKey: ["p5-action-decision", narrativeId],
-    queryFn: async () => {
-      const response = await fetch(`/api/narratives/${narrativeId}/action-decision`);
-      const body = await response.json();
-      if (!body.success) throw new Error(body.error || "Failed to read P5 action decision");
-      return body.data.p5ActionDecision as P5ActionDecisionReadViewModel;
-    },
-  });
+// ---------------------------------------------------------------------------
+// Main Panel
+// ---------------------------------------------------------------------------
 
-  if (isLoading || !data) {
+export function P5ActionDecisionPanel({
+  narrativeId,
+  initialData,
+}: {
+  narrativeId: number | string;
+  initialData?: P5ActionDecisionReadViewModel | null;
+}) {
+  const [technicalOpen, setTechnicalOpen] = useState(false);
+
+  const { data: fetchedData, isLoading } =
+    useQuery<P5ActionDecisionReadViewModel>({
+      queryKey: ["p5-action-decision", narrativeId],
+      queryFn: async () => {
+        const response = await fetch(
+          `/api/narratives/${narrativeId}/action-decision`
+        );
+        const body = await response.json();
+        if (!body.success)
+          throw new Error(
+            body.error || "Failed to read P5 action decision"
+          );
+        return body.data.p5ActionDecision as P5ActionDecisionReadViewModel;
+      },
+      enabled: initialData === undefined,
+    });
+
+  const rawData = initialData ?? fetchedData ?? null;
+
+  if ((initialData === undefined && isLoading) || !rawData) {
     return (
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <ClipboardList className="h-5 w-5 text-slate-500" />
-            <CardTitle>P5 Action Decision</CardTitle>
+            <CardTitle>Decision</CardTitle>
           </div>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-slate-500">Loading read-only action decision state…</p>
+          <p className="text-sm text-slate-500">
+            Loading decision state…
+          </p>
         </CardContent>
       </Card>
     );
   }
 
-  const display = DISPLAY_STATE_META[data.displayState];
-  const availability = AVAILABILITY_META[data.availability];
-  const decision = data.decision;
-  const context = data.context;
+  // Transform raw data into user-facing presentation model
+  const model = buildPresentationModel(rawData);
+  const display = DISPLAY_STATE_META[model.displayState];
 
   return (
     <Card>
@@ -160,207 +187,263 @@ export function P5ActionDecisionPanel({ narrativeId }: { narrativeId: number | s
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div className="flex items-center gap-2">
             <ClipboardList className="h-5 w-5 text-cyan-400" />
-            <CardTitle>P5 Action Decision</CardTitle>
+            <CardTitle>Decision</CardTitle>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="neutral" size="sm">
               <Lock className="h-3 w-3 mr-1" /> Read-only
             </Badge>
-            <Badge variant="neutral" size="sm">Advisory-only</Badge>
+            <Badge variant="neutral" size="sm">Advisory</Badge>
           </div>
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-4">
-        {/* Decision state classification */}
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-medium ${display.className}`}>
-            {data.displayState}
-          </span>
-          <span className="text-xs text-slate-400">{display.note}</span>
-        </div>
+      <CardContent className="space-y-5">
+        {/* ================================================================
+            SECTION 1: Executive Decision Summary
+            "What does the system think?"
+            ================================================================ */}
+        <div className="rounded-xl border border-slate-700/60 bg-slate-800/30 p-5 space-y-4">
+          {/* State badge */}
+          <div className="flex flex-wrap items-center gap-3">
+            <span
+              className={`inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-semibold ${display.className}`}
+            >
+              {display.label}
+            </span>
+            {model.executive.posture && (
+              <span className="text-lg font-bold text-white">
+                {model.executive.posture}
+              </span>
+            )}
+          </div>
 
-        {/* Availability — explicit, distinct from domain outcomes */}
-        <div className={`rounded-lg border px-3 py-2 text-xs ${availability.className}`}>
-          <span className="font-medium">Availability: {data.availability}</span>
-          <span className="block mt-0.5 text-slate-400">{availability.message}</span>
-          {data.error && <span className="block mt-0.5 text-slate-500">Detail: {data.error.message}</span>}
-        </div>
+          {/* Headline — what the system thinks */}
+          <p className="text-base text-slate-200 leading-relaxed">
+            {model.executive.headline}
+          </p>
 
-        {/* Orthogonal state dimensions — never collapsed */}
-        <div>
-          <span className={LABEL}>State dimensions (orthogonal — not one status)</span>
-          <div className="flex flex-wrap gap-2 mt-1">
-            <span className={STATE_CHIP}>decision: {decision?.decisionState ?? "—"}</span>
-            <span className={STATE_CHIP}>approval: {decision?.approvalState ?? "—"}</span>
-            <span className={STATE_CHIP}>execution: {decision?.executionState ?? "—"}</span>
+          {/* Rationale — why */}
+          <div>
+            <span className={LABEL}>Why?</span>
+            <p className="mt-1 text-sm text-slate-300 leading-relaxed">
+              {model.executive.rationale}
+            </p>
+          </div>
+
+          {/* Confidence — with guidance */}
+          {model.confidence.level && (
+            <div className="flex items-start gap-3">
+              <span className={LABEL}>Confidence</span>
+              <span
+                className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold ${CONFIDENCE_STYLES[model.confidence.level] ?? "border-slate-600/40 bg-slate-800/60 text-slate-400"}`}
+              >
+                {model.confidence.level}
+              </span>
+            </div>
+          )}
+          <p className="text-xs text-slate-400 leading-relaxed">
+            {model.confidence.meaning}
+          </p>
+
+          {/* What should I do? — recommended posture */}
+          <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-4 py-3">
+            <span className={LABEL}>What should I do?</span>
+            <p className="mt-1 text-sm text-slate-200 leading-relaxed">
+              {model.executive.guidance}
+            </p>
           </div>
         </div>
 
-        {decision ? (
-          <>
-            {/* 1. What was decided */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              <Row label="Decision ID" value={decision.decisionId} />
-              <Row label="Candidate ID" value={decision.candidateId ?? "—"} />
-              <Row label="Action ID" value={decision.actionId ?? "— (created only if SELECTED)"} />
-              <Row label="Outcome" value={decision.outcome} />
-              <Row label="Action type" value={decision.actionType ?? "—"} />
-              <Row label="Parameters" value={decision.parameters ? <JsonValue value={decision.parameters} /> : "—"} />
-            </div>
-            {decision.suppressed && (
-              <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
-                Suppressed by cooldown/duplicate policy — no decision was produced (SUPPRESSED, not NO_ACTION).
-              </div>
+        {/* ================================================================
+            SECTION 2: Plain-language Why (detailed facts)
+            ================================================================ */}
+        {model.why && model.why.facts.length > 0 && (
+          <div>
+            <span className={LABEL}>How the system decided</span>
+            <ul className="mt-2 space-y-1.5">
+              {model.why.facts.map((fact, i) => (
+                <li
+                  key={i}
+                  className="flex items-start gap-2 text-sm text-slate-300"
+                >
+                  <span className="text-slate-500 mt-0.5">•</span>
+                  <span>
+                    <span className="text-slate-400">{fact.label}:</span>{" "}
+                    {fact.value}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {model.why.alternatives.length > 0 && (
+              <p className="mt-2 text-xs text-slate-500">
+                Not considered: {model.why.alternatives.join("; ")}
+              </p>
             )}
-            {decision.blockerReport && (
-              <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                Blocker: {decision.blockerReport.source}
-                {decision.blockerReport.ref ? ` · ${decision.blockerReport.ref}` : ""}
-                {decision.blockerReport.reason ? ` — ${decision.blockerReport.reason}` : ""}
-              </div>
-            )}
+          </div>
+        )}
 
-            {/* 2. Why — explanation derived from records */}
-            <div>
-              <span className={LABEL}>Why (explanation of the recorded decision)</span>
-              <div className="mt-1 space-y-1 text-sm text-slate-300">
-                <p>{decision.explanation.what || "—"}</p>
-                {decision.explanation.why && <p className="text-slate-400">{decision.explanation.why}</p>}
-                {decision.explanation.whatDidNotHappen.length > 0 && (
-                  <p className="text-slate-500">
-                    Did not happen: {decision.explanation.whatDidNotHappen.join("; ")}
-                  </p>
-                )}
-              </div>
+        {/* ================================================================
+            SECTION 3: Decision History
+            ================================================================ */}
+        {model.history.length > 0 && (
+          <div>
+            <span className={`${LABEL} flex items-center gap-1`}>
+              <Clock className="h-3 w-3" /> Decision history
+            </span>
+            <div className="mt-2 space-y-1.5">
+              {model.history.map((entry, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-3 text-sm"
+                >
+                  {entry.isCurrent && (
+                    <span className="text-xs text-cyan-400 font-medium">
+                      Current
+                    </span>
+                  )}
+                  {!entry.isCurrent && (
+                    <span className="text-xs text-slate-500 w-14">
+                      Previous
+                    </span>
+                  )}
+                  <span className="text-slate-200 font-medium">
+                    {entry.label}
+                  </span>
+                  <span className="text-xs text-slate-500">{entry.date}</span>
+                </div>
+              ))}
             </div>
+          </div>
+        )}
 
-            {/* 3-7. Policy / Safety / Approval / Permission / Execution */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="rounded-lg border border-slate-700/60 px-3 py-2">
-                <Row label="Policy" value={decision.provenance.policy.policyVersion ?? "—"} />
-                <div className="mt-1">
-                  <span className={LABEL}>Rules</span>
-                  <div className="mt-0.5 text-xs text-slate-400">
-                    {decision.provenance.policy.ruleRefs.length > 0
-                      ? decision.provenance.policy.ruleRefs.join(", ")
-                      : "—"}
-                  </div>
-                </div>
-              </div>
-              <div className="rounded-lg border border-slate-700/60 px-3 py-2">
-                <Row label="Safety / guardrail" value={decision.safetyResult?.aggregate ?? "NOT_EVALUATED"} />
-                <div className="mt-1 space-y-0.5 text-xs text-slate-400">
-                  {decision.safetyResult?.guardrailResults.map((g) => (
-                    <div key={g.guardrailId}>
-                      {g.guardrailId} ({g.outcome})
-                      {g.reason ? ` — ${g.reason}` : ""}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="rounded-lg border border-slate-700/60 px-3 py-2">
-                <Row
-                  label="Approval (explicit authorization event)"
-                  value={decision.approvalRecord ? decision.approvalRecord.approvalId : decision.approvalState}
-                />
-                <div className="mt-0.5 text-xs text-slate-500">
-                  Acknowledging an alert or a P2 evidence status is NOT approval.
-                </div>
-              </div>
-              <div className="rounded-lg border border-slate-700/60 px-3 py-2">
-                <Row label="Execution permission" value={decision.permissionResult} />
-                <div className="mt-0.5 text-xs text-slate-500">
-                  Permission is an authorization result — it is not execution.
-                </div>
-              </div>
-            </div>
-            <Row label="Execution result" value={decision.executionState} />
-            <p className="text-xs text-slate-500">
-              {decision.executionState === "EXECUTED"
-                ? "Recorded execution result (from the execution layer)."
-                : "No execution has occurred. v1 is advisory-only: no execution mechanism exists."}
+        {/* ================================================================
+            SECTION 4: Availability (when no decision)
+            ================================================================ */}
+        {!model.hasDecision && (
+          <div className="rounded-lg border border-slate-700/60 px-4 py-3">
+            <p className="text-sm text-slate-400">
+              {rawData.availability === "NO_DECISION_RECORD"
+                ? "This narrative has not been evaluated by the decision system yet. A decision will be created when the narrative is first processed."
+                : rawData.availability === "P4_CONTEXT_UNAVAILABLE"
+                  ? "The underlying data needed for a decision is currently unavailable."
+                  : rawData.availability === "SERVICE_ERROR"
+                    ? "The decision system encountered a technical issue. Please try again later."
+                    : "No decision record is available."}
             </p>
+          </div>
+        )}
 
-            {/* 9. Audit history — read-only */}
-            <div>
-              <span className={`${LABEL} flex items-center gap-1`}>
-                <History className="h-3 w-3" /> Audit history (read-only)
-              </span>
-              {decision.auditEvents.length === 0 ? (
-                <p className="mt-1 text-sm text-slate-500">No audit events recorded.</p>
-              ) : (
+        {/* ================================================================
+            SECTION 5: Technical Details (collapsed by default)
+            ================================================================ */}
+        <CollapsibleSection
+          open={technicalOpen}
+          onToggle={() => setTechnicalOpen((o) => !o)}
+          label={technicalOpen ? "Hide technical details" : "Technical details"}
+        >
+          <div className="space-y-3">
+            {/* Core decision fields */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {model.technical.decisionId && (
+                <Row label="Decision ID" value={model.technical.decisionId} />
+              )}
+              {model.technical.outcome && (
+                <Row label="Outcome" value={model.technical.outcome} />
+              )}
+              {model.technical.actionType && (
+                <Row label="Action type" value={model.technical.actionType} />
+              )}
+              <Row
+                label="Suppressed"
+                value={model.technical.suppressed ? "Yes" : "No"}
+              />
+              {model.technical.policyVersion && (
+                <Row
+                  label="Policy version"
+                  value={model.technical.policyVersion}
+                />
+              )}
+              {model.technical.ruleRefs.length > 0 && (
+                <Row
+                  label="Rules evaluated"
+                  value={model.technical.ruleRefs.join(", ")}
+                />
+              )}
+            </div>
+
+            {/* Safety / Approval / Permission / Execution */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Row
+                label="Safety"
+                value={model.technical.safetyAggregate ?? "—"}
+              />
+              <Row
+                label="Approval"
+                value={model.technical.approvalState ?? "—"}
+              />
+              <Row
+                label="Permission"
+                value={model.technical.permissionResult ?? "—"}
+              />
+              <Row
+                label="Execution"
+                value={model.technical.executionState ?? "—"}
+              />
+            </div>
+
+            {/* Blocker */}
+            {model.technical.blockerReport && (
+              <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300">
+                Blocker: {model.technical.blockerReport.source}
+                {model.technical.blockerReport.reason
+                  ? ` — ${model.technical.blockerReport.reason}`
+                  : ""}
+              </div>
+            )}
+
+            {/* Audit events */}
+            {model.technical.auditEvents.length > 0 && (
+              <div>
+                <span className={LABEL}>Audit events</span>
                 <ul className="mt-1 space-y-1">
-                  {decision.auditEvents.map((event) => (
-                    <li key={event.eventId} className="text-xs text-slate-400 flex flex-wrap gap-x-2">
-                      <span className="text-slate-300">{event.eventType}</span>
+                  {model.technical.auditEvents.map((event, i) => (
+                    <li
+                      key={i}
+                      className="text-xs text-slate-400 flex flex-wrap gap-x-2"
+                    >
+                      <span className="text-slate-300">
+                        {event.eventType}
+                      </span>
                       <span>{event.timestamp}</span>
                       {event.actor && <span>by {event.actor}</span>}
-                      {event.previousState && <span>{event.previousState} → {event.newState}</span>}
                     </li>
                   ))}
                 </ul>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Provenance */}
-            <div>
-              <span className={`${LABEL} flex items-center gap-1`}>
-                <Eye className="h-3 w-3" /> Provenance
-              </span>
-              <div className="mt-1 rounded-lg bg-slate-900/60 border border-slate-800 px-3 py-2">
-                <JsonValue value={decision.provenance} />
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            {/* ABSENT / UNAVAILABLE — never "No action." */}
-            <div className="rounded-lg border border-slate-700/60 px-3 py-2">
-              <span className={LABEL}>P4 context {context?.source === "LIVE_P4_CONTEXT" ? "(live — not a decision basis)" : ""}</span>
-              {context?.p4SnapshotRef ? (
-                <div className="mt-1 space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className={STATE_CHIP}>
-                      P4 status: {context.p4SnapshotRef.status}
-                    </span>
-                    <span className={STATE_CHIP}>as of {context.p4SnapshotRef.asOf}</span>
-                  </div>
-                  <p className="text-xs text-slate-500">
-                    The P4 status above preserves any UNKNOWN / DEGRADED /
-                    NO_EVIDENCE condition — it is never rendered as an action.
-                    Full degradation detail is shown in the P4 Decision Support panel.
-                  </p>
-                  <JsonValue value={context.p4SnapshotRef} />
+            {model.technical.provenance != null && (
+              <div>
+                <span className={LABEL}>Provenance</span>
+                <div className="mt-1 rounded-lg bg-slate-900/60 border border-slate-800 px-3 py-2">
+                  <code className="text-xs text-slate-400 break-all">
+                    {JSON.stringify(model.technical.provenance as Record<string, unknown>)}
+                  </code>
                 </div>
-              ) : (
-                <p className="mt-1 text-sm text-slate-400">
-                  No P4 context could be derived. See availability above.
-                </p>
-              )}
-            </div>
-            <div className="flex items-start gap-2 text-xs text-slate-500">
-              {data.displayState === "UNAVAILABLE" ? (
-                <XCircle className="h-4 w-4 text-yellow-500 mt-0.5 shrink-0" />
-              ) : (
-                <Info className="h-4 w-4 text-slate-500 mt-0.5 shrink-0" />
-              )}
-              <span>
-                {data.displayState === "UNAVAILABLE"
-                  ? "The decision state could not be established. This is not a NO_ACTION outcome."
-                  : "No decision record exists. This is an absence of records — not a completed NO_ACTION evaluation, and not a blocked/denied action."}
-              </span>
-            </div>
-          </>
-        )}
+              </div>
+            )}
+          </div>
+        </CollapsibleSection>
 
-        {/* Read-only / safety boundary note */}
-        <div className="flex items-start gap-2 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-500">
-          <ShieldAlert className="h-4 w-4 text-slate-500 mt-0.5 shrink-0" />
+        {/* Safety boundary note */}
+        <div className="flex items-start gap-2 text-xs text-slate-500">
+          <ShieldAlert className="h-4 w-4 mt-0.5 shrink-0" />
           <span>
-            Informational read surface only. This panel does not create, approve,
-            reject, or execute actions. There is no execution mechanism in v1
-            (advisory-only). No buy/sell/order semantics exist anywhere in P5-06.
+            This is an advisory-only read surface. No actions are created,
+            approved, or executed. The decision system provides guidance — it
+            does not take action on your behalf.
           </span>
         </div>
       </CardContent>

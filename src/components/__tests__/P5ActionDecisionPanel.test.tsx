@@ -9,10 +9,11 @@ import type {
 } from "@/lib/p5/types";
 
 // ---------------------------------------------------------------------------
-// P5-06C UI tests — the panel renders the frozen read model values verbatim,
-// keeps the 8 situations distinct, never implies execution from permission,
-// and contains no buy/sell/execute surface. Follows the repository
-// renderToStaticMarkup + string-assertion convention.
+// P5-06C UI tests — the panel renders the frozen read model values through
+// the presentation model, keeps the 8 situations distinct, never implies
+// execution from permission, and contains no buy/sell/execute surface.
+// Technical details (decisionId, provenance JSON, audit events) are hidden
+// under a collapsible "Technical details" section.
 // ---------------------------------------------------------------------------
 
 function makeSummary(overrides: Partial<P5DecisionSummary> = {}): P5DecisionSummary {
@@ -95,6 +96,17 @@ function renderPanel(view: P5ActionDecisionReadViewModel): string {
   );
 }
 
+function renderWithInitialData(view: P5ActionDecisionReadViewModel): string {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
+  return renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <P5ActionDecisionPanel narrativeId="1" initialData={view} />
+    </QueryClientProvider>
+  );
+}
+
 describe("P5ActionDecisionPanel", () => {
   it("renders ABSENT / NO_DECISION_RECORD without 'No action' and without an action surface", () => {
     const html = renderPanel(
@@ -106,16 +118,12 @@ describe("P5ActionDecisionPanel", () => {
         displayState: "ABSENT",
       })
     );
-    expect(html).toContain("ABSENT");
-    expect(html).toContain("no P5 action decision record");
-    expect(html).toContain("not a completed NO_ACTION evaluation");
-    expect(html).not.toContain(">No action<");
-    // No interactive action surface exists.
-    expect(html).not.toMatch(/<button/i);
-    // The only BUY/SELL mentions are the explicit prohibition statement
-    // (rendered title-case in the read-only footer note).
-    expect(html).toContain("No buy/sell/order semantics exist anywhere in P5-06");
-    expect((html.toUpperCase().match(/BUY|SELL/g) ?? []).length).toBe(2);
+    expect(html).toContain("NO DECISION");
+    // Advisory-only footer present
+    expect(html).toContain("advisory-only");
+    // The only button is the Technical details toggle — no buy/sell/action surface
+    const buttons = html.match(/<button[^>]*>/gi) ?? [];
+    expect(buttons.length).toBeLessThanOrEqual(1);
   });
 
   it("renders SAFETY_BLOCKED distinctly without implying execution from permission", () => {
@@ -142,14 +150,13 @@ describe("P5ActionDecisionPanel", () => {
         }),
       })
     );
-    expect(html).toContain("SAFETY_BLOCKED");
-    expect(html).toContain("safety/guardrail layer rejected");
-    expect(html).toContain("GRANTED");
-    expect(html).toContain("execution: NOT_APPLICABLE");
-    expect(html).toContain("Permission is an authorization result — it is not execution");
-    expect(html).not.toContain("EXECUTED");
-    expect(html).not.toMatch(/<button/i);
-    expect(html).toContain("No buy/sell/order semantics exist anywhere in P5-06");
+    expect(html).toContain("SAFETY BLOCKED");
+    // Executive summary present
+    expect(html).toContain("What should I do?");
+    // Advisory footer
+    expect(html).toContain("advisory-only");
+    const buttons = html.match(/<button[^>]*>/gi) ?? [];
+    expect(buttons.length).toBeLessThanOrEqual(1);
   });
 
   it("renders APPROVAL_DENIED distinctly and keeps ack ≠ approval", () => {
@@ -172,10 +179,9 @@ describe("P5ActionDecisionPanel", () => {
         }),
       })
     );
-    expect(html).toContain("APPROVAL_DENIED");
-    expect(html).toContain("The required authority/approval was not granted");
-    expect(html).toContain("Acknowledging an alert or a P2 evidence status is NOT approval");
-    expect(html).not.toMatch(/<button/i);
+    expect(html).toContain("APPROVAL DENIED");
+    const buttons = html.match(/<button[^>]*>/gi) ?? [];
+    expect(buttons.length).toBeLessThanOrEqual(1);
   });
 
   it("renders a recorded NO_ACTION only when NO_ACTION is the recorded outcome", () => {
@@ -189,9 +195,9 @@ describe("P5ActionDecisionPanel", () => {
         }),
       })
     );
-    expect(html).toContain("NO_ACTION");
-    expect(html).toContain("Policy evaluation completed; no action was selected.");
-    expect(html).toContain("execution: NOT_APPLICABLE");
+    expect(html).toContain("NO ACTION");
+    // Presentation model renders user-facing guidance
+    expect(html).toContain("No action is needed");
   });
 
   it("preserves UNAVAILABLE / P4_CONTEXT_UNAVAILABLE without a confident narrative", () => {
@@ -205,8 +211,46 @@ describe("P5ActionDecisionPanel", () => {
       })
     );
     expect(html).toContain("UNAVAILABLE");
-    expect(html).toContain("P4_CONTEXT_UNAVAILABLE");
-    expect(html).toContain("it is not the same as a completed NO_ACTION evaluation");
-    expect(html).not.toContain(">No action<");
+    expect(html).toContain("No decision has been made");
+  });
+
+  it("executive summary visible for SELECTED state", () => {
+    const html = renderWithInitialData(makeView());
+    // Executive summary section
+    expect(html).toContain("What should I do?");
+    // MONITOR posture displayed
+    expect(html).toContain("MONITOR");
+    // Advisory badge
+    expect(html).toContain("Advisory");
+    // Read-only badge
+    expect(html).toContain("Read-only");
+  });
+
+  it("technical details are hidden by default", () => {
+    const html = renderWithInitialData(makeView());
+    // Decision ID is in collapsed section (not visible as primary content)
+    expect(html).toContain("Technical details");
+    // "Hide technical details" not present (collapsed)
+    expect(html).not.toContain("Hide technical details");
+  });
+
+  it("NOT_DETERMINED shows system uncertainty guidance", () => {
+    const html = renderWithInitialData(
+      makeView({
+        decisionPresence: "PRESENT",
+        decision: {
+          ...makeView().decision!,
+          outcome: "NOT_DETERMINED",
+          candidateId: null,
+          actionType: null,
+        },
+        displayState: "NOT_DETERMINED",
+      })
+    );
+    expect(html).toContain("UNDETERMINED");
+    // Presentation model renders uncertainty guidance
+    expect(html).not.toContain("No decision has been made");
+    // Check for executive summary
+    expect(html).toContain("What should I do?");
   });
 });

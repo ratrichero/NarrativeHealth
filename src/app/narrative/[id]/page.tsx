@@ -150,8 +150,8 @@ export default function NarrativeDetailPage() {
       {/* P4 Decision Support (P4-02 §11 — between P3 Intelligence and CorrelationHeatmap) */}
       <P4DecisionSupportPanel viewModel={narrative.p4DecisionSupport ?? null} />
 
-      {/* P5 Action Decision (P5-06C — read-only action decision surface) */}
-      <P5ActionDecisionPanel narrativeId={id} />
+      {/* P5 Action Decision (P5-06C — canonical data from NarrativeDetail) */}
+      <P5ActionDecisionPanel narrativeId={id} initialData={narrative.p5ActionDecision ?? null} />
 
       {/* Correlation Matrix */}
       <CorrelationHeatmap data={correlation ?? null} isLoading={correlationLoading} />

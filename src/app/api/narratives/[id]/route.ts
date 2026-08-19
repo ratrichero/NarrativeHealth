@@ -16,10 +16,12 @@ import { getP3IntelligenceHistory } from "@/lib/services/p3-intelligence-history
 import { getP4DecisionSupport } from "@/lib/p4/service";
 import { P5RuntimeAdapter } from "@/lib/p5/integration";
 import { pgDecisionProducer } from "@/lib/p5/producer/production";
+import { productionActionReadService } from "@/lib/p5/read/production";
 import type { P3IntelligenceViewModel } from "@/lib/types/p3-intelligence";
 import type { P3IntelligenceHistoryViewModel } from "@/lib/types/p3-intelligence-history";
 import type { P4DecisionSupportViewModel } from "@/lib/p4/types";
 import type { P5PipelineResult } from "@/lib/p5/integration";
+import type { P5ActionDecisionReadViewModel } from "@/lib/p5/types";
 
 export const dynamic = "force-dynamic";
 
@@ -187,6 +189,19 @@ export async function GET(
       }
     }
 
+    // -----------------------------------------------------------------------
+    // P5-06: Canonical read model (additive — reads persisted artifact)
+    // -----------------------------------------------------------------------
+    // The read model surfaces the persisted P5 decision through the canonical
+    // narrative response, eliminating the need for a separate fetch. This is
+    // a READ operation — no evaluation, no persistence, no duplicate pipeline.
+    let p5ActionRead: P5ActionDecisionReadViewModel | null = null;
+    try {
+      p5ActionRead = await productionActionReadService.getNarrativeActionReadView(narrativeId);
+    } catch (error) {
+      console.error("P5 Action Read failed:", error);
+    }
+
     return NextResponse.json({
       success: true,
       data: {
@@ -213,6 +228,8 @@ export async function GET(
         p4DecisionSupport,
         // P5-11: additive field — decision record from the frozen pipeline
         p5Decision: p5Decision?.decision ?? null,
+        // P5-06: canonical read model — persisted artifact → UI in one response
+        p5ActionDecision: p5ActionRead ?? null,
       },
     });
   } catch (error) {

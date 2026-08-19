@@ -7,15 +7,15 @@ import { NextRequest } from "next/server";
 
 jest.mock("@/db", () => ({ db: {} }));
 
-jest.mock("@/lib/p5/read/action-read.service", () => ({
-  actionReadService: { getNarrativeActionReadView: jest.fn() },
+jest.mock("@/lib/p5/read/production", () => ({
+  productionActionReadService: { getNarrativeActionReadView: jest.fn() },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { db } = require("@/db") as { db: Record<string, unknown> };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { actionReadService } = require("@/lib/p5/read/action-read.service") as {
-  actionReadService: { getNarrativeActionReadView: jest.Mock<() => Promise<unknown>> };
+const { productionActionReadService } = require("@/lib/p5/read/production") as {
+  productionActionReadService: { getNarrativeActionReadView: jest.Mock<() => Promise<unknown>> };
 };
 
 import { GET } from "../[id]/action-decision/route";
@@ -58,7 +58,7 @@ describe("GET /api/narratives/[id]/action-decision", () => {
   it("returns the read view for a known narrative (ABSENT / NO_DECISION_RECORD)", async () => {
     mockDbWithNarrative();
     const view = makeView();
-    (actionReadService.getNarrativeActionReadView as jest.Mock<() => Promise<unknown>>).mockResolvedValue(view);
+    (productionActionReadService.getNarrativeActionReadView as jest.Mock<() => Promise<unknown>>).mockResolvedValue(view);
 
     const response = await GET(new NextRequest("http://localhost/api/narratives/1/action-decision"), {
       params: Promise.resolve({ id: "1" }),
@@ -75,7 +75,7 @@ describe("GET /api/narratives/[id]/action-decision", () => {
 
   it("preserves P4_CONTEXT_UNAVAILABLE — unavailability is not NO_ACTION and not a 500", async () => {
     mockDbWithNarrative();
-    (actionReadService.getNarrativeActionReadView as jest.Mock<() => Promise<unknown>>).mockResolvedValue(
+    (productionActionReadService.getNarrativeActionReadView as jest.Mock<() => Promise<unknown>>).mockResolvedValue(
       makeView({
         availability: "P4_CONTEXT_UNAVAILABLE",
         displayState: "UNAVAILABLE",
@@ -94,7 +94,7 @@ describe("GET /api/narratives/[id]/action-decision", () => {
 
   it("propagates SERVICE_ERROR as explicit availability, never NO_ACTION", async () => {
     mockDbWithNarrative();
-    (actionReadService.getNarrativeActionReadView as jest.Mock<() => Promise<unknown>>).mockResolvedValue(
+    (productionActionReadService.getNarrativeActionReadView as jest.Mock<() => Promise<unknown>>).mockResolvedValue(
       makeView({
         availability: "SERVICE_ERROR",
         displayState: "UNAVAILABLE",
@@ -135,7 +135,7 @@ describe("GET /api/narratives/[id]/action-decision", () => {
 
   it("guards unexpected service failures with a 500 (infrastructure, not domain)", async () => {
     mockDbWithNarrative();
-    (actionReadService.getNarrativeActionReadView as jest.Mock<() => Promise<unknown>>).mockRejectedValue(
+    (productionActionReadService.getNarrativeActionReadView as jest.Mock<() => Promise<unknown>>).mockRejectedValue(
       new Error("unexpected")
     );
 

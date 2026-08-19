@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { narratives } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { actionReadService } from "@/lib/p5/read/action-read.service";
+import { productionActionReadService } from "@/lib/p5/read/production";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +51,7 @@ export async function GET(
       );
     }
 
-    const view = await actionReadService.getNarrativeActionReadView(narrativeId);
+    const view = await productionActionReadService.getNarrativeActionReadView(narrativeId);
 
     return NextResponse.json({
       success: true,

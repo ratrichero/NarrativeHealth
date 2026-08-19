@@ -161,6 +161,46 @@ export class PgHistoricalArtifactStore implements HistoricalArtifactStore {
     return row ? (row.record as P5DecisionRecord) : null;
   }
 
+  /**
+   * Find the latest decision record for a narrative.
+   * Used by P5-06 read service for narrative-scoped lookup.
+   * Returns the most recent decision (by id descending) for the given narrative.
+   */
+  async findDecisionByNarrativeId(narrativeId: number): Promise<P5DecisionRecord | null> {
+    const row = await this.rows.findFirst(
+      p5DecisionRecords,
+      { narrativeId },
+      "id" // ORDER BY id DESC (latest first)
+    );
+    return row ? (row.record as P5DecisionRecord) : null;
+  }
+
+  /**
+   * Find recent decision records for a narrative (for history display).
+   * Returns up to `limit` most recent decisions ordered by id DESC.
+   */
+  async findDecisionHistoryByNarrativeId(
+    narrativeId: number,
+    limit: number = 10,
+  ): Promise<Array<{ actionType: string | null; outcome: string; recordedAt: string | null }>> {
+    // Use the row store's findFirst repeatedly isn't efficient;
+    // instead we access the underlying rows via a simple approach:
+    // find the latest, then use the stored record's data.
+    // For V1 with one-decision-per-narrative, this returns 0-1 entries.
+    const row = await this.rows.findFirst(
+      p5DecisionRecords,
+      { narrativeId },
+      "id"
+    );
+    if (!row) return [];
+    const record = row.record as P5DecisionRecord;
+    return [{
+      actionType: record.actionType ?? null,
+      outcome: record.outcome,
+      recordedAt: record.provenance?.timestamps?.recordedAt ?? null,
+    }];
+  }
+
   async findP4Snapshot(ref: P5P4SnapshotRef): Promise<P5HistoricalSnapshot | null> {
     const exact = await this.rows.findFirst(p5P4Snapshots, { identityKey: snapshotIdentityKey(ref) });
     if (exact) return exact.snapshot as P5HistoricalSnapshot;

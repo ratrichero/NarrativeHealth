@@ -405,12 +405,14 @@ describe("P5-08 immutability + idempotency", () => {
 });
 
 describe("P5-08 read-only / insert-only boundaries", () => {
-  it("G1: the store exposes ONLY the six find methods (replay never mutates)", () => {
+  it("G1: the store exposes ONLY the eight find methods (replay never mutates)", () => {
     const proto = Object.getOwnPropertyNames(PgHistoricalArtifactStore.prototype).sort();
     expect(proto).toEqual([
       "constructor",
       "findApproval",
       "findDecision",
+      "findDecisionByNarrativeId",
+      "findDecisionHistoryByNarrativeId",
       "findGuardrail",
       "findP4Snapshot",
       "findPermission",

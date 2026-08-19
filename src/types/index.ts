@@ -2,8 +2,9 @@
 import type { P3IntelligenceViewModel } from "@/lib/types/p3-intelligence";
 import type { P3IntelligenceHistoryViewModel } from "@/lib/types/p3-intelligence-history";
 import type { P4DecisionSupportViewModel } from "@/lib/p4/types";
+import type { P5DecisionRecord, P5ActionDecisionReadViewModel } from "@/lib/p5/types";
 
-export type { P3IntelligenceViewModel, P3IntelligenceHistoryViewModel, P4DecisionSupportViewModel };
+export type { P3IntelligenceViewModel, P3IntelligenceHistoryViewModel, P4DecisionSupportViewModel, P5DecisionRecord, P5ActionDecisionReadViewModel };
 
 export interface DashboardData {
   date: string;
@@ -129,6 +130,10 @@ export interface NarrativeDetail {
   p3IntelligenceHistory: P3IntelligenceHistoryViewModel | null;
   /** P4 Decision Support ViewModel (read-time derived), or null when unavailable. */
   p4DecisionSupport: P4DecisionSupportViewModel | null;
+  /** P5 Decision Record from the frozen pipeline, or null when unavailable. */
+  p5Decision: P5DecisionRecord | null;
+  /** P5 Action Decision read model (derived from persisted artifact), or null. */
+  p5ActionDecision: P5ActionDecisionReadViewModel | null;
 }
 
 export interface CoinInNarrative {

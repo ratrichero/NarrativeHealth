@@ -27,10 +27,10 @@ import { deriveDisplayState } from "./display-state";
  *    `context.source = "LIVE_P4_CONTEXT"` and only when NO decision record
  *    exists for the subject.
  *
- * STORAGE BOUNDARY: the repository has no P5 decision persistence yet
- * (P5-05 §16: audit persistence model PROVISIONAL; P5-03/04/05 engines are
- * contract-only). The default store (NoP5DecisionStore) is an explicit
- * read-only absence adapter. Tests inject an in-memory store.
+ * STORAGE BOUNDARY: production uses `productionActionReadService`
+ * (src/lib/p5/read/production.ts) which wires PgHistoricalArtifactStore
+ * (P5-08) for real PostgreSQL reads. The default store (NoP5DecisionStore)
+ * is used only by unit tests as an in-memory absence adapter.
  */
 
 /** P5-06A store boundary — READ-ONLY decision/audit record lookup. */
@@ -42,8 +42,9 @@ export interface P5DecisionStore {
 }
 
 /**
- * Default store — no P5 decision persistence exists in the repository yet.
- * Always returns absence. Purely read-only; has no mutation surface.
+ * Default store — test-only absence adapter.
+ * Always returns absence. Used by unit tests that inject in-memory stores.
+ * Production uses PgP5DecisionStoreAdapter (see production.ts).
  */
 export class NoP5DecisionStore implements P5DecisionStore {
   async findByDecisionId(): Promise<P5DecisionRecord | null> {
@@ -220,5 +221,5 @@ export class ActionReadService {
   }
 }
 
-/** Default singleton for production (absence store; P5-06 §22 storage boundary). */
+/** Default singleton (test-only absence store). Production uses productionActionReadService. */
 export const actionReadService = new ActionReadService();
