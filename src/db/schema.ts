@@ -945,6 +945,75 @@ export const alertHistoryRelations = relations(alertHistory, ({ one }) => ({
   }),
 }));
 
+// ==================== SQUARE PUBLICATIONS ====================
+export const squareOpportunities = pgTable("square_opportunities", {
+  id: serial("id").primaryKey(),
+  type: varchar("type", { length: 30 }).notNull(), // COIN_SETUP, NARRATIVE_SETUP, WATCH
+  subjectId: integer("subject_id"),
+  narrativeId: integer("narrative_id").references(() => narratives.id, { onDelete: "set null" }),
+  coinSymbol: varchar("coin_symbol", { length: 20 }),
+  score: decimal("score", { precision: 5, scale: 2 }).notNull(),
+  dataAsOf: date("data_as_of").notNull(),
+  dataQuality: varchar("data_quality", { length: 10 }).notNull(), // HIGH, MEDIUM, LOW
+  rationale: jsonb("rationale").notNull(),
+  entryZone: jsonb("entry_zone"),
+  takeProfits: jsonb("take_profits"),
+  stopLoss: jsonb("stop_loss"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  status: varchar("status", { length: 20 }).notNull().default("CANDIDATE"), // CANDIDATE, QUALIFIED, SUPPRESSED, PUBLISHED, EXPIRED
+  contentSnapshot: jsonb("content_snapshot"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  statusIdx: index("square_opportunities_status_idx").on(table.status),
+  typeIdx: index("square_opportunities_type_idx").on(table.type),
+  subjectIdx: index("square_opportunities_subject_idx").on(table.subjectId, table.narrativeId),
+  createdIdx: index("square_opportunities_created_idx").on(table.createdAt),
+}));
+
+export const squarePublications = pgTable("square_publications", {
+  id: serial("id").primaryKey(),
+  opportunityId: integer("opportunity_id").notNull().references(() => squareOpportunities.id, { onDelete: "restrict" }),
+  fingerprint: varchar("fingerprint", { length: 200 }).notNull().unique(),
+  provider: varchar("provider", { length: 50 }).notNull().default("BINANCE_SQUARE"),
+  status: varchar("status", { length: 20 }).notNull(), // DRAFT, PUBLISHED, FAILED, SUPPRESSED
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  externalPostId: varchar("external_post_id", { length: 100 }),
+  contentVersion: varchar("content_version", { length: 20 }).notNull(),
+  templateVersion: varchar("template_version", { length: 20 }).notNull(),
+  llmUsed: boolean("llm_used").notNull().default(false),
+  errorCode: varchar("error_code", { length: 20 }),
+  errorMessage: text("error_message"),
+  contentSnapshot: jsonb("content_snapshot"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  statusIdx: index("square_publications_status_idx").on(table.status),
+  opportunityIdx: index("square_publications_opportunity_idx").on(table.opportunityId),
+  fingerprintIdx: index("square_publications_fingerprint_idx").on(table.fingerprint),
+  publishedIdx: index("square_publications_published_idx").on(table.publishedAt),
+}));
+
+export const squareQuotaLog = pgTable("square_quota_log", {
+  id: serial("id").primaryKey(),
+  date: date("date").notNull().unique(),
+  postsPublished: integer("posts_published").notNull().default(0),
+  uploadsUsed: integer("uploads_used").notNull().default(0),
+  lastRefreshAt: timestamp("last_refresh_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const squareFingerprints = pgTable("square_fingerprints", {
+  id: serial("id").primaryKey(),
+  fingerprint: varchar("fingerprint", { length: 200 }).notNull().unique(),
+  opportunityId: integer("opportunity_id").notNull().references(() => squareOpportunities.id, { onDelete: "restrict" }),
+  publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  fingerprintIdx: index("square_fingerprints_fingerprint_idx").on(table.fingerprint),
+  expiresIdx: index("square_fingerprints_expires_idx").on(table.expiresAt),
+}));
+
 // Type exports
 export type Narrative = typeof narratives.$inferSelect;
 export type NewNarrative = typeof narratives.$inferInsert;

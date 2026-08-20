@@ -995,6 +995,22 @@ export async function POST(request: NextRequest) {
       // Don't fail the refresh if snapshot creation fails
     }
 
+    // Binance Square content pipeline (non-blocking side effect)
+    // Fires after refresh completes; failures do NOT affect refresh status
+    try {
+      const { runSquarePipeline } = await import("@/lib/square/production");
+      const squareResult = await runSquarePipeline();
+      console.log(
+        `Square pipeline: evaluated=${squareResult.evaluated} opportunities=${squareResult.opportunities} published=${squareResult.published} suppressed=${squareResult.suppressed}`
+      );
+      if (squareResult.errors.length > 0) {
+        console.warn("Square pipeline errors:", squareResult.errors);
+      }
+    } catch (squareError) {
+      // Square pipeline failure must not break the refresh
+      console.error("Square pipeline error (non-blocking):", squareError);
+    }
+
     return NextResponse.json({
       success: true,
       data: {
