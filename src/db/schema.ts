@@ -1018,6 +1018,33 @@ export const squareFingerprints = pgTable("square_fingerprints", {
   expiresIdx: index("square_fingerprints_expires_idx").on(table.expiresAt),
 }));
 
+// ==================== SQUARE PIPELINE EXECUTIONS (SQ-AN-02) ====================
+export const squarePipelineExecutions = pgTable("square_pipeline_executions", {
+  id: serial("id").primaryKey(),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+  triggerType: varchar("trigger_type", { length: 30 }).notNull().default("SCHEDULED"), // SCHEDULED, MANUAL, RETRY
+  evaluated: integer("evaluated").notNull().default(0),
+  qualified: integer("qualified").notNull().default(0),
+  published: integer("published").notNull().default(0),
+  failed: integer("failed").notNull().default(0),
+  deduplicated: integer("deduplicated").notNull().default(0),
+  quotaBlocked: integer("quota_blocked").notNull().default(0),
+  retryPending: integer("retry_pending").notNull().default(0),
+  contentGenerationFailed: integer("content_generation_failed").notNull().default(0),
+  llmUsedCount: integer("llm_used_count").notNull().default(0),
+  templateFallbackCount: integer("template_fallback_count").notNull().default(0),
+  durationMs: integer("duration_ms"),
+  quotaRemainingStart: integer("quota_remaining_start"),
+  quotaRemainingEnd: integer("quota_remaining_end"),
+  quotaWarning: boolean("quota_warning").default(false),
+  errorSummary: jsonb("error_summary"), // { errors: string[], error_count: number }
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  startedIdx: index("square_pipeline_executions_started_idx").on(table.startedAt),
+  triggerIdx: index("square_pipeline_executions_trigger_idx").on(table.triggerType),
+}));
+
 // Type exports
 export type Narrative = typeof narratives.$inferSelect;
 export type NewNarrative = typeof narratives.$inferInsert;

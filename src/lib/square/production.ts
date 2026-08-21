@@ -7,6 +7,8 @@ import { persistOpportunity, publishContent, getQuotaStatus, generateThesisFinge
 import { generateContent, type GeneratedContent } from "./content-generator";
 import { DEFAULT_SCORING_CONFIG } from "./opportunity-engine";
 import { resolveChartCoin, generateChartMetadata } from "./chart-utils";
+import { db } from "@/db";
+import { squarePipelineExecutions } from "@/db/schema";
 
 export interface SquarePipelineResult {
   evaluated: number;
@@ -320,6 +322,32 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
 
     _lastSummary = summary;
 
+    // Persist execution record for analytics
+    try {
+      await db.insert(squarePipelineExecutions).values({
+        startedAt: new Date(startTime),
+        completedAt: new Date(),
+        triggerType: "SCHEDULED",
+        evaluated: evaluation.evaluated,
+        qualified: evaluation.opportunities.length,
+        published: publishedCount,
+        failed: failedCount,
+        deduplicated: deduplicatedCount,
+        quotaBlocked: quotaBlockedCount,
+        retryPending: retryPendingCount,
+        contentGenerationFailed: failedCount,
+        llmUsedCount,
+        templateFallbackCount: llmFallbackCount,
+        durationMs: summary.durationMs,
+        quotaRemainingStart: quota.postsRemaining,
+        quotaRemainingEnd: quotaRemaining,
+        quotaWarning: quota.warningThreshold,
+        errorSummary: errors.length > 0 ? { errors, error_count: errors.length } : null,
+      });
+    } catch (err) {
+      console.error("[SQ-PIPELINE] Failed to record execution:", err);
+    }
+
     // Log summary
     console.log(
       `[SQ-PIPELINE] evaluated=${evaluation.evaluated} qualified=${evaluation.opportunities.length} ` +
@@ -358,6 +386,32 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
       llmFallbackCount: 0,
       details: [],
     };
+
+    // Persist failed execution record
+    try {
+      await db.insert(squarePipelineExecutions).values({
+        startedAt: new Date(startTime),
+        completedAt: new Date(),
+        triggerType: "SCHEDULED",
+        evaluated: 0,
+        qualified: 0,
+        published: 0,
+        failed: 1,
+        deduplicated: 0,
+        quotaBlocked: 0,
+        retryPending: 0,
+        contentGenerationFailed: 0,
+        llmUsedCount: 0,
+        templateFallbackCount: 0,
+        durationMs: Date.now() - startTime,
+        quotaRemainingStart: 0,
+        quotaRemainingEnd: 0,
+        quotaWarning: false,
+        errorSummary: { errors, error_count: errors.length },
+      });
+    } catch (persistErr) {
+      console.error("[SQ-PIPELINE] Failed to record failed execution:", persistErr);
+    }
 
     return {
       evaluated: 0,
