@@ -15,6 +15,7 @@ import type {
   PolicyIdentity,
   FreshnessEvaluationResult,
 } from "../types";
+import type { PolicyResolutionResult } from "../types";
 
 // ============================================================
 // Test Fixtures — explicitly named, not production values
@@ -487,5 +488,46 @@ describe("evaluateObservationFreshness (combined)", () => {
     });
     expect(result.status).toBe("UNKNOWN");
     expect(result.policy).toBeNull();
+  });
+});
+
+// ============================================================
+// DUPLICATE POLICY RESOLUTION CONTRACT TESTS
+// ============================================================
+// These tests verify the resolvePolicy contract handles all row counts
+// deterministically. The evaluator's resolvePolicy is the same logic
+// used by resolvePolicyDB in the service layer.
+
+describe("Duplicate policy resolution contract", () => {
+  test("0 rows → found: false", () => {
+    const result = resolvePolicy(TEST_IDENTITY, []);
+    expect(result.found).toBe(false);
+    expect(result.error).toContain("No freshness policy");
+  });
+
+  test("1 row → found: true, policy returned", () => {
+    const result = resolvePolicy(TEST_IDENTITY, [TEST_POLICY]);
+    expect(result.found).toBe(true);
+    expect(result.policy).toEqual(TEST_POLICY);
+  });
+
+  test(">1 rows → found: false, deterministic error (not silent selection)", () => {
+    const duplicate: FreshnessPolicy = { ...TEST_POLICY };
+    const result = resolvePolicy(TEST_IDENTITY, [TEST_POLICY, duplicate]);
+    expect(result.found).toBe(false);
+    expect(result.error).toContain("Duplicate");
+    // Verify it did NOT return a policy (silent selection would be a bug)
+    expect(result.policy).toBeUndefined();
+  });
+
+  test(">1 rows with different policies → found: false, error", () => {
+    const variant: FreshnessPolicy = {
+      ...TEST_POLICY,
+      staleAfterMs: 9999,
+    };
+    const result = resolvePolicy(TEST_IDENTITY, [TEST_POLICY, variant]);
+    expect(result.found).toBe(false);
+    expect(result.error).toContain("Duplicate");
+    expect(result.policy).toBeUndefined();
   });
 });

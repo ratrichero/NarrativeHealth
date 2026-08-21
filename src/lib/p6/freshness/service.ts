@@ -8,6 +8,7 @@ import type {
   FreshnessPolicy,
   FreshnessEvaluationResult,
   PolicyIdentity,
+  PolicyResolutionResult,
 } from "./types";
 import { evaluateFreshness, resolvePolicy } from "./evaluator";
 import type { SourceId, CanonicalMetric, Timeframe } from "../registry/types";
@@ -62,12 +63,16 @@ export async function getActivePolicies(): Promise<FreshnessPolicy[]> {
 }
 
 /**
- * Get a specific freshness policy by identity.
+ * Resolve a specific freshness policy by identity.
+ *
+ * 0 rows → found: false
+ * 1 row  → found: true, policy returned
+ * >1 rows → found: false, error (fail deterministically)
  */
-export async function getPolicy(
+export async function resolvePolicyDB(
   identity: PolicyIdentity
-): Promise<FreshnessPolicy | null> {
-  const [row] = await db
+): Promise<PolicyResolutionResult> {
+  const rows = await db
     .select()
     .from(p6FreshnessPolicies)
     .where(
@@ -77,10 +82,35 @@ export async function getPolicy(
         eq(p6FreshnessPolicies.timeframe, identity.timeframe),
         eq(p6FreshnessPolicies.configVersion, identity.configVersion)
       )
-    )
-    .limit(1);
+    );
 
-  return row ? dbRowToPolicy(row) : null;
+  if (rows.length === 0) {
+    return {
+      found: false,
+      error: `No freshness policy for (${identity.sourceId}, ${identity.metric}, ${identity.timeframe}, v${identity.configVersion})`,
+    };
+  }
+
+  if (rows.length > 1) {
+    return {
+      found: false,
+      error: `Duplicate freshness policies (${rows.length}) for (${identity.sourceId}, ${identity.metric}, ${identity.timeframe}, v${identity.configVersion})`,
+    };
+  }
+
+  return { found: true, policy: dbRowToPolicy(rows[0]) };
+}
+
+/**
+ * Get a specific freshness policy by identity.
+ * Returns null for 0 or >1 matches (fail-safe).
+ * Use resolvePolicyDB() when you need to distinguish the cases.
+ */
+export async function getPolicy(
+  identity: PolicyIdentity
+): Promise<FreshnessPolicy | null> {
+  const result = await resolvePolicyDB(identity);
+  return result.found ? result.policy! : null;
 }
 
 // ============================================================
