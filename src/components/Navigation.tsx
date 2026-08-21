@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Layers, Coins, Star, Settings, RefreshCw } from "lucide-react";
+import { LayoutDashboard, Layers, Coins, Star, Settings, BarChart3 } from "lucide-react";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/watchlist", label: "Watchlist", icon: Star },
+  { href: "/square-analytics", label: "Square Analytics", icon: BarChart3 },
   { href: "/admin", label: "Admin", icon: Settings },
 ];
 

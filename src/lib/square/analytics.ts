@@ -1,4 +1,4 @@
-// Square Analytics Service — SQ-AN-02
+// Square Analytics Service — SQ-AN-02 / SQ-AN-03
 // Queries existing DB data for V1 operational analytics
 // No external API calls — all data comes from internal tables
 
@@ -8,6 +8,7 @@ import {
   squarePublications,
   squareQuotaLog,
   squarePipelineExecutions,
+  narratives,
 } from "@/db/schema";
 import { eq, and, gte, desc, sql, count } from "drizzle-orm";
 
@@ -53,6 +54,7 @@ export interface CoinBreakdown {
 
 export interface NarrativeBreakdown {
   narrativeId: number;
+  narrativeName: string;
   total: number;
   published: number;
   failed: number;
@@ -105,6 +107,45 @@ export interface SuccessRateTrend {
   rate: number;
   published: number;
   total: number;
+}
+
+export interface ExecutionRecord {
+  id: number;
+  startedAt: string;
+  completedAt: string | null;
+  triggerType: string;
+  evaluated: number;
+  qualified: number;
+  published: number;
+  failed: number;
+  deduplicated: number;
+  quotaBlocked: number;
+  durationMs: number | null;
+  errorSummary: string | null;
+  status: string;
+}
+
+export interface PublicationRecord {
+  id: number;
+  createdAt: string;
+  coinSymbol: string | null;
+  narrativeId: number | null;
+  narrativeName: string | null;
+  type: string;
+  status: string;
+  score: number | null;
+  llmUsed: boolean;
+  externalPostId: string | null;
+  chartSymbol: string | null;
+  failureCategory: string | null;
+}
+
+export interface TypeBreakdown {
+  type: string;
+  total: number;
+  published: number;
+  failed: number;
+  avgScore: number;
 }
 
 // ─── Helper: Date Range ────────────────────────────────
@@ -241,6 +282,7 @@ export async function getNarrativeBreakdown(range: TimeRange): Promise<Narrative
   const results = await db
     .select({
       narrativeId: squareOpportunities.narrativeId,
+      narrativeName: narratives.name,
       total: count(),
       published: sql<number>`count(*) filter (where ${squarePublications.status} = 'PUBLISHED')::int`,
       failed: sql<number>`count(*) filter (where ${squarePublications.status} = 'FAILED')::int`,
@@ -248,12 +290,14 @@ export async function getNarrativeBreakdown(range: TimeRange): Promise<Narrative
     })
     .from(squareOpportunities)
     .leftJoin(squarePublications, eq(squarePublications.opportunityId, squareOpportunities.id))
+    .leftJoin(narratives, eq(narratives.id, squareOpportunities.narrativeId))
     .where(and(gte(squareOpportunities.createdAt, new Date(dateStr)), sql`${squareOpportunities.narrativeId} is not null`))
-    .groupBy(squareOpportunities.narrativeId)
+    .groupBy(squareOpportunities.narrativeId, narratives.name)
     .orderBy(desc(count()));
 
   return results.map((r) => ({
     narrativeId: r.narrativeId ?? 0,
+    narrativeName: r.narrativeName ?? `Narrative #${r.narrativeId}`,
     total: r.total,
     published: r.published,
     failed: r.failed,
@@ -427,4 +471,100 @@ export async function getTopCoins(range: TimeRange, limit = 10): Promise<CoinBre
 export async function getTopNarratives(range: TimeRange, limit = 10): Promise<NarrativeBreakdown[]> {
   const all = await getNarrativeBreakdown(range);
   return all.slice(0, limit);
+}
+
+// ─── SQ-AN-03 Additions ───────────────────────────────
+
+export async function getExecutionHistory(range: TimeRange, limit = 20): Promise<ExecutionRecord[]> {
+  const dateStr = getDateStr(range);
+
+  const results = await db
+    .select()
+    .from(squarePipelineExecutions)
+    .where(gte(squarePipelineExecutions.startedAt, new Date(dateStr)))
+    .orderBy(desc(squarePipelineExecutions.startedAt))
+    .limit(limit);
+
+  return results.map((r) => ({
+    id: r.id,
+    startedAt: r.startedAt instanceof Date ? r.startedAt.toISOString() : String(r.startedAt),
+    completedAt: r.completedAt ? (r.completedAt instanceof Date ? r.completedAt.toISOString() : String(r.completedAt)) : null,
+    triggerType: r.triggerType,
+    evaluated: r.evaluated,
+    qualified: r.qualified,
+    published: r.published,
+    failed: r.failed,
+    deduplicated: r.deduplicated,
+    quotaBlocked: r.quotaBlocked,
+    durationMs: r.durationMs,
+    errorSummary: r.errorSummary != null ? String(r.errorSummary) : null,
+    status: r.failed > 0 ? (r.published > 0 ? "PARTIAL" : "FAILED") : r.published > 0 ? "SUCCESS" : "SUCCESS",
+  }));
+}
+
+export async function getRecentPublications(range: TimeRange, limit = 20): Promise<PublicationRecord[]> {
+  const dateStr = getDateStr(range);
+
+  const results = await db
+    .select({
+      id: squarePublications.id,
+      createdAt: squarePublications.createdAt,
+      coinSymbol: squareOpportunities.coinSymbol,
+      narrativeId: squareOpportunities.narrativeId,
+      narrativeName: narratives.name,
+      type: squareOpportunities.type,
+      status: squarePublications.status,
+      score: sql<number>`(${squareOpportunities.score})::numeric(5,2)`,
+      llmUsed: squarePublications.llmUsed,
+      externalPostId: squarePublications.externalPostId,
+      chartSymbol: squareOpportunities.coinSymbol,
+      failureCategory: squarePublications.failureCategory,
+    })
+    .from(squarePublications)
+    .leftJoin(squareOpportunities, eq(squarePublications.opportunityId, squareOpportunities.id))
+    .leftJoin(narratives, eq(narratives.id, squareOpportunities.narrativeId))
+    .where(gte(squarePublications.createdAt, new Date(dateStr)))
+    .orderBy(desc(squarePublications.createdAt))
+    .limit(limit);
+
+  return results.map((r) => ({
+    id: r.id,
+    createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+    coinSymbol: r.coinSymbol,
+    narrativeId: r.narrativeId,
+    narrativeName: r.narrativeName ?? (r.narrativeId ? `Narrative #${r.narrativeId}` : null),
+    type: r.type ?? "UNKNOWN",
+    status: r.status,
+    score: r.score,
+    llmUsed: r.llmUsed,
+    externalPostId: r.externalPostId,
+    chartSymbol: r.chartSymbol,
+    failureCategory: r.failureCategory,
+  }));
+}
+
+export async function getTypeBreakdown(range: TimeRange): Promise<TypeBreakdown[]> {
+  const dateStr = getDateStr(range);
+
+  const results = await db
+    .select({
+      type: squareOpportunities.type,
+      total: count(),
+      published: sql<number>`count(*) filter (where ${squarePublications.status} = 'PUBLISHED')::int`,
+      failed: sql<number>`count(*) filter (where ${squarePublications.status} = 'FAILED')::int`,
+      avgScore: sql<number>`avg(${squareOpportunities.score})::numeric(5,2)`,
+    })
+    .from(squareOpportunities)
+    .leftJoin(squarePublications, eq(squarePublications.opportunityId, squareOpportunities.id))
+    .where(gte(squareOpportunities.createdAt, new Date(dateStr)))
+    .groupBy(squareOpportunities.type)
+    .orderBy(desc(count()));
+
+  return results.map((r) => ({
+    type: r.type ?? "UNKNOWN",
+    total: r.total,
+    published: r.published,
+    failed: r.failed,
+    avgScore: typeof r.avgScore === "number" ? r.avgScore : parseFloat(String(r.avgScore)),
+  }));
 }
