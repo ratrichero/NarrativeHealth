@@ -1173,3 +1173,34 @@ export type P6SourceCapability = typeof p6SourceCapabilities.$inferSelect;
 export type NewP6SourceCapability = typeof p6SourceCapabilities.$inferInsert;
 export type P6RegistryConfigVersion = typeof p6RegistryConfigVersions.$inferSelect;
 export type NewP6RegistryConfigVersion = typeof p6RegistryConfigVersions.$inferInsert;
+
+// ==================== P6 FRESHNESS POLICIES ====================
+// Frozen contract: P6-01C-C (commit 6179135)
+
+export const p6FreshnessPolicies = pgTable(
+  "p6_freshness_policies",
+  {
+    id: serial("id").primaryKey(),
+    sourceId: varchar("source_id", { length: 50 }).notNull().references(() => p6SourceDefinitions.sourceId),
+    metric: varchar("metric", { length: 50 }).notNull(),
+    timeframe: varchar("timeframe", { length: 30 }).notNull(),
+    expectedIntervalMs: bigint("expected_interval_ms", { mode: "number" }).notNull(),
+    staleAfterMs: bigint("stale_after_ms", { mode: "number" }).notNull(),
+    configVersion: integer("config_version").notNull().references(() => p6RegistryConfigVersions.version),
+    description: text("description"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    policyIdentityUnique: unique("p6_freshness_policy_unique").on(
+      table.sourceId,
+      table.metric,
+      table.timeframe,
+      table.configVersion
+    ),
+    configVersionIdx: index("p6_freshness_policy_cv_idx").on(table.configVersion),
+  })
+);
+
+// P6 Freshness Policy type exports
+export type P6FreshnessPolicy = typeof p6FreshnessPolicies.$inferSelect;
+export type NewP6FreshnessPolicy = typeof p6FreshnessPolicies.$inferInsert;
