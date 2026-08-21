@@ -1,7 +1,7 @@
 # P6-01B — Observation Contract
 
 **Date:** 2026-08-21
-**Revision:** 1 (semantic corrections applied)
+**Revision:** 2 (semantic corrections applied)
 **Task Type:** CONTRACT DESIGN DOCUMENT ONLY — NO IMPLEMENTATION
 **Baseline:** P6-01A Data Landscape Recon (accepted)
 **Frozen Boundaries:** P4-P5 Handoff, P6-01A findings
@@ -18,7 +18,7 @@ The contract specifies:
 - observation identity semantics
 - entity and metric identity
 - temporal contracts (observed_at, collected_at, business_date, timeframe)
-- source provenance
+- source provenance (RAW → CANONICAL scope)
 - unit representation
 - freshness and data quality semantics
 - missing/null handling
@@ -94,7 +94,9 @@ P6 defines three observation layers:
 
 **Example:** A Binance kline response object with `openTime`, `open`, `high`, `low`, `close`, `volume`, `quoteVolume`, `closeTime`.
 
-**Storage rule:** Raw observations MAY be stored in a dedicated raw observation table or retained as JSON blobs within canonical records. The choice is an implementation detail; the contract requires that raw provenance is recoverable.
+**Storage rule:** Raw payload retention is OPTIONAL provenance/reproducibility storage. Raw payloads MAY be stored in a dedicated raw observation table or retained as JSON blobs. The choice is an implementation detail.
+
+**Critical boundary:** RAW ≠ CANONICAL. Raw JSON is NOT part of canonical observation identity. Raw payload retention does not define or constrain the canonical observation contract. The canonical observation remains the stable semantic record regardless of whether raw payloads are retained.
 
 #### CANONICAL
 
@@ -102,7 +104,7 @@ P6 defines three observation layers:
 
 **Characteristics:**
 - Normalized field names (e.g., `observed_at` not `openTime`)
-- Normalized units (e.g., USD for price, not provider-specific quote assets)
+- Normalized units preserving source semantics (e.g., `quote_asset` for prices, not hardcoded USD)
 - Consistent null/missing semantics
 - Cross-source comparable
 - Source provenance preserved
@@ -110,9 +112,9 @@ P6 defines three observation layers:
 - Deterministic identity
 
 **Normalization boundary:** The transition from Raw to Canonical is the normalization boundary. This is where:
-- Provider-specific timestamps are converted to UTC `observed_at`
+- Provider-specific timestamps are mapped to `observed_at` (or UNKNOWN if source does not provide one)
 - Provider-specific field names are mapped to canonical names
-- Units are standardized
+- Units preserve source semantics (quote_asset for OHLC, base_asset for volume)
 - Missing values are explicitly represented (not silently dropped)
 - Source provenance is recorded
 
@@ -164,9 +166,9 @@ observation_id = f(entity_id, metric, source, observed_at, timeframe)
 
 Where:
 - `entity_id` — the coin or entity being observed (e.g., coin ID)
-- `metric` — what is being measured (e.g., PRICE, VOLUME, OPEN_INTEREST)
+- `metric` — what is being measured (e.g., CLOSE, VOLUME, OPEN_INTEREST)
 - `source` — the data provider (e.g., BINANCE_SPOT, BINANCE_FUTURES, COINGECKO)
-- `observed_at` — when the source generated this observation (UTC timestamp)
+- `observed_at` — when the source generated this observation (UTC timestamp, or UNKNOWN)
 - `timeframe` — the temporal resolution (DAILY, 4H, SOURCE_SNAPSHOT)
 
 ### 4.2 Why observed_at, Not collected_at
@@ -181,9 +183,9 @@ Where:
 
 The tuple `(entity_id, metric, source, observed_at, timeframe)` must be unique. Re-ingestion of the same data must update the existing observation, not create a duplicate.
 
-### 4.4 Observation ID Format
+### 4.4 Observation ID Representation
 
-The `observation_id` should be a deterministic hash (e.g., SHA-256) of the identity tuple, truncated or encoded as needed for storage efficiency. The exact encoding is an implementation detail.
+The semantic identity is the tuple `(entity_id, metric, source, observed_at, timeframe)`. The hash/encoding/storage representation of `observation_id` (e.g., SHA-256, UUID, sequential) is an **implementation decision** and is NOT frozen by this contract.
 
 ---
 
@@ -193,16 +195,18 @@ The `observation_id` should be a deterministic hash (e.g., SHA-256) of the ident
 
 | Field | Definition | Timezone | Semantics |
 |---|---|---|---|
-| `observed_at` | When the source generated this data point | UTC | Source observation time. For klines, this is `openTime`. For snapshots, this is the timestamp of the measurement. |
+| `observed_at` | When the source generated this data point | UTC | Source observation time. For klines, this is `openTime`. For snapshots, this is the timestamp of the measurement. If the source does not provide an observation timestamp, `observed_at` = `UNKNOWN`. |
 | `collected_at` | When the system ingested this data point | UTC | Ingestion time. Always set at write time. Never used as identity component. |
-| `business_date` | The business day this observation belongs to | Asia/Ho_Chi_Minh | Derived from `observed_at` using the configured business timezone. Used for daily aggregation and snapshot alignment. |
+| `business_date` | The business day this observation belongs to | Asia/Ho_Chi_Minh | Derived from `observed_at` when available. If `observed_at` is UNKNOWN, `business_date` is derived from `collected_at` with explicit provenance标记. |
 | `timeframe` | The temporal resolution of this observation | N/A | Enum: DAILY, 4H, SOURCE_SNAPSHOT |
 
 ### 5.2 Do Not Substitute
 
 - `observed_at` and `collected_at` are NEVER silently substituted for each other
-- If a source does not provide `observed_at`, the system must explicitly set it to `collected_at` and record `observed_at_source: false` in provenance
-- `business_date` is always derived from `observed_at`, never from `collected_at`
+- If a source does not provide `observed_at`, the system MUST set it to `UNKNOWN`
+- The system MUST NOT substitute `collected_at` for `observed_at` under any circumstance
+- `collected_at` is always the actual ingestion timestamp, recorded at write time
+- `business_date` is derived from `observed_at` when available; if `observed_at` is UNKNOWN, `business_date` is derived from `collected_at` with explicit provenance
 
 ### 5.3 Initial Temporal Resolutions
 
@@ -227,7 +231,7 @@ Additional temporal resolutions (e.g., 1H, 15M, 1M) may be added in the future i
 
 - For DAILY timeframe: `business_date` = date of the kline's `openTime` in Asia/Ho_Chi_Minh timezone
 - For 4H timeframe: `business_date` = date of the kline's `openTime` in Asia/Ho_Chi_Minh timezone
-- For SOURCE_SNAPSHOT: `business_date` = date of `observed_at` in Asia/Ho_Chi_Minh timezone
+- For SOURCE_SNAPSHOT: `business_date` = date of `observed_at` in Asia/Ho_Chi_Minh timezone (or `collected_at` if `observed_at` is UNKNOWN)
 
 The business timezone is `Asia/Ho_Chi_Minh` (consistent with existing `getBusinessDate()` in `src/lib/utils.ts`).
 
@@ -241,19 +245,28 @@ The following metrics are part of the V1 canonical observation vocabulary:
 
 | # | Metric | Semantic Definition | Unit | Source Fields | Notes |
 |---|---|---|---|---|---|
-| 1 | `PRICE` | The closing price of the observation period | USD (quote currency) | kline `close` | Primary price reference |
-| 2 | `OPEN` | The opening price of the observation period | USD | kline `open` | |
-| 3 | `HIGH` | The highest price during the observation period | USD | kline `high` | |
-| 4 | `LOW` | The lowest price during the observation period | USD | kline `low` | |
-| 5 | `CLOSE` | The closing price of the observation period | USD | kline `close` | Alias for PRICE when disambiguation needed |
-| 6 | `VOLUME` | The base asset volume traded during the observation period | Base asset units | kline `volume` | |
-| 7 | `QUOTE_VOLUME` | The quote asset volume (USD volume) traded during the observation period | USD | kline `quoteVolume` | |
-| 8 | `MARKET_CAP` | Fully diluted market capitalization of the asset | USD | CoinGecko `marketCap` | |
-| 9 | `FDV` | Fully diluted valuation of the asset | USD | CoinGecko `fullyDilutedValuation` | |
-| 10 | `OPEN_INTEREST` | Outstanding derivative contracts for the asset | Base asset units | Binance Futures `openInterest` | |
-| 11 | `FUNDING_RATE` | Perpetual futures funding rate | Decimal (rate) | Binance Futures `fundingRate` | 0.0001 = 0.01% |
+| 1 | `OPEN` | The opening price of the observation period | quote_asset | kline `open` | |
+| 2 | `HIGH` | The highest price during the observation period | quote_asset | kline `high` | |
+| 3 | `LOW` | The lowest price during the observation period | quote_asset | kline `low` | |
+| 4 | `CLOSE` | The closing price of the observation period | quote_asset | kline `close` | |
+| 5 | `VOLUME` | The base asset volume traded during the observation period | base_asset | kline `volume` | |
+| 6 | `QUOTE_VOLUME` | The quote asset volume traded during the observation period | quote_asset | kline `quoteVolume` | |
+| 7 | `MARKET_CAP` | Fully diluted market capitalization of the asset | USD | CoinGecko `marketCap` | CoinGecko returns USD |
+| 8 | `FDV` | Fully diluted valuation of the asset | USD | CoinGecko `fullyDilutedValuation` | CoinGecko returns USD |
+| 9 | `OPEN_INTEREST` | Outstanding derivative contracts for the asset | base_asset | Binance Futures `openInterest` | |
+| 10 | `FUNDING_RATE` | Perpetual futures funding rate | decimal (rate) | Binance Futures `fundingRate` | 0.0001 = 0.01% |
 
-### 6.2 Explicitly Excluded from Observation Vocabulary
+### 6.2 PRICE — API/Presentation Alias Only
+
+`PRICE` is **NOT a separate canonical observation**. It is an API/presentation alias for `CLOSE`.
+
+- `CLOSE` is the canonical observation metric
+- `PRICE` may appear in API responses and UI presentation as a convenience label
+- No separate observation identity is created for `PRICE`
+- No separate observation record is created for `PRICE`
+- Where the system currently uses `PRICE` (e.g., `market_price_daily.close`), the canonical metric is `CLOSE`
+
+### 6.3 Explicitly Excluded from Observation Vocabulary
 
 The following are NOT observations. They are derived metrics and must never be classified as canonical observations:
 
@@ -268,24 +281,50 @@ The following are NOT observations. They are derived metrics and must never be c
 - DATA_COMPLETENESS
 - Any other computed/derived output
 
-### 6.3 Metric Naming Convention
+### 6.4 Metric Naming Convention
 
 - All canonical metric names are UPPER_SNAKE_CASE
 - Metric names are stable identifiers; they do not change across sources
 - A metric name implies a specific semantic meaning, not a specific API field
 
-### 6.4 Unit Convention
+### 6.5 Unit Convention
 
-- Prices are always in USD (quote currency)
-- Volumes are in base asset units unless explicitly noted as `QUOTE_VOLUME`
-- Rates are expressed as decimals (e.g., 0.0001 = 0.01%)
+- OHLC prices (OPEN, HIGH, LOW, CLOSE) use `quote_asset` as the unit (e.g., USDT for BTC/USDT). The canonical observation metadata preserves the quote asset identifier. USD-normalized values, if required later, are a separate derived/normalization concern.
+- QUOTE_VOLUME uses `quote_asset` as the unit
+- VOLUME and OPEN_INTEREST use `base_asset` as the unit
+- FUNDING_RATE is expressed as a decimal (e.g., 0.0001 = 0.01%)
+- MARKET_CAP and FDV use `USD` as the unit (CoinGecko returns USD natively)
 - Scores (health, trend, etc.) are NOT metrics; they are derived values with their own scale
 
 ---
 
 ## 7. Source Provenance
 
-### 7.1 Source Identity
+### 7.1 Scope
+
+P6-01B defines provenance for the **RAW → CANONICAL** boundary only:
+
+```
+Raw observation (API response)
+    ↓ [normalization boundary]
+Canonical observation (normalized, with source + source_ref)
+```
+
+**Future scope (defined in later P6 tasks):**
+
+```
+Canonical observation
+    ↓ [algorithm + version]
+Derived metric          ← P6-02 onward
+    ↓ [intelligence calculation]
+Intelligence result     ← P6-05 onward
+    ↓ [presentation transformation]
+UI display              ← P6-07 onward
+```
+
+The downstream provenance contracts (CANONICAL → DERIVED, DERIVED → INTELLIGENCE, INTELLIGENCE → UI) will be formally defined in their respective P6 tasks. This contract does not define or freeze those downstream provenance semantics.
+
+### 7.2 Source Identity
 
 Every canonical observation records its source:
 
@@ -295,7 +334,7 @@ Every canonical observation records its source:
 | `BINANCE_FUTURES` | Binance | `fapi.binance.com` | Futures market klines, OI, funding |
 | `COINGECKO` | CoinGecko | `api.coingecko.com` | Market cap, FDV |
 
-### 7.2 Source Reference
+### 7.3 Source Reference
 
 `source_ref` captures provider-specific identifiers that allow tracing back to the original data:
 
@@ -307,29 +346,25 @@ Every canonical observation records its source:
 | BINANCE_FUTURES (FR) | `fr:{symbol}:{fundingTime}` | `fr:BTCUSDT:1692624000000` |
 | COINGECKO | `market:{coingeckoId}:{date}` | `market:bitcoin:2026-08-21` |
 
-### 7.3 Provenance Chain
+### 7.4 Provenance Chain (Conceptual Architecture)
 
-The complete provenance chain for P6:
+The full P6 provenance chain for reference:
 
 ```
 Raw observation (API response)
-    ↓ [normalization boundary]
+    ↓ [normalization boundary — P6-01B scope]
 Canonical observation (normalized, with source + source_ref)
-    ↓ [algorithm + version]
+    ↓ [algorithm + version — future P6 tasks]
 Derived metric (with input observation references)
-    ↓ [intelligence calculation]
+    ↓ [intelligence calculation — future P6 tasks]
 Intelligence result (with derived metric references)
-    ↓ [presentation transformation]
+    ↓ [presentation transformation — future P6 tasks]
 UI display (with headline, evidence, confidence)
 ```
 
-Each layer must be traceable to the layer below. The contract requires that:
-- Canonical observations reference their raw source
-- Derived metrics reference their input canonical observations
-- Intelligence results reference their input derived metrics
-- The chain is recoverable at any point
+This contract defines provenance semantics for the Raw → Canonical transition only. Each downstream layer must be traceable to the layer below, but those contracts are defined in later P6 tasks.
 
-### 7.4 Compatibility with Existing Provenance
+### 7.5 Compatibility with Existing Provenance
 
 The existing `features.sourceProvenance` JSON structure captures:
 ```json
@@ -355,22 +390,23 @@ P6 extends this by:
 
 ### 8.1 Canonical Units
 
-| Metric | Canonical Unit | Conversion Notes |
+| Metric | Canonical Unit | Notes |
 |---|---|---|
-| PRICE / OPEN / HIGH / LOW / CLOSE | USD | Binance returns in quote currency (USDT ≈ USD) |
-| VOLUME | Base asset units | Raw kline volume |
-| QUOTE_VOLUME | USD | `quoteVolume` from kline |
-| OPEN_INTEREST | Base asset units | Binance OI in base units |
-| FUNDING_RATE | Decimal (rate) | 0.0001 = 0.01% |
-| MARKET_CAP | USD | CoinGecko market cap |
-| FDV | USD | CoinGecko fully diluted valuation |
+| OPEN / HIGH / LOW / CLOSE | quote_asset | Preserves the quote asset from the source (e.g., USDT). Metadata must record the quote asset identifier. |
+| VOLUME | base_asset | Base asset volume from the source |
+| QUOTE_VOLUME | quote_asset | Quote asset volume from the source |
+| OPEN_INTEREST | base_asset | Binance OI in base units |
+| FUNDING_RATE | decimal (rate) | 0.0001 = 0.01% |
+| MARKET_CAP | USD | CoinGecko returns USD natively |
+| FDV | USD | CoinGecko returns USD natively |
 
 ### 8.2 Unit Standardization Rule
 
 When normalizing from Raw to Canonical:
-- If the source provides data in the canonical unit, no conversion needed
-- If the source provides data in a different unit, convert and record the conversion in provenance
-- If conversion is not possible, mark the observation as `quality_status: INVALID` with reason `UNIT_CONVERSION_IMPOSSIBLE`
+- OHLC prices preserve the source's quote asset (e.g., USDT). The canonical metadata records `quote_asset: "USDT"`.
+- QUOTE_VOLUME preserves the source's quote asset.
+- If USD-normalized values are required later, that is a separate derived/normalization concern (not part of this contract).
+- If conversion is required and not possible, mark the observation as `quality_status: INVALID` with reason `UNIT_CONVERSION_IMPOSSIBLE`
 
 ### 8.3 Score Units (Not Observation Units)
 
@@ -460,7 +496,7 @@ P6 quality extends this by:
 
 ### 10.5 Additional Quality States
 
-Additional quality states beyond VALID, INVALID, MISSING, UNKNOWN may only appear under Open Decisions, not as active contract semantics. See Section 18.
+Additional quality states beyond VALID, INVALID, MISSING, UNKNOWN may only appear under Open Decisions, not as active contract semantics. See Section 17.
 
 ---
 
@@ -483,6 +519,7 @@ P6 adopts an **explicit null** policy for observations:
 | Source returned invalid data | `quality_status: INVALID` — observation exists but flagged |
 | Source is unavailable | `quality_status: MISSING` depending on whether metric applies |
 | Metric not applicable for entity | No observation record created; downstream uses `MISSING` or excludes |
+| Source does not provide observation timestamp | `observed_at: UNKNOWN` — observation record created with UNKNOWN observed_at |
 
 ### 11.3 Downstream Consumer Rules
 
@@ -508,7 +545,7 @@ The feature engine currently returns 50 (neutral) when <20 price rows are availa
 
 | Layer | Persisted? | Table | Notes |
 |---|---|---|---|
-| Raw observation | OPTIONALLY | TBD (raw_observation table or JSON in canonical) | For provenance/reproducibility |
+| Raw observation | OPTIONALLY | TBD (raw_observation table or JSON in canonical) | For provenance/reproducibility only; not part of canonical identity |
 | Canonical observation | YES | New `observations` table | Primary durable storage |
 | Derived metric | YES | Existing `features`, `health_scores` tables | Already persisted |
 | Intelligence result | YES | Existing tables + future P6 tables | Already partially persisted |
@@ -518,7 +555,7 @@ The feature engine currently returns 50 (neutral) when <20 price rows are availa
 ### 12.2 Persistence Principles
 
 1. **Canonical observations are the durable source of truth.** Derived metrics can be recalculated from canonical observations.
-2. **Raw observations are optional but recommended.** They support reproducibility but are not required for day-to-day operation.
+2. **Raw payload retention is optional.** It supports reproducibility but is not required for day-to-day operation. Raw JSON is NOT part of canonical observation identity.
 3. **Quality and freshness are inline, not separate tables.** They are properties of the observation, not independent records.
 4. **Observations are append-only in semantic effect.** Re-ingestion of the same data updates the existing record (upsert on identity tuple), not appends a new record.
 
@@ -526,7 +563,7 @@ The feature engine currently returns 50 (neutral) when <20 price rows are availa
 
 | Existing Table | P6 Relationship | Action |
 |---|---|---|
-| `market_price_daily` | Partial overlap with canonical PRICE/OPEN/HIGH/LOW/CLOSE/VOLUME/QUOTE_VOLUME | P6 may extend or replace with canonical observations table |
+| `market_price_daily` | Partial overlap with canonical OPEN/HIGH/LOW/CLOSE/VOLUME/QUOTE_VOLUME | P6 may extend or replace with canonical observations table |
 | `coin_metrics` | Partial overlap with OPEN_INTEREST, FUNDING_RATE, MARKET_CAP, FDV | P6 may extend or replace with canonical observations table |
 | `features` | Derived metrics — fully reusable | No change to schema; P6 adds new derived metrics |
 | `health_scores` | Derived intelligence — fully reusable | No change; P6 extends with new dimensions |
@@ -636,12 +673,12 @@ P6 must NOT:
 | `open` | `value` (metric=OPEN) | Direct mapping |
 | `high` | `value` (metric=HIGH) | Direct mapping |
 | `low` | `value` (metric=LOW) | Direct mapping |
-| `close` | `value` (metric=PRICE or CLOSE) | Direct mapping |
+| `close` | `value` (metric=CLOSE) | Direct mapping. PRICE is an alias, not a separate metric. |
 | `volume` | `value` (metric=VOLUME) | Direct mapping |
 | `quoteVolume` | `value` (metric=QUOTE_VOLUME) | Direct mapping |
 | `source` | `source` | Maps to canonical source ID |
-| (openTime from API) | `observed_at` | Must be extracted and stored |
-| (collection time) | `collected_at` | Must be added |
+| (openTime from API) | `observed_at` | Must be extracted and stored. If source does not provide, set UNKNOWN. |
+| (collection time) | `collected_at` | Must be added. Actual ingestion timestamp. |
 
 ### 15.2 coin_metrics → Canonical Observations
 
@@ -654,7 +691,7 @@ P6 must NOT:
 | `marketCap` | `value` (metric=MARKET_CAP) | Direct mapping |
 | `fullyDilutedValuation` | `value` (metric=FDV) | Direct mapping |
 | `source` | `source` | Maps to canonical source ID |
-| (missing) | `observed_at` | MUST be added — currently not tracked |
+| (missing) | `observed_at` | MUST be added. UNKNOWN if source does not provide. |
 | (missing) | `collected_at` | MUST be added — currently not tracked |
 | (missing) | `timeframe` | MUST be added — currently SOURCE_SNAPSHOT |
 | (missing) | `quality_status` | MUST be added |
@@ -664,7 +701,7 @@ P6 must NOT:
 
 | Gap | Impact | Resolution |
 |---|---|---|
-| `observed_at` not stored in current tables | Cannot determine when source generated data | P6-01E adds this field |
+| `observed_at` not stored in current tables | Cannot determine when source generated data | P6-01E adds this field. UNKNOWN if source does not provide. |
 | `collected_at` not stored in current tables | Cannot compute freshness | P6-01E adds this field |
 | `timeframe` not explicit in current tables | Cannot distinguish DAILY from 4H observations | P6-01E adds this field |
 | `quality_status` not stored | Cannot assess data quality per observation | P6-01E adds this field |
@@ -680,11 +717,11 @@ These 15 invariants must hold for all P6 observation operations:
 ### O-01: Identity Determinism
 Same `(entity_id, metric, source, observed_at, timeframe)` → same `observation_id`. Always. No exceptions.
 
-### O-02: observed_at Integrity
-`observed_at` represents source time, not ingestion time. Never silently substituted with `collected_at`.
+### O-02: observed_at Non-Substitution
+`observed_at` represents source observation time. If the source does not provide an observation timestamp, `observed_at` = `UNKNOWN`. The system MUST NOT substitute `collected_at` for `observed_at` under any circumstance.
 
 ### O-03: collected_at Independence
-`collected_at` is never used as an observation identity component. Two collections of the same source data produce the same observation.
+`collected_at` is the actual ingestion timestamp, recorded at write time. It is never used as an observation identity component. Two collections of the same source data produce the same observation.
 
 ### O-04: Explicit Null
 A missing observation is absence, not zero, not null, not a default value, not a carry-forward.
@@ -695,8 +732,8 @@ Data quality (`quality_status`) is independent from market health. Never hidden,
 ### O-06: Freshness Independence
 Data freshness (`freshness_status`) is independent from data quality and market health. Always surfaced alongside intelligence.
 
-### O-07: Provenance Traceability
-Every canonical observation is traceable to its raw source. Every derived metric is traceable to its input observations. The chain is unbroken.
+### O-07: Provenance Traceability (RAW → CANONICAL)
+Every canonical observation is traceable to its raw source via `source` and `source_ref`. This contract defines provenance for the RAW → CANONICAL boundary. Downstream provenance (CANONICAL → DERIVED → INTELLIGENCE → UI) is defined in later P6 tasks.
 
 ### O-08: No Silent Substitution
 Missing, stale, or invalid data is never silently replaced with current data, default values, or last-known values without explicit configuration.
@@ -708,7 +745,7 @@ Same raw input + same normalization version → same canonical output. Always. N
 Historical observations retain their original version marker. Re-processing with a new version does not overwrite old results.
 
 ### O-11: Metric Vocabulary Fidelity
-Only metrics defined in Section 6.1 are canonical observations. Derived metrics (trend, momentum, health, breadth, participation, etc.) are NEVER observations, regardless of storage format.
+Only metrics defined in Section 6.1 are canonical observations. Derived metrics (trend, momentum, health, breadth, participation, etc.) are NEVER observations, regardless of storage format. `PRICE` is an API/presentation alias for `CLOSE`, not a separate canonical observation.
 
 ### O-12: P4/P5 Boundary Preservation
 P6 observation semantics do not alter, reinterpret, or replace P4/P5 frozen contracts. P4/P5 meanings are invariant.
@@ -717,10 +754,10 @@ P6 observation semantics do not alter, reinterpret, or replace P4/P5 frozen cont
 Insufficient or degraded evidence never silently becomes normal/healthy intelligence. Quality and freshness degradation must be explicit.
 
 ### O-14: Temporal Substitution Prohibition
-`observed_at`, `collected_at`, and `business_date` are never silently substituted for each other. Each has a distinct semantic role.
+`observed_at`, `collected_at`, and `business_date` are never silently substituted for each other. Each has a distinct semantic role. If `observed_at` is UNKNOWN, `business_date` may be derived from `collected_at` with explicit provenance.
 
 ### O-15: Unit Consistency
-All observations of the same metric use the same canonical unit. Unit conversion failures result in `quality_status: INVALID`, not silent unit mismatch.
+All observations of the same metric use the same canonical unit. OHLC prices preserve `quote_asset` from the source. Unit conversion failures result in `quality_status: INVALID`, not silent unit mismatch.
 
 ---
 
@@ -732,7 +769,7 @@ All observations of the same metric use the same canonical unit. Unit conversion
 | 2 | Should existing `market_price_daily` be extended or replaced with a new canonical observations table? | **PLANNER DECISION REQUIRED** | Affects migration strategy and backward compatibility |
 | 3 | Should existing `coin_metrics` be extended or replaced? | **PLANNER DECISION REQUIRED** | Same as above |
 | 4 | What is the initial `dataSchemaVersion` number? | **PLANNER DECISION REQUIRED** | Versioning convention |
-| 5 | Should the normalization boundary produce one observation per OHLCV field (5 records) or one observation per kline (1 record with 5 fields)? | **PLANNER DECISION REQUIRED** | Affects observation granularity and query patterns |
+| 5 | Should the normalization boundary produce one observation per OHLCV field (4 records per kline) or one observation per kline (1 record with 4 fields)? | **PLANNER DECISION REQUIRED** | Affects observation granularity and query patterns |
 | 6 | What are the per-metric freshness thresholds (FRESH vs STALE boundary)? | **PLANNER DECISION REQUIRED** | Determines when data is classified as stale |
 | 7 | What is the data retention policy for canonical observations? | **PLANNER DECISION REQUIRED** | Affects storage growth and historical query capability |
 | 8 | How should historical membership (coin_narratives effective dates) be handled? | **PLANNER DECISION REQUIRED** | Affects breadth/participation temporal accuracy |
@@ -747,11 +784,14 @@ All observations of the same metric use the same canonical unit. Unit conversion
 This contract document is complete when:
 
 - [x] Core semantic model defined (Raw/Canonical/Derived)
+- [x] RAW ≠ CANONICAL boundary clarified; raw retention is optional provenance
 - [x] Observation identity contract defined
 - [x] Temporal contract defined (observed_at, collected_at, business_date, timeframe)
-- [x] Initial metric vocabulary defined (all 11 V1 metrics)
-- [x] Source provenance contract defined
-- [x] Unit semantics defined
+- [x] observed_at = UNKNOWN when source does not provide; no substitution with collected_at
+- [x] Initial metric vocabulary defined (10 V1 metrics + PRICE as alias only)
+- [x] OHLC as canonical vocabulary; PRICE is API/presentation alias for CLOSE
+- [x] Unit semantics use quote_asset/base_asset, not hardcoded USD
+- [x] Source provenance contract defined (RAW → CANONICAL scope)
 - [x] Freshness model defined (FRESH/STALE/UNKNOWN)
 - [x] Data quality model defined (VALID/INVALID/MISSING/UNKNOWN)
 - [x] Missing/null semantics defined
@@ -776,7 +816,7 @@ After this contract is accepted:
 
 ---
 
-**P6-01B OBSERVATION CONTRACT — REVISION 1 COMPLETE**
+**P6-01B OBSERVATION CONTRACT — REVISION 2 COMPLETE**
 **NO PRODUCTION CODE CHANGES**
 **NO SCHEMA CHANGES**
 **NO API CHANGES**
