@@ -53,6 +53,12 @@ export interface SquareOpportunity {
   stopLoss?: PriceTarget;
   expiresAt?: string;
   status: OpportunityStatus;
+  leadingCoinSymbols?: string[];
+  leadingCoinRationales?: string[];
+  narrativeInvalidation?: string | null;
+  leaderCoinEntry?: PriceZone;
+  leaderCoinTakeProfits?: PriceTarget[];
+  leaderCoinStopLoss?: PriceTarget;
 }
 
 export interface OpportunityEvaluationResult {
@@ -86,6 +92,9 @@ export interface OpportunityScoringConfig {
   // Quota
   dailySoftCap: number;
   dailyHardCap: number;
+
+  // Narrative multi-coin selection
+  maxLeadingCoins: number;
 }
 
 export const DEFAULT_SCORING_CONFIG: OpportunityScoringConfig = {
@@ -105,6 +114,7 @@ export const DEFAULT_SCORING_CONFIG: OpportunityScoringConfig = {
   narrativeCooldownHours: 48,
   dailySoftCap: 10,
   dailyHardCap: 100,
+  maxLeadingCoins: 3,
 };
 
 // ─── Data Collection ───────────────────────────────────
@@ -378,14 +388,10 @@ function calculateOpportunityScore(
   const qualityScore = evaluateDataQuality(coin) === "HIGH" ? 90 : evaluateDataQuality(coin) === "MEDIUM" ? 60 : 30;
 
   // Health momentum score (0-100)
-  // Strong positive or negative change = higher opportunity
   const changeMag = coin.scoreChange !== null ? Math.abs(coin.scoreChange) : 0;
   const momentumScore = Math.min(100, changeMag * 10 + 20);
 
   // Signal alignment score (0-100)
-  // STRONG_WATCH or WEAK = high alignment (clear direction)
-  // WATCH = moderate
-  // OBSERVE = low
   let signalScore = 50;
   if (coin.signal === "STRONG_WATCH") signalScore = 90;
   else if (coin.signal === "WEAK") signalScore = 85;
@@ -393,7 +399,6 @@ function calculateOpportunityScore(
   else if (coin.signal === "OBSERVE") signalScore = 40;
 
   // Volume confirmation (0-100)
-  // High volume with clear signal = better setup
   const volumeScore = Math.min(
     100,
     (coin.volumeScore / 100) * 60 + (coin.volume24h > 0 ? 40 : 0)
@@ -405,7 +410,7 @@ function calculateOpportunityScore(
     (coin.trendScore / 100) * 50 + (coin.momentumScore / 100) * 50
   );
 
-  // Novelty bonus (0-100) - based on score change magnitude
+  // Novelty bonus (0-100)
   const noveltyScore = Math.min(100, changeMag * 15);
 
   const total =
@@ -419,6 +424,15 @@ function calculateOpportunityScore(
   return Math.round(total * 100) / 100;
 }
 
+function calculateNarrativeCoinSelectionScore(coin: CoinData): number {
+  const changeMag = coin.scoreChange !== null ? Math.abs(coin.scoreChange) : 0;
+  return (
+    coin.healthScore * 0.4 +
+    coin.confidenceScore * 0.3 +
+    changeMag * 10 * 0.3
+  );
+}
+
 // ─── Entry/TP/SL Calculation ───────────────────────────
 
 function calculateSetupLevels(
@@ -429,20 +443,12 @@ function calculateSetupLevels(
   const price = coin.currentPrice;
   const atr = coin.atr14;
 
-  // Entry zone: current price ± 0.5 ATR
   const entryLow = Math.round((price - atr * 0.5) * 10000) / 10000;
   const entryHigh = Math.round((price + atr * 0.5) * 10000) / 10000;
-
-  // TP1: 1.5 ATR above entry high
   const tp1 = Math.round((entryHigh + atr * 1.5) * 10000) / 10000;
-
-  // TP2: 3 ATR above entry high
   const tp2 = Math.round((entryHigh + atr * 3) * 10000) / 10000;
-
-  // SL: 1 ATR below entry low
   const sl = Math.round((entryLow - atr * 1) * 10000) / 10000;
 
-  // Use EMA levels as additional context if available
   const emaTargets: PriceTarget[] = [];
   if (coin.ema20 !== null && coin.ema20 > price) {
     emaTargets.push({ level: coin.ema20, label: "EMA20" });
@@ -467,7 +473,6 @@ function calculateSetupLevels(
 function generateRationale(coin: CoinData): string[] {
   const reasons: string[] = [];
 
-  // Direction
   if (coin.scoreChange !== null) {
     if (coin.scoreChange > 5)
       reasons.push(`Health improving significantly (+${coin.scoreChange.toFixed(1)})`);
@@ -480,32 +485,26 @@ function generateRationale(coin: CoinData): string[] {
     else reasons.push("Health stable");
   }
 
-  // Signal
   reasons.push(`Signal: ${coin.signal}`);
 
-  // Trend
   if (coin.trendScore >= 75) reasons.push("Strong bullish trend");
   else if (coin.trendScore <= 25) reasons.push("Strong bearish trend");
 
-  // Volume
   if (coin.volumeScore >= 75) reasons.push("Volume above average");
   else if (coin.volumeScore <= 25) reasons.push("Volume below average");
 
-  // Derivative
   if (coin.fundingRate !== null) {
     if (coin.fundingRate > 0.01) reasons.push("Positive funding (longs paying)");
     else if (coin.fundingRate < -0.01)
       reasons.push("Negative funding (shorts paying)");
   }
 
-  // RSI
   if (coin.rsi14 !== null) {
     if (coin.rsi14 > 70) reasons.push(`RSI overbought (${coin.rsi14.toFixed(1)})`);
     else if (coin.rsi14 < 30)
       reasons.push(`RSI oversold (${coin.rsi14.toFixed(1)})`);
   }
 
-  // Confidence
   reasons.push(`Confidence: ${coin.confidenceScore.toFixed(0)}%`);
 
   return reasons;
@@ -530,6 +529,131 @@ function generateNarrativeRationale(narrative: NarrativeData): string[] {
   return reasons;
 }
 
+// ─── Why Now Generation ────────────────────────────────
+
+function generateWhyNowForCoin(coin: {
+  scoreChange: number | null;
+  signal: string;
+  trendScore: number;
+  volumeScore: number;
+}): string[] {
+  const facts: string[] = [];
+
+  if (coin.scoreChange !== null && Math.abs(coin.scoreChange) >= 3) {
+    if (coin.scoreChange > 0) {
+      facts.push(`Health improved by ${coin.scoreChange.toFixed(1)} points in the latest refresh.`);
+    } else {
+      facts.push(`Health declined by ${Math.abs(coin.scoreChange).toFixed(1)} points in the latest refresh.`);
+    }
+  }
+
+  if (coin.signal === "STRONG_WATCH") {
+    facts.push("Signal upgraded to STRONG_WATCH.");
+  } else if (coin.signal === "WATCH") {
+    facts.push("Signal indicates positive monitoring posture.");
+  }
+
+  if (coin.trendScore >= 75 && coin.volumeScore >= 75) {
+    facts.push("Trend and volume are confirming each other.");
+  }
+
+  return facts;
+}
+
+function generateWhyNowForNarrative(
+  narrative: NarrativeData,
+  leadingCoins: CoinData[]
+): string[] {
+  const facts: string[] = [];
+
+  if (narrative.scoreChange !== null && Math.abs(narrative.scoreChange) >= 3) {
+    if (narrative.scoreChange > 0) {
+      facts.push(`Narrative health improved by ${narrative.scoreChange.toFixed(1)} points in the latest refresh.`);
+    } else {
+      facts.push(`Narrative health declined by ${Math.abs(narrative.scoreChange).toFixed(1)} points in the latest refresh.`);
+    }
+  }
+
+  const strongCoins = leadingCoins.filter(
+    (c) => c.signal === "STRONG_WATCH" || c.signal === "WATCH"
+  );
+  if (strongCoins.length >= 2) {
+    facts.push(
+      `${strongCoins.length} leading coins are showing positive momentum together.`
+    );
+  }
+
+  return facts;
+}
+
+// ─── Invalidation Generation ───────────────────────────
+
+function generateCoinInvalidation(params: {
+  currentPrice: number;
+  atr14: number | null;
+}): string | null {
+  if (params.atr14 === null || params.currentPrice <= 0) return null;
+  const sl = Math.round((params.currentPrice - params.atr14 * 0.5 - params.atr14 * 1) * 10000) / 10000;
+  return `Setup invalidates if price breaks below ${sl.toFixed(4)} with sustained weakness.`;
+}
+
+function generateNarrativeCoinRationale(coin: CoinData): string {
+  const parts: string[] = [];
+
+  if (coin.signal === "STRONG_WATCH") {
+    parts.push("strongest momentum contribution");
+  } else if (coin.signal === "WATCH") {
+    parts.push("positive monitoring posture");
+  } else if (coin.signal === "WEAK") {
+    parts.push("weakening relative strength");
+  } else {
+    parts.push("stable baseline");
+  }
+
+  if (coin.scoreChange !== null && Math.abs(coin.scoreChange) >= 3) {
+    if (coin.scoreChange > 0) {
+      parts.push(`improving relative strength (+${coin.scoreChange.toFixed(1)})`);
+    } else {
+      parts.push(`declining relative strength (${coin.scoreChange.toFixed(1)})`);
+    }
+  }
+
+  if (coin.trendScore >= 75 && coin.volumeScore >= 75) {
+    parts.push("confirmed by trend and volume");
+  }
+
+  return parts.join(", ");
+}
+
+function generateNarrativeInvalidationFromData(
+  narrative: NarrativeData,
+  leadingCoins: CoinData[]
+): string | null {
+  if (leadingCoins.length === 0) return null;
+
+  const weakCoins = leadingCoins.filter(
+    (c) => c.signal === "OBSERVE" || c.signal === "WEAK"
+  );
+
+  if (weakCoins.length > 0) {
+    return `Narrative thesis weakens if ${weakCoins[0].symbol} loses its current signal posture.`;
+  }
+
+  if (narrative.avgConfidence !== null && narrative.avgConfidence < 50) {
+    return `Narrative thesis weakens if average confidence drops further below current levels.`;
+  }
+
+  const decliningCoins = leadingCoins.filter(
+    (c) => c.scoreChange !== null && c.scoreChange < -3
+  );
+
+  if (decliningCoins.length > 0) {
+    return `Narrative thesis weakens if ${decliningCoins[0].symbol} continues declining.`;
+  }
+
+  return `The narrative thesis becomes weaker if the current leading-coin strength fails to persist.`;
+}
+
 // ─── Opportunity Extraction ────────────────────────────
 
 function extractCoinOpportunities(
@@ -548,7 +672,7 @@ function extractCoinOpportunities(
       const rationale = generateRationale(coin);
 
       return {
-        id: 0, // Will be assigned by DB
+        id: 0,
         type: "COIN_SETUP" as OpportunityType,
         subjectId: coin.coinId,
         narrativeId: coin.narrativeId,
@@ -565,6 +689,25 @@ function extractCoinOpportunities(
     })
     .filter((opp) => opp.score >= config.minDataQualityScore)
     .sort((a, b) => b.score - a.score);
+}
+
+function selectNarrativeLeadingCoins(
+  coinsInNarrative: CoinData[],
+  config: OpportunityScoringConfig
+): string[] {
+  const qualified = coinsInNarrative.filter((c) => {
+    const gate = passesQualityGates(c, config);
+    return gate.passes;
+  });
+
+  if (qualified.length === 0) return [];
+
+  const sorted = qualified
+    .map((c) => ({ symbol: c.symbol, score: calculateNarrativeCoinSelectionScore(c) }))
+    .sort((a, b) => b.score - a.score);
+
+  const max = Math.max(1, config.maxLeadingCoins);
+  return sorted.slice(0, max).map((s) => s.symbol);
 }
 
 function extractNarrativeOpportunities(
@@ -584,19 +727,38 @@ function extractNarrativeOpportunities(
       const avgConfidence = narrative.avgConfidence ?? 0;
       const scoreChange = narrative.scoreChange ?? 0;
 
-      // Narrative score: weighted by health change magnitude and confidence
       const score =
         Math.min(100, Math.abs(scoreChange) * 10 + avgConfidence * 0.5);
 
       const rationale = generateNarrativeRationale(narrative);
 
-      // Find top coin for cashtag
+      const leadingCoinSymbols = selectNarrativeLeadingCoins(
+        coinsInNarrative,
+        config
+      );
+
       const topCoin = coinsInNarrative.find(
         (c) => c.coinId === narrative.topCoinId
       );
-      if (topCoin) {
+      if (topCoin && !leadingCoinSymbols.includes(topCoin.symbol)) {
         rationale.unshift(`Leader: $${topCoin.symbol}`);
       }
+
+      const leadingCoinsData = leadingCoinSymbols
+        .map((symbol) => coinsInNarrative.find((c) => c.symbol === symbol))
+        .filter((c): c is CoinData => c !== undefined);
+
+      const leadingCoinRationales = leadingCoinsData.map((c) =>
+        generateNarrativeCoinRationale(c)
+      );
+
+      const narrativeInvalidation = generateNarrativeInvalidationFromData(
+        narrative,
+        leadingCoinsData
+      );
+
+      const leaderCoin = leadingCoinsData[0];
+      const leaderSetup = leaderCoin ? calculateSetupLevels(leaderCoin) : null;
 
       const dataQuality: DataQuality =
           avgConfidence >= 70 ? "HIGH" : avgConfidence >= 40 ? "MEDIUM" : "LOW";
@@ -606,11 +768,17 @@ function extractNarrativeOpportunities(
         type: "NARRATIVE_SETUP" as OpportunityType,
         subjectId: narrative.narrativeId,
         narrativeId: narrative.narrativeId,
-        coinSymbol: topCoin?.symbol,
+        coinSymbol: leadingCoinSymbols[0] ?? topCoin?.symbol,
         score,
         dataAsOf: narrative.dataDate,
         dataQuality,
         rationale,
+        leadingCoinSymbols,
+        leadingCoinRationales,
+        narrativeInvalidation,
+        leaderCoinEntry: leaderSetup?.entry,
+        leaderCoinTakeProfits: leaderSetup?.takeProfits,
+        leaderCoinStopLoss: leaderSetup?.stopLoss,
         status: "CANDIDATE" as OpportunityStatus,
       };
     })
@@ -638,10 +806,8 @@ export async function evaluateOpportunities(
       config
     );
 
-    // Combine and deduplicate (narrative takes precedence over individual coins)
     const allOpps = [...narrativeOpps, ...coinOpps];
 
-    // Remove duplicate coin opportunities that are already covered by narrative
     const narrativeCoinIds = new Set(
       narrativeOpps
         .filter((n) => n.narrativeId)
@@ -684,29 +850,31 @@ export interface SquareContentBrief {
   title?: string;
   text: string;
   cashtags: string[];
-  /** Normalized primary coin symbol for chart widget (validated) */
   chartCoin?: string;
-  /** Whether chart coin was explicitly specified vs auto-detected */
   chartCoinExplicit?: boolean;
   dataAsOf: string;
   entry?: PriceZone;
   takeProfits?: PriceTarget[];
   stopLoss?: PriceTarget;
+  leadingCoinSymbols?: string[];
+  leadingCoinRationales?: string[];
+  whyNowFacts?: string[];
+  invalidation?: string | null;
+  leaderCoinEntry?: PriceZone;
+  leaderCoinTakeProfits?: PriceTarget[];
+  leaderCoinStopLoss?: PriceTarget;
 }
 
 export function buildContentBrief(
   opportunity: SquareOpportunity
 ): SquareContentBrief {
-  // Normalize and validate the coin symbol for cashtag and chart
   const normalizedSymbol = opportunity.coinSymbol
     ? normalizeCoinSymbol(opportunity.coinSymbol)
     : null;
   const validatedChartCoin = normalizedSymbol
     ? validateChartSymbol(normalizedSymbol)
     : null;
-  const cashtags = validatedChartCoin ? [`$${validatedChartCoin}`] : [];
 
-  // Build text content
   const lines: string[] = [];
 
   // Headline
@@ -721,10 +889,65 @@ export function buildContentBrief(
 
   lines.push("");
 
+  // WHY NOW (E2)
+  const whyNowFacts: string[] = [];
+  if (opportunity.type === "COIN_SETUP") {
+    const scoreChangeMatch = opportunity.rationale.find(r => r.startsWith("Health improving") || r.startsWith("Health declining"));
+    const scoreChange = scoreChangeMatch ? parseFloat(scoreChangeMatch.match(/([\d.+-]+)/)?.[1] || "0") : null;
+    
+    whyNowFacts.push(...generateWhyNowForCoin({
+      scoreChange,
+      signal: opportunity.rationale.find(r => r.startsWith("Signal: "))?.replace("Signal: ", "") || "OBSERVE",
+      trendScore: opportunity.rationale.includes("Strong bullish trend") ? 85 : opportunity.rationale.includes("Strong bearish trend") ? 25 : 50,
+      volumeScore: opportunity.rationale.includes("Volume above average") ? 75 : opportunity.rationale.includes("Volume below average") ? 25 : 50,
+    }));
+  } else if (opportunity.type === "NARRATIVE_SETUP") {
+    const narrativeScoreChange = opportunity.rationale
+      .find(r => r.startsWith("Narrative health improving") || r.startsWith("Narrative health declining"))
+      ?.match(/([\d.]+)/)?.[1];
+    
+    if (narrativeScoreChange) {
+      const change = parseFloat(narrativeScoreChange);
+      if (change > 0) {
+        whyNowFacts.push(`Narrative health improved by ${change.toFixed(1)} points in the latest refresh.`);
+      } else {
+        whyNowFacts.push(`Narrative health declined by ${Math.abs(change).toFixed(1)} points in the latest refresh.`);
+      }
+    }
+
+    const leaderCount = opportunity.leadingCoinSymbols?.length || 0;
+    if (leaderCount >= 2) {
+      whyNowFacts.push(`${leaderCount} leading coins are participating in this move.`);
+    }
+  }
+
+  if (whyNowFacts.length > 0) {
+    lines.push("WHY NOW");
+    for (const fact of whyNowFacts) {
+      lines.push(`• ${fact}`);
+    }
+    lines.push("");
+  }
+
   // Key facts
   lines.push("Key facts:");
   for (const reason of opportunity.rationale.slice(0, 5)) {
     lines.push(`• ${reason}`);
+  }
+
+  // Leading coins with per-coin rationale (E1)
+  if (opportunity.type === "NARRATIVE_SETUP" && opportunity.leadingCoinSymbols && opportunity.leadingCoinSymbols.length > 0) {
+    lines.push("");
+    lines.push("Leading coins:");
+    for (let i = 0; i < opportunity.leadingCoinSymbols.length; i++) {
+      const symbol = opportunity.leadingCoinSymbols[i];
+      const rationale = opportunity.leadingCoinRationales?.[i];
+      if (rationale) {
+        lines.push(`$${symbol} — ${rationale}`);
+      } else {
+        lines.push(`$${symbol}`);
+      }
+    }
   }
 
   // Setup levels
@@ -742,6 +965,35 @@ export function buildContentBrief(
     if (opportunity.stopLoss) {
       lines.push(`SL: ${opportunity.stopLoss.level.toFixed(4)}`);
     }
+  } else if (opportunity.type === "NARRATIVE_SETUP" && opportunity.leaderCoinEntry) {
+    lines.push("");
+    lines.push("📍 Leader setup:");
+    lines.push(
+      `Entry: ${opportunity.leaderCoinEntry.low.toFixed(4)}–${opportunity.leaderCoinEntry.high.toFixed(4)}`
+    );
+    if (opportunity.leaderCoinTakeProfits) {
+      for (const tp of opportunity.leaderCoinTakeProfits.slice(0, 2)) {
+        lines.push(`TP: ${tp.level.toFixed(4)}`);
+      }
+    }
+    if (opportunity.leaderCoinStopLoss) {
+      lines.push(`SL: ${opportunity.leaderCoinStopLoss.level.toFixed(4)}`);
+    }
+  }
+
+  // Invalidation (E2 - data-grounded, no placeholder)
+  const invalidation = opportunity.narrativeInvalidation ??
+    (opportunity.type === "COIN_SETUP"
+      ? generateCoinInvalidation({
+          currentPrice: opportunity.entry ? (opportunity.entry.low + opportunity.entry.high) / 2 : 0,
+          atr14: opportunity.stopLoss ? Math.abs((opportunity.entry!.low + opportunity.entry!.high) / 2 - opportunity.stopLoss.level) / 1.5 : null,
+        })
+      : null);
+
+  if (invalidation) {
+    lines.push("");
+    lines.push("INVALIDATION");
+    lines.push(invalidation);
   }
 
   // Disclaimer
@@ -750,9 +1002,15 @@ export function buildContentBrief(
     "⚠️ This is data-driven analysis, not financial advice. Always do your own research."
   );
 
+  const cashtags = opportunity.type === "NARRATIVE_SETUP" && opportunity.leadingCoinSymbols
+    ? opportunity.leadingCoinSymbols.map((s) => `$${s}`)
+    : validatedChartCoin
+      ? [`$${validatedChartCoin}`]
+      : [];
+
   return {
     opportunityId: opportunity.id,
-    contentType: opportunity.entry ? "image" : "text",
+    contentType: opportunity.entry || opportunity.leaderCoinEntry ? "image" : "text",
     text: lines.join("\n"),
     cashtags,
     chartCoin: validatedChartCoin ?? undefined,
@@ -761,5 +1019,12 @@ export function buildContentBrief(
     entry: opportunity.entry,
     takeProfits: opportunity.takeProfits,
     stopLoss: opportunity.stopLoss,
+    leadingCoinSymbols: opportunity.leadingCoinSymbols,
+    leadingCoinRationales: opportunity.leadingCoinRationales,
+    whyNowFacts,
+    invalidation,
+    leaderCoinEntry: opportunity.leaderCoinEntry,
+    leaderCoinTakeProfits: opportunity.leaderCoinTakeProfits,
+    leaderCoinStopLoss: opportunity.leaderCoinStopLoss,
   };
 }

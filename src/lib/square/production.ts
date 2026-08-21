@@ -1,8 +1,8 @@
 // Square Pipeline — Production Wiring
 // Post-refresh hook: evaluates opportunities after data refresh completes
 
-import { evaluateOpportunities, buildContentBrief } from "./opportunity-engine";
-import { persistOpportunity, publishContent, getQuotaStatus } from "./publisher";
+import { evaluateOpportunities, buildContentBrief, type SquareOpportunity } from "./opportunity-engine";
+import { persistOpportunity, publishContent, getQuotaStatus, generateThesisFingerprint } from "./publisher";
 import { DEFAULT_SCORING_CONFIG } from "./opportunity-engine";
 import { resolveChartCoin, generateChartMetadata } from "./chart-utils";
 
@@ -14,17 +14,11 @@ export interface SquarePipelineResult {
   errors: string[];
 }
 
-/**
- * Run the Square content pipeline after a successful data refresh.
- * This is called as a non-blocking side effect — it must NOT affect
- * the refresh success/failure status.
- *
- * Architecture:
- *   Refresh completes → Square pipeline fires → opportunities evaluated → content published
- *
- * The pipeline is fully isolated from the refresh pipeline.
- * A failure here does NOT mark the refresh as failed.
- */
+function extractSignal(rationale: string[]): string {
+  const signalEntry = rationale.find((r) => r.startsWith("Signal: "));
+  return signalEntry ? signalEntry.replace("Signal: ", "") : "OBSERVE";
+}
+
 export async function runSquarePipeline(): Promise<SquarePipelineResult> {
   const errors: string[] = [];
   let published = 0;
@@ -70,7 +64,6 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
 
     for (const opp of toPublish) {
       try {
-        // Find the original opportunity data for content generation
         const origOpp = evaluation.opportunities.find(
           (o) => o.score === opp.score
         );
@@ -79,14 +72,51 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
         const brief = buildContentBrief(origOpp);
         const chartCoin = resolveChartCoin(brief.chartCoin, brief.cashtags);
         const chartMeta = generateChartMetadata(chartCoin, origOpp.coinSymbol);
-        const result = await publishContent(opp.id, brief.text, undefined, chartMeta);
+
+        const signal = extractSignal(origOpp.rationale);
+        const tpLevels = origOpp.takeProfits?.map((tp) => tp.level) || [];
+        const slLevel = origOpp.stopLoss?.level || null;
+        const entryLow = origOpp.entry?.low || null;
+        const entryHigh = origOpp.entry?.high || null;
+        const coinSymbols =
+          origOpp.type === "NARRATIVE_SETUP" && origOpp.leadingCoinSymbols
+            ? origOpp.leadingCoinSymbols
+            : origOpp.coinSymbol
+              ? [origOpp.coinSymbol]
+              : [];
+
+        const thesisFingerprint = generateThesisFingerprint({
+          type: origOpp.type,
+          subjectId: origOpp.subjectId,
+          narrativeId: origOpp.narrativeId || null,
+          coinSymbols,
+          signal,
+          entryLow,
+          entryHigh,
+          tpLevels,
+          slLevel,
+          invalidation: brief.invalidation || null,
+        });
+
+        const result = await publishContent(
+          opp.id,
+          brief.text,
+          undefined,
+          chartMeta,
+          thesisFingerprint
+        );
 
         if (result.success) {
           published++;
         } else {
-          errors.push(
-            `Publish failed for opportunity ${opp.id}: ${result.errorMessage ?? result.errorCode}`
-          );
+          const errorMsg = result.errorMessage ?? result.errorCode;
+          if (errorMsg === "THESIS_STABLE") {
+            errors.push(`Thesis stability suppressed opportunity ${opp.id}`);
+          } else {
+            errors.push(
+              `Publish failed for opportunity ${opp.id}: ${errorMsg}`
+            );
+          }
         }
       } catch (err) {
         errors.push(

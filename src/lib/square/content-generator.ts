@@ -3,6 +3,12 @@
 
 import type { SquareContentBrief } from "./opportunity-engine";
 
+// ─── Template Version ──────────────────────────────────
+
+const TEMPLATE_VERSION = "1.0.0";
+const MAX_LLM_OUTPUT_TOKENS = 1200;
+const MAX_TEXT_LENGTH = 1200;
+
 // ─── Types ─────────────────────────────────────────────
 
 export interface GeneratedContent {
@@ -19,21 +25,13 @@ export interface ContentGenerationConfig {
 }
 
 export const DEFAULT_CONTENT_CONFIG: ContentGenerationConfig = {
-  maxTextLength: 2000,
+  maxTextLength: MAX_TEXT_LENGTH,
   includeDisclaimer: true,
   useLLM: true,
 };
 
-// ─── Template Version ──────────────────────────────────
-
-const TEMPLATE_VERSION = "1.0.0";
-
 // ─── LLM Integration ───────────────────────────────────
 
-/**
- * Generate content using Google LLM API.
- * Returns null if LLM is unavailable or returns invalid content.
- */
 async function generateWithLLM(
   brief: SquareContentBrief
 ): Promise<GeneratedContent | null> {
@@ -52,7 +50,7 @@ async function generateWithLLM(
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0.3,
-            maxOutputTokens: 1024,
+            maxOutputTokens: MAX_LLM_OUTPUT_TOKENS,
           },
         }),
         signal: AbortSignal.timeout(15000),
@@ -66,7 +64,7 @@ async function generateWithLLM(
 
     if (!generatedText || typeof generatedText !== "string") return null;
 
-    const validated = validateLLMOutput(generatedText, brief.cashtags);
+    const validated = validateLLMOutput(generatedText, brief);
     if (!validated) return null;
 
     return {
@@ -89,9 +87,24 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   lines.push("- Use ONLY the facts provided below");
   lines.push("- Do NOT invent any price, volume, trend, or data");
   lines.push("- Do NOT change Entry/TP/SL levels");
-  lines.push("- Include coin cashtags (e.g. $BTC)");
-  lines.push("- Keep it under 500 characters");
+  lines.push("- Do NOT add or remove coin cashtags");
+  lines.push("- Do NOT change the invalidation condition");
+  lines.push("- Keep it under 800 characters");
   lines.push("- Add a brief disclaimer at the end");
+  lines.push("");
+  lines.push("REQUIRED SECTIONS:");
+  lines.push("1. Headline with coin cashtag");
+  lines.push("2. WHY NOW section (if facts provided)");
+  lines.push("3. Key facts bullet points");
+  if (brief.leadingCoinSymbols && brief.leadingCoinSymbols.length > 0) {
+    lines.push("4. Leading coins section with rationale");
+  }
+  if (brief.entry || brief.leaderCoinEntry) {
+    lines.push("5. Setup section with Entry/TP/SL");
+  }
+  if (brief.invalidation) {
+    lines.push("6. INVALIDATION section");
+  }
   lines.push("");
   lines.push("FACTS:");
 
@@ -99,15 +112,33 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
     lines.push(`Coins: ${brief.cashtags.join(" ")}`);
   }
 
-  // Chart coin is metadata for the LLM — it must appear in the post
   if (brief.chartCoin) {
     lines.push(`Chart coin: $${brief.chartCoin}`);
   }
 
-  // Extract facts from the brief text
+  if (brief.leadingCoinSymbols && brief.leadingCoinSymbols.length > 0) {
+    lines.push(`Leading coins: ${brief.leadingCoinSymbols.map(s => `$${s}`).join(" ")}`);
+  }
+
+  if (brief.leadingCoinRationales && brief.leadingCoinRationales.length > 0) {
+    lines.push("");
+    lines.push("LEADING COIN RATIONALES:");
+    for (let i = 0; i < brief.leadingCoinSymbols!.length; i++) {
+      lines.push(`$${brief.leadingCoinSymbols![i]} — ${brief.leadingCoinRationales![i]}`);
+    }
+  }
+
+  if (brief.whyNowFacts && brief.whyNowFacts.length > 0) {
+    lines.push("");
+    lines.push("WHY NOW:");
+    for (const fact of brief.whyNowFacts) {
+      lines.push(`• ${fact}`);
+    }
+  }
+
   const facts = brief.text
     .split("\n")
-    .filter((l) => l.startsWith("• ") || l.startsWith("Entry:") || l.startsWith("TP:") || l.startsWith("SL:"));
+    .filter((l) => l.startsWith("• ") || l.startsWith("Entry:") || l.startsWith("TP:") || l.startsWith("SL:") || l.startsWith("INVALIDATION") || l.startsWith("📍"));
   for (const fact of facts) {
     lines.push(fact);
   }
@@ -118,25 +149,39 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   return lines.join("\n");
 }
 
-function validateLLMOutput(text: string, expectedCashtags?: string[]): string | null {
+function validateLLMOutput(text: string, brief: SquareContentBrief): string | null {
   if (!text || text.length < 20) return null;
-  if (text.length > 2000) return null;
+  if (text.length > MAX_TEXT_LENGTH) return null;
 
-  // Must not contain forbidden terms
   const upper = text.toUpperCase();
   const forbidden = ["BUY", "SELL", "LONG", "SHORT", "ORDER", "EXECUTE"];
   for (const term of forbidden) {
     if (upper.includes(term)) return null;
   }
 
-  // If expected cashtags provided, validate they appear in output
-  if (expectedCashtags && expectedCashtags.length > 0) {
-    for (const tag of expectedCashtags) {
+  if (brief.cashtags.length > 0) {
+    for (const tag of brief.cashtags) {
       if (!text.includes(tag)) {
-        // LLM dropped a cashtag — reject and fall back to template
         return null;
       }
     }
+  }
+
+  if (brief.leadingCoinSymbols && brief.leadingCoinSymbols.length > 0) {
+    for (const symbol of brief.leadingCoinSymbols) {
+      const tag = `$${symbol}`;
+      if (!text.includes(tag)) {
+        return null;
+      }
+    }
+  }
+
+  if (brief.invalidation && !text.includes("INVALIDATION") && !text.includes("invalidates")) {
+    return null;
+  }
+
+  if (brief.whyNowFacts && brief.whyNowFacts.length > 0 && !text.includes("WHY NOW")) {
+    return null;
   }
 
   return text;
@@ -144,17 +189,12 @@ function validateLLMOutput(text: string, expectedCashtags?: string[]): string | 
 
 // ─── Template Fallback ─────────────────────────────────
 
-/**
- * Generate content using the brief's pre-built text.
- * Always available — no external dependencies.
- */
 function generateFromBrief(
   brief: SquareContentBrief,
   config: ContentGenerationConfig
 ): GeneratedContent {
   let text = brief.text;
 
-  // Trim to max length
   if (text.length > config.maxTextLength) {
     text = text.slice(0, config.maxTextLength - 3) + "...";
   }
@@ -169,10 +209,6 @@ function generateFromBrief(
 
 // ─── Main Generator ────────────────────────────────────
 
-/**
- * Generate content for a Square post.
- * Tries LLM first (if enabled), falls back to brief text.
- */
 export async function generateContent(
   brief: SquareContentBrief,
   config: ContentGenerationConfig = DEFAULT_CONTENT_CONFIG

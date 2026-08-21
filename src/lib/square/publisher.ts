@@ -44,6 +44,7 @@ const SQUARE_SKILL_DIR = resolve(
 const CONTENT_VERSION = "1.0.0";
 const TEMPLATE_VERSION = "1.0.0";
 const FINGERPRINT_TTL_HOURS = 72;
+const THESIS_FINGERPRINT_TTL_HOURS = 168;
 
 // ─── Fingerprint Generation ────────────────────────────
 
@@ -62,6 +63,33 @@ function generateFingerprint(
     narrativeId?.toString() || "",
     entryLevel?.toFixed(4) || "",
     dataAsOf,
+  ];
+  return createHash("sha256").update(components.join("|")).digest("hex").slice(0, 64);
+}
+
+export function generateThesisFingerprint(params: {
+  type: string;
+  subjectId: number;
+  narrativeId: number | null;
+  coinSymbols: string[];
+  signal: string;
+  entryLow: number | null;
+  entryHigh: number | null;
+  tpLevels: number[];
+  slLevel: number | null;
+  invalidation: string | null;
+}): string {
+  const components = [
+    params.type,
+    params.subjectId.toString(),
+    params.narrativeId?.toString() || "",
+    params.coinSymbols.sort().join(","),
+    params.signal,
+    params.entryLow?.toFixed(4) || "",
+    params.entryHigh?.toFixed(4) || "",
+    params.tpLevels.map((l) => l.toFixed(4)).join(","),
+    params.slLevel?.toFixed(4) || "",
+    params.invalidation || "",
   ];
   return createHash("sha256").update(components.join("|")).digest("hex").slice(0, 64);
 }
@@ -112,7 +140,23 @@ export async function incrementQuota(): Promise<void> {
 export async function isDuplicate(fingerprint: string): Promise<boolean> {
   const now = new Date();
 
-  // Check fingerprint table
+  const [existing] = await db
+    .select()
+    .from(squareFingerprints)
+    .where(
+      and(
+        eq(squareFingerprints.fingerprint, fingerprint),
+        gte(squareFingerprints.expiresAt, now)
+      )
+    )
+    .limit(1);
+
+  return !!existing;
+}
+
+export async function isThesisStable(fingerprint: string): Promise<boolean> {
+  const now = new Date();
+
   const [existing] = await db
     .select()
     .from(squareFingerprints)
@@ -133,6 +177,21 @@ export async function recordFingerprint(
 ): Promise<void> {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + FINGERPRINT_TTL_HOURS * 60 * 60 * 1000);
+
+  await db.insert(squareFingerprints).values({
+    fingerprint,
+    opportunityId,
+    publishedAt: now,
+    expiresAt,
+  });
+}
+
+export async function recordThesisFingerprint(
+  fingerprint: string,
+  opportunityId: number
+): Promise<void> {
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + THESIS_FINGERPRINT_TTL_HOURS * 60 * 60 * 1000);
 
   await db.insert(squareFingerprints).values({
     fingerprint,
@@ -168,7 +227,6 @@ async function postText(
       }
     );
 
-    // Parse output for ID and Link
     const idMatch = stdout.match(/ID:\s*(\S+)/);
     const linkMatch = stdout.match(/Link:\s*(\S+)/);
 
@@ -195,7 +253,8 @@ export async function publishContent(
   opportunityId: number,
   text: string,
   title?: string,
-  chartMetadata?: { chartSymbol: string | null; chartMatchesSource: boolean }
+  chartMetadata?: { chartSymbol: string | null; chartMatchesSource: boolean },
+  thesisFingerprint?: string
 ): Promise<PublicationResult> {
   // 1. Check quota
   const quota = await getQuotaStatus();
@@ -225,10 +284,19 @@ export async function publishContent(
     };
   }
 
-  // 3. Post to Binance Square
+  // 3. Check thesis stability (E4)
+  if (thesisFingerprint && (await isThesisStable(thesisFingerprint))) {
+    return {
+      success: false,
+      errorCode: "THESIS_STABLE",
+      errorMessage: "Similar thesis recently published",
+    };
+  }
+
+  // 4. Post to Binance Square
   const result = await postText(text, title);
 
-  // 4. Record publication
+  // 5. Record publication
   const [publication] = await db
     .insert(squarePublications)
     .values({
@@ -246,12 +314,14 @@ export async function publishContent(
     })
     .returning();
 
-  // 5. Record fingerprint for deduplication
+  // 6. Record fingerprint for deduplication
   if (result.success) {
     await recordFingerprint(fingerprint, opportunityId);
+    if (thesisFingerprint) {
+      await recordThesisFingerprint(thesisFingerprint, opportunityId);
+    }
     await incrementQuota();
 
-    // Update opportunity status
     await db
       .update(squareOpportunities)
       .set({ status: "PUBLISHED" })
