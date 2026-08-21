@@ -1109,3 +1109,67 @@ export type P5PermissionRow = typeof p5Permissions.$inferSelect;
 export type NewP5PermissionRow = typeof p5Permissions.$inferInsert;
 export type P5AuditEventRow = typeof p5AuditEvents.$inferSelect;
 export type NewP5AuditEventRow = typeof p5AuditEvents.$inferInsert;
+
+// ==================== P6 SOURCE REGISTRY ====================
+// Frozen contract: P6-01C (commit 18fb0f0)
+// Observation contract: P6-01B (commit ad5d7df)
+
+export const p6SourceDefinitions = pgTable(
+  "p6_source_definitions",
+  {
+    id: serial("id").primaryKey(),
+    sourceId: varchar("source_id", { length: 50 }).notNull().unique(),
+    provider: varchar("provider", { length: 100 }).notNull(),
+    sourceType: varchar("source_type", { length: 30 }).notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("ACTIVE"),
+    entityType: varchar("entity_type", { length: 30 }).notNull().default("COIN"),
+    entityCoverageRequirement: varchar("entity_coverage_requirement", { length: 200 }).notNull(),
+    description: text("description"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    sourceTypeIdx: index("p6_source_def_type_idx").on(table.sourceType),
+    statusIdx: index("p6_source_def_status_idx").on(table.status),
+  })
+);
+
+export const p6SourceCapabilities = pgTable(
+  "p6_source_capabilities",
+  {
+    id: serial("id").primaryKey(),
+    sourceId: varchar("source_id", { length: 50 }).notNull().references(() => p6SourceDefinitions.sourceId),
+    metric: varchar("metric", { length: 50 }).notNull(),
+    timeframe: varchar("timeframe", { length: 30 }).notNull(),
+    isSupported: boolean("is_supported").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    sourceMetricTimeframeUnique: unique("p6_source_cap_unique").on(
+      table.sourceId,
+      table.metric,
+      table.timeframe
+    ),
+    metricIdx: index("p6_source_cap_metric_idx").on(table.metric),
+    timeframeIdx: index("p6_source_cap_timeframe_idx").on(table.timeframe),
+  })
+);
+
+export const p6RegistryConfigVersions = pgTable(
+  "p6_registry_config_versions",
+  {
+    id: serial("id").primaryKey(),
+    version: integer("version").notNull().unique(),
+    description: text("description"),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  }
+);
+
+// P6 Source Registry type exports
+export type P6SourceDefinition = typeof p6SourceDefinitions.$inferSelect;
+export type NewP6SourceDefinition = typeof p6SourceDefinitions.$inferInsert;
+export type P6SourceCapability = typeof p6SourceCapabilities.$inferSelect;
+export type NewP6SourceCapability = typeof p6SourceCapabilities.$inferInsert;
+export type P6RegistryConfigVersion = typeof p6RegistryConfigVersions.$inferSelect;
+export type NewP6RegistryConfigVersion = typeof p6RegistryConfigVersions.$inferInsert;
