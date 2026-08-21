@@ -1,570 +1,607 @@
 # Crypto Narrative Health Dashboard
 
-> Decision Support Dashboard cho Crypto Narratives - MVP v1.3
+> **NarrativeHealth** — hệ thống đo lường sức khoẻ của Crypto Narratives + Coins, phát hiện tín hiệu/xu hướng sớm và chuyển dữ liệu tổng hợp thành intelligence, decision support và nội dung phân tích có giá trị.
+>
+> **Current status:** P4-P5 Product Baseline **CLOSED / FROZEN** · Binance Square Monetization **LIVE / OPERATIONAL** · Square Analytics **NEXT UPGRADE** · P6 **SPECIFIED / NOT STARTED**.
 
-![FastAPI](https://img.shields.io/badge/FastAPI-0.109-009688)
 ![Next.js](https://img.shields.io/badge/Next.js-16-black)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
+![TypeScript](https://img.shields.io/badge/TypeScript-blue)
 ![Python](https://img.shields.io/badge/Python-3.11+-blue)
 
 ---
 
-## 🏗️ Kiến trúc
+## 🎯 Product Purpose
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Current Architecture (Recommended)      │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │              Next.js (:3000) - Primary Server       │ │
-│  │                                                     │ │
-│  │   /api/*  →  Next.js API routes (TypeScript)       │ │
-│  │   /*      →  React Frontend (HMR in dev)            │ │
-│  │                                                     │ │
-│  │   ┌─────────────┐  ┌─────────────┐                 │ │
-│  │   │ Collectors  │  │  Features   │                 │ │
-│  │   │ (axios)     │  │  (Custom)   │                 │ │
-│  │   └─────────────┘  └─────────────┘                 │ │
-│  └────────────────────────────────────────────────────┘ │
-│                          │                               │
-│  ┌────────────────────────────────────────────────────┐ │
-│  │              FastAPI (:8000) - Backup API            │ │
-│  │                                                     │ │
-│  │   /api/*  →  Python API handlers (legacy support) │ │
-│  │                                                     │ │
-│  │   ┌─────────────┐  ┌─────────────┐                 │ │
-│  │   │ Collectors  │  │  Features   │                 │ │
-│  │   │ (httpx)     │  │  (pandas)   │                 │ │
-│  │   └─────────────┘  └─────────────┘                 │ │
-│  └────────────────────────────────────────────────────┘ │
-│                          │                               │
-│                    PostgreSQL                            │
-└─────────────────────────────────────────────────────────┘
+NarrativeHealth is a **Crypto Narrative Health Measurement, Intelligence & Early Warning system**.
 
-Development Mode:
-- Next.js :3000 (Primary API + Frontend)
-- FastAPI :8000 (Backup API)
-- Both servers connect to PostgreSQL
+The product is **not an auto-trading bot** and does not execute trades automatically.
 
-Production Mode:
-- Next.js standalone server (recommended)
-- FastAPI optional (backup/scheduler only)
-- Static export NOT recommended (disables API routes)
+Its core value is to aggregate data across coins and narratives, identify meaningful changes early, explain what those changes mean, and present useful advisory information to users.
+
+```text
+Market / Coin Data
+      ↓
+Feature & Health Measurement
+      ↓
+Narrative Intelligence
+      ↓
+P3 — What is happening?
+      ↓
+P4 — What does it mean?
+      ↓
+P5 — What should be considered?
+      ↓
+User-facing Decision Support
+      ↓
+Binance Square — public analysis / first monetization layer
+      ↓
+Future: P6 — stronger trend & early-warning intelligence
 ```
 
 ---
 
-## 🚀 Hướng dẫn chạy Local
+# 🧩 Current Product
 
-### Yêu cầu
+### Core capabilities
 
-- **Python** >= 3.11
-- **Node.js** >= 18.x
-- **PostgreSQL** >= 15
-- **pip** và **npm**
+- Narrative health measurement
+- Coin health measurement
+- Trend / momentum / volume analysis
+- Derivatives / OI / funding signals
+- Relative strength
+- Breadth
+- Rotation
+- Leadership
+- Narrative and coin detail views
+- Dashboard
+- WatchList
+- Scheduled data refresh
+- P3 intelligence
+- P4 decision support
+- P5 advisory decision layer
+- Binance Square automated analysis publishing
 
----
-
-### Bước 1: Clone và cài đặt
-
-```bash
-# Clone repo
-git clone <your-repo-url>
-cd narrative-health-dashboard
-```
-
----
-
-### Bước 2: Cài đặt PostgreSQL
-
-#### Option A: Docker (Khuyến nghị)
-
-```bash
-# Chạy PostgreSQL bằng Docker
-docker run -d \
-  --name narrative-postgres \
-  -e POSTGRES_DB=narrative_health \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -p 5432:5432 \
-  postgres:15-alpine
-```
-
-#### Option B: Docker Compose
-
-```bash
-# Tạo docker-compose.yml
-cat > docker-compose.yml << 'EOF'
-version: '3.8'
-services:
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: narrative_health
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-volumes:
-  postgres_data:
-EOF
-
-# Chạy
-docker-compose up -d
-```
-
-#### Option C: Cài đặt local
-
-**macOS:**
-```bash
-brew install postgresql@15
-brew services start postgresql@15
-createdb narrative_health
-```
-
-**Ubuntu:**
-```bash
-sudo apt install postgresql postgresql-contrib
-sudo systemctl start postgresql
-sudo -u postgres createdb narrative_health
-```
+The system works around periodic data refreshes and opportunity detection rather than continuous trade execution.
 
 ---
 
-### Bước 3: Cấu hình Environment
+# 🧠 P3 — Intelligence
 
-```bash
-# Tạo file .env
-cat > .env << 'EOF'
-# Database
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/narrative_health
+P3 is the intelligence foundation and answers:
 
-# Frontend API URL (development only)
-NEXT_PUBLIC_API_URL=http://localhost:8000
+> **What is happening?**
 
-# Python settings
-APP_ENV=development
-LOG_LEVEL=INFO
-EOF
-```
+It aggregates market observations and derives signals including trend, momentum, breadth, rotation, relative strength and leadership.
+
+P3 is an upstream foundation for P4/P5 and its relevant contracts are treated as frozen dependencies by the P4-P5 baseline.
 
 ---
 
-### Bước 4: Cài đặt Python Backend
+# 🧭 P4 — Decision Support
+
+P4 answers:
+
+> **What does it mean?**
+
+P4 transforms upstream intelligence into structured interpretation including:
+
+- Direction / posture
+- Opportunity
+- Risk
+- Confidence
+- Actionability
+- Signals
+- Historical/contextual interpretation
+- Explanation
+
+P4 is **not an execution engine**.
+
+### Status
+
+**P4 PRODUCT BASELINE — CLOSED / FROZEN.**
+
+Downstream phases must not silently alter P4 semantics.
+
+---
+
+# 🛡️ P5 — Advisory Decision Layer
+
+P5 builds on P4 and answers:
+
+> **What should be considered?**
+
+P5 provides:
+
+- Policy evaluation
+- Decision outcome classification
+- Action type classification
+- Safety evaluation
+- Approval state
+- Permission result
+- Explanation
+- Provenance
+- Audit artifacts
+- Historical persistence
+- Replay
+- Read model / presentation model
+- User-facing decision panel
+
+### Frozen V1 semantics
+
+Outcome vocabulary:
+
+- `SELECTED`
+- `NO_ACTION`
+- `BLOCKED`
+- `NOT_DETERMINED`
+
+Action vocabulary:
+
+- `MONITOR`
+- `REVIEW`
+- `INVESTIGATE`
+- `REDUCE_EXPOSURE`
+- `INCREASE_EXPOSURE`
+- `REBALANCE`
+
+Critical invariants:
+
+- `NO_DECISION_RECORD ≠ NO_ACTION`
+- `SELECTED ≠ EXECUTED`
+- `GRANTED ≠ EXECUTED`
+- `SUPPRESSED ≠ NO_ACTION`
+- P5 is **advisory-only**
+- Historical decisions are read from persisted artifacts rather than silently re-evaluated from live upstream data
+
+### P4-P5 baseline
+
+**CLOSED / FROZEN.**
+
+Verified baseline:
+
+- Full regression: **481/481 PASS**
+- P4 regression: **150/150 PASS**
+- P5 regression: **338/338 PASS**
+- Typecheck: clean
+- Contract drift: none
+- Semantic leakage: none
+
+Authoritative documents:
+
+- `docs/P5_Upgrade/P4-P5_FINAL_BASELINE.md`
+- `docs/P5_Upgrade/P4-P5_CAPABILITY_CATALOG.md`
+- `docs/P5_Upgrade/P4-P5_OPEN_ITEMS.md`
+- `docs/P5_Upgrade/P4-P5_HANDOFF.md`
+
+---
+
+# 🟡 Binance Square — First Monetization Layer
+
+Binance Square is a **separate upgrade**, intentionally independent of P4/P5/P6 semantics.
+
+Its goal is to turn the system's existing data into useful public analysis and create the first potential **Write-to-Earn / affiliate monetization channel**.
+
+```text
+Existing Market / Narrative Data
+          ↓
+Square Opportunity Engine
+          ↓
+Quality Gates
+          ↓
+Coin or Narrative Post
+          ↓
+Entry / TP / SL / Invalidation
+          ↓
+LLM or Template Fallback
+          ↓
+Binance Square OpenAPI
+          ↓
+Public post + coin cashtags
+```
+
+## Square capabilities
+
+### Opportunity engine
+
+Supports:
+
+- Coin posts
+- Narrative posts
+- Opportunity scoring
+- Multi-coin narrative selection
+- `WHY NOW` facts
+- Data-grounded invalidation thesis
+- Thesis stability / anti-repeat protection
+
+Publishing is **opportunity-driven**. A refresh may produce zero, one or multiple qualified posts. The system is not artificially limited to one post per four-hour refresh.
+
+### Analytical setup
+
+Posts can include:
+
+- Entry
+- TP
+- SL
+- Invalidation
+
+Entry/TP/SL are generated deterministically from system data. The LLM cannot change the underlying levels.
+
+These are **analytical/advisory setups, not trade execution instructions**.
+
+### Content generation
+
+Two-layer approach:
+
+1. Google LLM when configured
+2. Deterministic template fallback when LLM is unavailable
+
+The LLM handles language and presentation. It does not determine the opportunity score or Entry/TP/SL.
+
+### Binance Square API
+
+Verified production contract:
+
+```text
+POST https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add
+Header: X-Square-OpenAPI-Key
+Body: { "contentType": 1, "bodyTextOnly": "..." }
+```
+
+Environment variable:
+
+```text
+BINANCE_SQUARE_OPENAPI_KEY
+```
+
+Cashtags such as `$BTC` are included so Binance Square can detect the coin and provide its native coin/chart experience.
+
+### Reliability / operations
+
+Current operational controls include:
+
+- Deduplication
+- Idempotency
+- Retry for transient failures
+- Failure classification
+- Timeout handling
+- Daily quota control
+- 80% quota warning
+- LLM usage tracking
+- Retry count
+- Publication latency
+- Structured logging
+- Dry-run mode
+- Manual full-pipeline trigger
+- Pipeline execution summary
+
+Square failures are non-blocking to the core refresh pipeline.
+
+### Real production verification
+
+The implementation has successfully created **real Binance Square posts through the official OpenAPI**.
+
+Latest controlled verification:
+
+- **7 real posts published**
+- **7 unique Binance post IDs returned**
+- Binance API success confirmed
+- PostgreSQL `PUBLISHED` records confirmed
+- Example quota usage: **7/100**
+- Entry/TP/SL verified against real ATR-derived data
+- Cashtags verified in generated content
+- P4/P5 untouched
+
+Two additional attempts returned Binance `220095` (coin-pair limit) and were correctly classified as permanent failures rather than retried.
+
+Reference: `docs/Binance_Square_Upgrade/SQ-LIVE-04_FINAL_AUDIT.md`.
+
+---
+
+# 📊 Square Analytics — Next Upgrade
+
+A dedicated **Square Analytics / Monetization UI** is now planned as a peer-level menu item:
+
+```text
+Dashboard | WatchList | Binance Square | Square Analytics | Admin
+```
+
+The analytics upgrade will measure only data that can be reliably sourced and attributed.
+
+Target questions include:
+
+- How many opportunities were evaluated?
+- How many qualified?
+- How many were published, failed, deduped or quota-blocked?
+- Which coins/narratives generate the best content opportunities?
+- Which post types perform best?
+- What is publication reliability?
+- How do Entry/TP/SL setups perform?
+- What Binance/affiliate metrics are actually available?
+- Can clicks/conversions/revenue be reliably attributed to individual posts?
+
+**No metric will be fabricated when Binance or another source does not expose reliable attribution.**
+
+Master specification:
+
+`docs/Binance_Square_Upgrade/SQ_ANALYTICS_MASTER_SPECIFICATION.md`
+
+---
+
+# 🔮 P6 — Narrative Trend & Early Warning
+
+P6 is a separate major intelligence phase.
+
+Its product objective is to evolve NarrativeHealth into a stronger:
+
+> **Narrative Health Measurement + Early Warning + Trend Intelligence System**
+
+P6 is **not auto-trading**.
+
+Planned capabilities include:
+
+- Narrative health evolution
+- Trend detection
+- Early warning signals
+- Rotation detection
+- Narrative lifecycle/state
+- Cross-narrative comparison
+- Aggregated intelligence
+- User-facing warnings and explanations
+
+The P6 Master Specification is defined, but **implementation has not started**.
+
+P4-P5 invariants are protected through the P4-P5 handoff contract.
+
+Reference: `docs/P6_Upgrade/P6_MASTER_SPECIFICATION.md`.
+
+---
+
+# 🏗️ Architecture
+
+Current primary application architecture:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                     Next.js Application                     │
+│                                                             │
+│ Dashboard | WatchList | Narratives | Coins | Square | Admin │
+│                                                             │
+│ Next.js API Routes                                          │
+│   ├── Data collection / refresh                             │
+│   ├── P3 intelligence                                       │
+│   ├── P4 decision support                                   │
+│   ├── P5 advisory artifacts                                 │
+│   └── Binance Square monetization pipeline                  │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                     PostgreSQL
+                          │
+             ┌────────────┴────────────┐
+             │                         │
+       Core market data         P5 + Square artifacts
+```
+
+FastAPI remains available as legacy/backup infrastructure where applicable. Next.js is the current primary application/API path.
+
+---
+
+# 🔄 Refresh & Scheduler
+
+The system has an automated data refresh process.
+
+The Square upgrade hooks into the refresh event without blocking it:
+
+```text
+Refresh
+  ├── Update market / narrative data
+  │
+  └── Square evaluation
+        ├── 0 qualified → no post
+        ├── 1 qualified → one post
+        └── N qualified → multiple posts
+```
+
+The goal is **publish when there is genuine information value**, not publish on a fixed quota merely because a scheduler fired.
+
+---
+
+# 🗄️ Data & Persistence
+
+PostgreSQL stores core application data plus persistent P5 and Square artifacts.
+
+Square persistence supports:
+
+- Opportunity records
+- Publication records
+- Deduplication
+- Quota accounting
+- Publication status
+- Failure classification
+- Retry tracking
+- LLM/template observability
+- Pipeline execution summaries
+- Historical publication snapshots
+
+P5 persistence stores historical decision artifacts and supports deterministic read-back/replay.
+
+---
+
+# 🔐 Security & Product Boundaries
+
+## Secrets
+
+Secrets are server-side environment variables and must never be exposed to clients or logs.
+
+Square:
+
+```text
+BINANCE_SQUARE_OPENAPI_KEY
+```
+
+Optional LLM:
+
+```text
+GOOGLE_API_KEY
+```
+
+## No auto trading
+
+The project does not place orders, manage positions, or execute BUY/SELL trades automatically.
+
+Entry/TP/SL published on Binance Square are analytical setup levels only.
+
+## Frozen P4/P5
+
+Downstream work must not silently modify frozen P4/P5 contracts or semantics. Any change requires an explicit enhancement/change phase and audit.
+
+---
+
+# 🚀 Local Development
+
+## Requirements
+
+- Python >= 3.11
+- Node.js >= 18.x
+- PostgreSQL >= 15
+- npm
+- pip
+
+## Install
 
 ```bash
-# Tạo virtual environment
+git clone https://github.com/ratrichero/NarrativeHealth.git
+cd NarrativeHealth
+npm install
+
 python3 -m venv venv
-
-# Activate (Linux/macOS)
 source venv/bin/activate
-
-# Activate (Windows)
-# venv\Scripts\activate
-
-# Cài đặt dependencies
 pip install -r requirements.txt
 ```
 
----
+## Environment
 
-### Bước 5: Cài đặt Node.js Frontend
-
-```bash
-npm install
+```env
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/narrative_health
+NEXT_PUBLIC_API_URL=http://localhost:8000
+APP_ENV=development
+LOG_LEVEL=INFO
 ```
 
----
+Optional Square/LLM features:
 
-### Bước 6: Khởi tạo Database
+```env
+BINANCE_SQUARE_OPENAPI_KEY=...
+GOOGLE_API_KEY=...
+```
 
-Database sẽ được tự động tạo tables khi FastAPI khởi động lần đầu.
+Never commit real secrets.
 
----
-
-## 🖥️ Chạy Development Mode
-
-Mở **2 terminal** riêng biệt:
-
-### Terminal 1: Next.js (Primary API + Frontend)
+## Run
 
 ```bash
 npm run dev
 ```
 
-Output mong đợi:
-```
-▲ Next.js 16.x
-- Local: http://localhost:3000
-- API: http://localhost:3000/api/*
-```
-
-### Terminal 2: FastAPI (Backup API - Optional)
+Optional FastAPI backup:
 
 ```bash
-# Activate virtual environment
 source venv/bin/activate
-
-# Chạy FastAPI với auto-reload
 uvicorn backend.main:app --reload --port 8000
 ```
 
-Output mong đợi:
-```
-🚀 Starting Narrative Health Dashboard...
-✅ Database initialized
-🔧 Development mode: API only at :8000
-INFO:     Uvicorn running on http://127.0.0.1:8000
-```
-
-**Lưu ý:** 
-- Next.js API routes là primary (port 3000)
-- FastAPI serve as backup (port 8000)
-- Scheduler ưu tiên gọi Next.js API, fallback sang FastAPI
-
----
-
-### Bước 7: Seed Data và Refresh
-
-Mở browser: **http://localhost:3000/admin**
-
-1. Click **"Seed Data"** → Tạo 2 narratives + 8 coins
-2. Click **"Run Refresh"** → Thu thập data từ Binance/CoinGecko
-3. Quay lại **http://localhost:3000** để xem Dashboard
-
-**Hoặc dùng curl:**
+Production:
 
 ```bash
-# Seed data (Next.js API)
-curl -X POST http://localhost:3000/api/admin/seed
-
-# Refresh data (Next.js API)
-curl -X POST http://localhost:3000/api/refresh
-
-# Hoặc FastAPI backup
-curl -X POST http://localhost:8000/api/admin/seed
-curl -X POST http://localhost:8000/api/refresh
-```
-
----
-
-## 🚀 Chạy Production Mode
-
-### Recommended: Next.js Standalone Server
-
-```bash
-# Build Next.js (API routes remain functional)
 npm run build
-
-# Start Next.js production server
 npm start
 ```
 
-Truy cập: **http://localhost:3000**
+---
 
-Next.js serve cả:
-- `/api/*` → Next.js API routes (TypeScript)
-- `/*` → React Frontend
+# 🧪 Verification Baselines
 
-### Alternative: FastAPI with Static Export (Not Recommended)
+### P4-P5
 
-⚠️ **Cảnh báo:** Static export sẽ vô hiệu hóa Next.js API routes. Chỉ dùng khi bạn đã chuyển hết API logic sang FastAPI.
+- Full regression: **481/481 PASS**
+- P4 regression: **150/150 PASS**
+- P5 regression: **338/338 PASS**
+- Typecheck: clean
+- Frozen baseline accepted
 
-```bash
-# 1. Bật static export trong next.config.ts
-# output: "export"
-# images: { unoptimized: true }
+### Binance Square
 
-# 2. Build static files
-npm run build
+Latest operational baseline:
 
-# 3. Chạy FastAPI
-python run.py
-```
+- Square tests: **96/96 PASS** at SQ-OPERATE-02
+- Real Binance API: verified
+- Real production posts: verified
+- PostgreSQL publication records: verified
+- Reliability/retry/quota controls: verified
 
-Truy cập: **http://localhost:8000`
-
-FastAPI sẽ serve:
-- `/api/*` → FastAPI Python handlers
-- `/*` → Static files từ `/out/`
-
-**Lưu ý:** Nếu chọn Option B, bạn cần:
-- Chuyển tất cả API logic sang FastAPI
-- Cập nhật scheduler để gọi FastAPI endpoints
-- Bỏ qua Next.js API routes
+Phase-specific documents under `docs/Binance_Square_Upgrade/` are authoritative for exact historical verification counts.
 
 ---
 
-## 📁 Cấu trúc Project
+# 📚 Documentation Map
 
-```
-project/
+```text
+docs/
+├── P5_Upgrade/
+│   ├── P4-P5_FINAL_BASELINE.md
+│   ├── P4-P5_CAPABILITY_CATALOG.md
+│   ├── P4-P5_OPEN_ITEMS.md
+│   └── P4-P5_HANDOFF.md
 │
-├── backend/                    # Python FastAPI Backend
-│   ├── main.py                # FastAPI app entry
-│   ├── config.py              # Settings
-│   ├── database.py            # SQLAlchemy async
-│   │
-│   ├── models/                # SQLAlchemy models
-│   │   ├── narrative.py
-│   │   ├── coin.py
-│   │   ├── health_score.py
-│   │   └── ...
-│   │
-│   ├── schemas/               # Pydantic schemas
-│   │   ├── narrative.py
-│   │   ├── coin.py
-│   │   └── dashboard.py
-│   │
-│   ├── api/                   # FastAPI routers
-│   │   ├── dashboard.py
-│   │   ├── narratives.py
-│   │   ├── coins.py
-│   │   ├── watchlist.py
-│   │   ├── refresh.py
-│   │   └── admin.py
-│   │
-│   ├── collectors/            # Data collectors
-│   │   ├── binance_spot.py
-│   │   ├── binance_futures.py
-│   │   └── coingecko.py
-│   │
-│   └── features/              # Feature calculations (pandas)
-│       ├── calculator.py      # EMA, ROC, ATR
-│       ├── trend.py
-│       ├── derivative.py
-│       ├── volume.py
-│       ├── momentum.py
-│       └── engine.py
+├── P6_Upgrade/
+│   └── P6_MASTER_SPECIFICATION.md
 │
-├── src/                       # Next.js Frontend
-│   ├── app/
-│   │   ├── page.tsx          # Dashboard
-│   │   ├── narrative/[id]/
-│   │   ├── coin/[id]/
-│   │   ├── watchlist/
-│   │   └── admin/
-│   │
-│   └── components/
-│       ├── NarrativeCard.tsx
-│       ├── CoinRankingTable.tsx
-│       ├── ScoreBreakdown.tsx
-│       └── ...
-│
-├── out/                       # Next.js build output (production)
-│
-├── requirements.txt           # Python dependencies
-├── package.json              # Node dependencies
-├── run.py                    # Production entry point
-├── .env                      # Environment variables
-└── README.md
+└── Binance_Square_Upgrade/
+    ├── BINANCE_SQUARE_MASTER_SPECIFICATION.md
+    ├── SQ_API_CONTRACT.md
+    ├── SQ-VERIFY-*.md
+    ├── SQ-LIVE-*.md
+    ├── SQ-VALUE-*.md
+    ├── SQ-OPERATE-*.md
+    └── SQ_ANALYTICS_MASTER_SPECIFICATION.md
 ```
+
+### Upgrade working principle
+
+1. Master Specification defines scope and invariants.
+2. Agent performs one bounded task.
+3. Agent produces recon / implementation / audit evidence.
+4. Results are reviewed before the next task.
+5. Frozen phases are never silently modified.
+6. If no discussion point remains after a report, the next task is assigned immediately.
 
 ---
 
-## 🔧 Commands Reference
+# 🛣️ Current Roadmap
 
-### Development
-
-```bash
-# Terminal 1: Backend
-source venv/bin/activate
-uvicorn backend.main:app --reload --port 8000
-
-# Terminal 2: Frontend
-npm run dev
-```
-
-### Production
-
-```bash
-# Build frontend
-npm run build
-
-# Run single server
-python run.py
-```
-
-### Database
-
-```bash
-# Connect to PostgreSQL
-psql postgresql://postgres:postgres@localhost:5432/narrative_health
-
-# Check tables
-\dt
-
-# Query data
-SELECT symbol, health_score FROM health_scores 
-JOIN coins ON coins.id = health_scores.coin_id 
-WHERE date = CURRENT_DATE;
-```
-
-### API Testing
-
-```bash
-# Health check
-curl http://localhost:8000/api/health
-
-# Dashboard
-curl http://localhost:8000/api/dashboard
-
-# Seed data
-curl -X POST http://localhost:8000/api/admin/seed
-
-# Refresh data
-curl -X POST http://localhost:8000/api/refresh
-
-# List narratives
-curl http://localhost:8000/api/narratives
-
-# List coins
-curl http://localhost:8000/api/coins
-
-# Coin detail
-curl http://localhost:8000/api/coins/1
-```
+| Area | Status |
+|---|---|
+| Core Narrative/Coin Health | Active baseline |
+| P3 Intelligence | Established foundation |
+| P4 Decision Support | **CLOSED / FROZEN** |
+| P5 Advisory Decision Layer | **CLOSED / FROZEN** |
+| Binance Square Monetization | **LIVE / OPERATIONAL** |
+| Square Analytics UI | **NEXT UPGRADE — AUDIT / PLANNING** |
+| P6 Narrative Early Warning | **SPECIFIED — NOT STARTED** |
+| Auto Trading / Bot Trading | **OUT OF SCOPE** |
 
 ---
 
-## 📊 API Endpoints
+# ⚠️ Product Boundary
 
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| GET | `/api/health` | Health check |
-| GET | `/api/dashboard` | Morning report |
-| GET | `/api/narratives` | List narratives |
-| GET | `/api/narratives/{id}` | Narrative detail |
-| POST | `/api/narratives` | Create narrative |
-| GET | `/api/coins` | List coins |
-| GET | `/api/coins/{id}` | Coin detail |
-| POST | `/api/coins` | Create coin |
-| GET | `/api/watchlist` | Get watchlist |
-| POST | `/api/watchlist` | Add to watchlist |
-| DELETE | `/api/watchlist/{id}` | Remove from watchlist |
-| POST | `/api/refresh` | Trigger data refresh |
-| POST | `/api/admin/seed` | Seed initial data |
-| GET | `/api/admin/config` | Get configs |
-| GET | `/api/admin/logs` | Get scheduler logs |
+NarrativeHealth is a **measurement, intelligence, early-warning and decision-support platform**.
 
-**API Docs:** http://localhost:8000/api/docs
+It is not intended to become an autonomous trading bot.
+
+The system may publish Entry / TP / SL analytical setups on Binance Square because users find them useful, but those values are generated from system data and presented as **advisory analysis, not execution instructions**.
 
 ---
 
-## 🛠️ Troubleshooting
+## License
 
-### Lỗi kết nối Database
-
-```
-sqlalchemy.exc.OperationalError: connection refused
-```
-
-**Giải pháp:**
-```bash
-# Kiểm tra PostgreSQL đang chạy
-docker ps | grep postgres
-# hoặc
-pg_isready -h localhost -p 5432
-
-# Kiểm tra database tồn tại
-psql -h localhost -U postgres -l | grep narrative_health
-```
-
-### Lỗi module not found
-
-```
-ModuleNotFoundError: No module named 'backend'
-```
-
-**Giải pháp:**
-```bash
-# Đảm bảo đang ở root directory
-pwd  # should show project root
-
-# Đảm bảo venv activated
-source venv/bin/activate
-```
-
-### Port đã được sử dụng
-
-```
-ERROR: [Errno 48] Address already in use
-```
-
-**Giải pháp:**
-```bash
-# Tìm process
-lsof -i :8000
-lsof -i :3000
-
-# Kill process
-kill -9 <PID>
-```
-
-### Binance API bị chặn
-
-Nếu ở region bị Binance chặn, app sẽ tự động dùng mock data. Không cần lo lắng!
-
----
-
-## 📝 Seed Data
-
-### Narratives
-| Name | Description |
-|------|-------------|
-| AI | AI ecosystem, data layer, compute |
-| RWA | Real World Assets on-chain |
-
-### Coins
-
-| Symbol | Name | Narrative | Futures |
-|--------|------|-----------|---------|
-| CARV | CARV | AI | ✅ |
-| VANA | Vana | AI | ✅ |
-| GRASS | Grass | AI | ✅ |
-| FET | Fetch.ai | AI | ✅ |
-| RENDER | Render | AI | ✅ |
-| ONDO | Ondo Finance | RWA | ✅ |
-| OM | MANTRA | RWA | ✅ |
-| POLYX | Polymesh | RWA | ❌ |
-
----
-
-## 🎯 Health Score System
-
-### Formula
-
-```
-Health = Trend × 0.35 + Derivative × 0.35 + Volume × 0.20 + Momentum × 0.10
-```
-
-### Components
-
-| Feature | Mô tả | Weight |
-|---------|-------|--------|
-| Trend | EMA20/50/200 crossovers | 35% |
-| Derivative | OI Change + Funding Rate | 35% |
-| Volume | Current vs MA20 | 20% |
-| Momentum | ROC(14) + ATR(14) | 10% |
-
-### Signals
-
-| Score | Signal | Status |
-|-------|--------|--------|
-| ≥ 90 | STRONG_WATCH | 🟢 STRONG |
-| 80-89 | WATCH | 🟢 HEALTHY |
-| 65-79 | OBSERVE | 🟡 NEUTRAL |
-| 50-64 | - | 🟡 CAUTION |
-| < 50 | WEAK | 🔴 WEAK |
-
----
-
-## 📄 License
-
-MIT
-
----
-
-**Built with ❤️ for Crypto Traders**
+See repository license and project documentation for current licensing terms.
