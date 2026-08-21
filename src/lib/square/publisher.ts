@@ -303,10 +303,71 @@ interface PostResult {
   isTimeout: boolean;
 }
 
+const BINANCE_SQUARE_API_URL = "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add";
+
+async function postTextDirect(
+  text: string,
+  title?: string
+): Promise<PostResult> {
+  const apiKey = process.env.BINANCE_SQUARE_OPENAPI_KEY;
+  if (!apiKey) {
+    return { success: false, error: "BINANCE_SQUARE_OPENAPI_KEY not set", isTimeout: false };
+  }
+
+  try {
+    const response = await fetch(BINANCE_SQUARE_API_URL, {
+      method: "POST",
+      headers: {
+        "X-Square-OpenAPI-Key": apiKey,
+        "Content-Type": "application/json",
+        clienttype: "binanceSkill",
+      },
+      body: JSON.stringify({
+        contentType: 1,
+        bodyTextOnly: text,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    const raw = await response.text();
+
+    try {
+      const json = JSON.parse(raw);
+      if (json.code === "000000" && json.success) {
+        return {
+          success: true,
+          id: json.data?.id,
+          link: json.data?.shareLink,
+          isTimeout: false,
+        };
+      }
+      return {
+        success: false,
+        error: raw,
+        errorCode: json.code,
+        isTimeout: false,
+      };
+    } catch {
+      return { success: false, error: raw || "Non-JSON response", isTimeout: false };
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    const isTimeout = msg.includes("timeout") || msg.includes("TIMEOUT");
+    return { success: false, error: msg, isTimeout };
+  }
+}
+
 async function postText(
   text: string,
   title?: string
 ): Promise<PostResult> {
+  // Try direct HTTP first (frozen contract: SQ_API_CONTRACT.md)
+  const directResult = await postTextDirect(text, title);
+  if (directResult.success || directResult.errorCode) {
+    return directResult;
+  }
+
+  // Fallback: shell script approach
   const apiKey = process.env.BINANCE_SQUARE_OPENAPI_KEY;
   if (!apiKey) {
     return { success: false, error: "BINANCE_SQUARE_OPENAPI_KEY not set", isTimeout: false };
@@ -339,7 +400,6 @@ async function postText(
       };
     }
 
-    // Parse error code from response
     const errorCodeMatch = stdout.match(/code["\s:]+(\d{6})/);
     return {
       success: false,
