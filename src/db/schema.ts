@@ -981,6 +981,8 @@ export const squarePublications = pgTable("square_publications", {
   contentVersion: varchar("content_version", { length: 20 }).notNull(),
   templateVersion: varchar("template_version", { length: 20 }).notNull(),
   llmUsed: boolean("llm_used").notNull().default(false),
+  retryCount: integer("retry_count").default(0),
+  failureCategory: varchar("failure_category", { length: 30 }),
   errorCode: varchar("error_code", { length: 20 }),
   errorMessage: text("error_message"),
   contentSnapshot: jsonb("content_snapshot"),
@@ -990,6 +992,7 @@ export const squarePublications = pgTable("square_publications", {
   opportunityIdx: index("square_publications_opportunity_idx").on(table.opportunityId),
   fingerprintIdx: index("square_publications_fingerprint_idx").on(table.fingerprint),
   publishedIdx: index("square_publications_published_idx").on(table.publishedAt),
+  opportunityStatusIdx: index("square_publications_opportunity_status_idx").on(table.opportunityId, table.status),
 }));
 
 export const squareQuotaLog = pgTable("square_quota_log", {
@@ -998,6 +1001,7 @@ export const squareQuotaLog = pgTable("square_quota_log", {
   postsPublished: integer("posts_published").notNull().default(0),
   uploadsUsed: integer("uploads_used").notNull().default(0),
   lastRefreshAt: timestamp("last_refresh_at", { withTimezone: true }),
+  warningAtThreshold: boolean("warning_at_threshold").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
