@@ -1,6 +1,7 @@
-# P6-01B — Canonical Observation Contract
+# P6-01B — Observation Contract
 
 **Date:** 2026-08-21
+**Revision:** 1 (semantic corrections applied)
 **Task Type:** CONTRACT DESIGN DOCUMENT ONLY — NO IMPLEMENTATION
 **Baseline:** P6-01A Data Landscape Recon (accepted)
 **Frozen Boundaries:** P4-P5 Handoff, P6-01A findings
@@ -19,7 +20,7 @@ The contract specifies:
 - temporal contracts (observed_at, collected_at, business_date, timeframe)
 - source provenance
 - unit representation
-- freshness, availability, and data quality semantics
+- freshness and data quality semantics
 - missing/null handling
 - persistence boundaries
 - versioning requirements
@@ -72,7 +73,6 @@ Observation
 │   └── source_ref          (provider-specific reference, e.g. kline openTime)
 │
 └── quality
-    ├── availability        (was the data obtainable)
     ├── quality_status      (data quality classification)
     └── freshness_status    (how fresh is the data)
 ```
@@ -126,7 +126,7 @@ P6 defines three observation layers:
 - Always references its input observations (provenance)
 - Always references its algorithm and version
 - Always references its input window/timeframe
-- Never混淆'd with raw or canonical observations
+- Never conflated with raw or canonical observations
 - Subject to recalculation if inputs or algorithms change
 
 **Examples:** trend_score, derivative_score, volume_score, momentum_score, health_score, breadth, participation, relative_strength, persistence.
@@ -219,6 +219,8 @@ Additional temporal resolutions (e.g., 1H, 15M, 1M) may be added in the future i
 - Documented in this contract
 - Accompanied by collection infrastructure for that resolution
 
+**PLANNER DECISION REQUIRED:** Which future temporal resolutions, if any, should be pre-approved for V1 scope?
+
 ### 5.5 business_date Semantics
 
 `business_date` is the date bucket this observation belongs to for daily aggregation purposes.
@@ -233,29 +235,38 @@ The business timezone is `Asia/Ho_Chi_Minh` (consistent with existing `getBusine
 
 ## 6. Initial Metric Vocabulary
 
-### 6.1 Canonical Metric Definitions
+### 6.1 Canonical Metric Definitions (V1)
 
-| Metric | Semantic Definition | Unit | Source Fields | Notes |
-|---|---|---|---|---|
-| `PRICE` | The closing price of the observation period | USD (quote currency) | kline `close` | Primary price reference |
-| `OPEN` | The opening price of the observation period | USD | kline `open` | |
-| `HIGH` | The highest price during the observation period | USD | kline `high` | |
-| `LOW` | The lowest price during the observation period | USD | kline `low` | |
-| `CLOSE` | The closing price of the observation period | USD | kline `close` | Alias for PRICE when disambiguation needed |
-| `VOLUME` | The base asset volume traded during the observation period | Base asset units | kline `volume` | |
+The following metrics are part of the V1 canonical observation vocabulary:
 
-### 6.2 Future Metric Candidates (Not V1)
+| # | Metric | Semantic Definition | Unit | Source Fields | Notes |
+|---|---|---|---|---|---|
+| 1 | `PRICE` | The closing price of the observation period | USD (quote currency) | kline `close` | Primary price reference |
+| 2 | `OPEN` | The opening price of the observation period | USD | kline `open` | |
+| 3 | `HIGH` | The highest price during the observation period | USD | kline `high` | |
+| 4 | `LOW` | The lowest price during the observation period | USD | kline `low` | |
+| 5 | `CLOSE` | The closing price of the observation period | USD | kline `close` | Alias for PRICE when disambiguation needed |
+| 6 | `VOLUME` | The base asset volume traded during the observation period | Base asset units | kline `volume` | |
+| 7 | `QUOTE_VOLUME` | The quote asset volume (USD volume) traded during the observation period | USD | kline `quoteVolume` | |
+| 8 | `MARKET_CAP` | Fully diluted market capitalization of the asset | USD | CoinGecko `marketCap` | |
+| 9 | `FDV` | Fully diluted valuation of the asset | USD | CoinGecko `fullyDilutedValuation` | |
+| 10 | `OPEN_INTEREST` | Outstanding derivative contracts for the asset | Base asset units | Binance Futures `openInterest` | |
+| 11 | `FUNDING_RATE` | Perpetual futures funding rate | Decimal (rate) | Binance Futures `fundingRate` | 0.0001 = 0.01% |
 
-The following metrics are NOT part of V1 but are anticipated for future expansion:
+### 6.2 Explicitly Excluded from Observation Vocabulary
 
-| Metric | Semantic Definition | Source | Status |
-|---|---|---|---|
-| `OPEN_INTEREST` | Outstanding derivative contracts | Binance Futures | EXISTS in coin_metrics, needs canonical normalization |
-| `FUNDING_RATE` | Perpetual funding rate | Binance Futures | EXISTS in coin_metrics, needs canonical normalization |
-| `MARKET_CAP` | Fully diluted market capitalization | CoinGecko | EXISTS in coin_metrics, needs canonical normalization |
-| `FDV` | Fully diluted valuation | CoinGecko | EXISTS in coin_metrics, needs canonical normalization |
-| `QUOTE_VOLUME` | Quote asset volume (USD volume) | Binance | EXISTS in market_price_daily, not yet canonical |
-| `TRADE_COUNT` | Number of trades | Binance | NOT CURRENTLY COLLECTED |
+The following are NOT observations. They are derived metrics and must never be classified as canonical observations:
+
+- TREND / trend_score
+- MOMENTUM / momentum_score
+- HEALTH / health_score
+- BREADTH
+- PARTICIPATION
+- DERIVATIVE_SCORE
+- VOLUME_SCORE
+- CONFIDENCE
+- DATA_COMPLETENESS
+- Any other computed/derived output
 
 ### 6.3 Metric Naming Convention
 
@@ -359,7 +370,7 @@ P6 extends this by:
 When normalizing from Raw to Canonical:
 - If the source provides data in the canonical unit, no conversion needed
 - If the source provides data in a different unit, convert and record the conversion in provenance
-- If conversion is not possible, mark the observation as `quality_status: UNAVAILABLE` with reason `UNIT_CONVERSION_IMPOSSIBLE`
+- If conversion is not possible, mark the observation as `quality_status: INVALID` with reason `UNIT_CONVERSION_IMPOSSIBLE`
 
 ### 8.3 Score Units (Not Observation Units)
 
@@ -371,25 +382,13 @@ Health scores, feature scores, trend scores, etc. use their own internal scales 
 
 ### 9.1 Freshness Status Classification
 
-| Status | Definition | Classification Rule |
-|---|---|---|
-| `FRESH` | Data is within expected staleness threshold | `collected_at` is within 1× expected cadence of now |
-| `AGING` | Data is approaching staleness | `collected_at` is between 1× and 2× expected cadence |
-| `STALE` | Data is beyond acceptable staleness | `collected_at` is beyond 2× expected cadence |
-| `INSUFFICIENT` | No data available for this entity/metric | No observations exist in the expected window |
-| `DEGRADED` | Data exists but from reduced quality source | Data available from fallback source or with reduced fields |
+| Status | Definition |
+|---|---|
+| `FRESH` | Data is current and within expected operational cadence |
+| `STALE` | Data is older than expected and may not reflect current state |
+| `UNKNOWN` | Freshness cannot be determined (e.g., missing collected_at, no expected cadence defined) |
 
-### 9.2 Expected Cadence
-
-| Metric | Expected Cadence | FRESH Threshold | AGING Threshold | STALE Threshold |
-|---|---|---|---|---|
-| PRICE (DAILY) | 24h | ≤24h | 24-48h | >48h |
-| VOLUME (DAILY) | 24h | ≤24h | 24-48h | >48h |
-| OPEN_INTEREST (SOURCE_SNAPSHOT) | 4h (refresh cycle) | ≤4h | 4-8h | >8h |
-| FUNDING_RATE (SOURCE_SNAPSHOT) | 8h (Binance funding interval) | ≤8h | 8-16h | >16h |
-| MARKET_CAP (SOURCE_SNAPSHOT) | 24h | ≤24h | 24-48h | >48h |
-
-### 9.3 Freshness Independence
+### 9.2 Freshness Independence
 
 Freshness is INDEPENDENT from market health:
 - A coin can be HEALTHY with STALE data (data is old but was healthy when last observed)
@@ -397,56 +396,35 @@ Freshness is INDEPENDENT from market health:
 - Freshness metadata MUST be surfaced alongside health intelligence in the UI
 - Data quality and freshness are never silently hidden
 
-### 9.4 Compatibility with Existing Mechanisms
+### 9.3 Compatibility with Existing Mechanisms
 
 The existing `source_status` table tracks `lastAttempt` and `lastSuccess` per source per coin. P6 freshness extends this by:
-- Computing staleness relative to expected cadence per metric
 - Providing a machine-readable freshness_status per observation
 - Enabling downstream consumers to filter or flag stale data independently
 
+**PLANNER DECISION REQUIRED:** What are the per-metric freshness thresholds that define the boundary between FRESH and STALE? These thresholds are NOT part of this contract; they belong in the freshness implementation specification (P6-01D).
+
+### 9.4 Additional Freshness Open Questions
+
+**PLANNER DECISION REQUIRED:**
+- Should freshness be computed at write time or query time?
+- Should freshness have a versioned threshold configuration?
+- What is the expected cadence per metric for FRESH classification?
+
 ---
 
-## 10. Availability Model
+## 10. Data Quality Model
 
-### 10.1 Availability States
+### 10.1 Quality Status Classification
 
-| State | Definition |
+| Status | Definition |
 |---|---|
-| `AVAILABLE` | Observation exists and passes quality checks |
-| `MISSING` | Observation expected but not present |
-| `NOT_APPLICABLE` | Metric is not applicable for this entity (e.g., no futures OI for a spot-only coin) |
-| `SUPPRESSED` | Observation was suppressed due to deduplication or quota |
+| `VALID` | Observation passes all validation checks |
+| `INVALID` | Observation fails validation (e.g., negative price, impossible values, unit conversion failure) |
+| `MISSING` | Observation was expected but could not be obtained from the source |
+| `UNKNOWN` | Quality cannot be determined (e.g., no validation rules defined for this metric) |
 
-### 10.2 Availability Tracking
-
-Availability is tracked at two levels:
-1. **Source-level:** Does this source have data for this entity? (existing `source_status` mechanism)
-2. **Observation-level:** Does a specific canonical observation exist for this entity/metric/timeframe?
-
-P6 requires observation-level availability for intelligence calculations. Source-level availability is a prerequisite but not sufficient.
-
-### 10.3 Compatibility with Existing dataCompleteness
-
-The existing `features.dataCompleteness` field (0-1 scale) captures source-level availability. P6 extends this with:
-- Per-metric availability (not just per-source)
-- Explicit MISSING vs NOT_APPLICABLE distinction
-- Temporal availability (was data available at this specific time, not just "now")
-
----
-
-## 11. Data Quality Model
-
-### 11.1 Quality Status Classification
-
-| Status | Definition | When to Apply |
-|---|---|---|
-| `VALID` | Observation passes all validation checks | Normal, expected data |
-| `SUSPECT` | Observation passes basic checks but has anomalies | Value outside reasonable bounds, unusual gap pattern |
-| `DEGRADED` | Observation exists but with reduced confidence | Partial fields, fallback source, degraded freshness |
-| `INVALID` | Observation fails validation | Negative price, zero volume where nonzero expected, impossible values |
-| `UNAVAILABLE` | Observation cannot be obtained | Source error, network failure, rate limit |
-
-### 11.2 Quality vs Health Independence
+### 10.2 Quality vs Health Independence
 
 This is a critical boundary:
 
@@ -454,22 +432,21 @@ This is a critical boundary:
 - **Market health** = Is the coin/narrative performing well?
 
 A coin with INVALID data quality and HIGH health score from the last valid data point should be presented as:
-> "Health: HIGH (based on data from 2 days ago — data quality: DEGRADED)"
+> "Health: HIGH (based on data from 2 days ago — data quality: INVALID)"
 
 NOT as:
-> "Health: HIGH" (which silently hides the stale/degraded data)
+> "Health: HIGH" (which silently hides the stale/invalid data)
 
-### 11.3 Quality Metadata
+### 10.3 Quality Metadata
 
 Every canonical observation should carry:
 
 | Field | Type | Description |
 |---|---|---|
-| `quality_status` | enum | VALID, SUSPECT, DEGRADED, INVALID, UNAVAILABLE |
+| `quality_status` | enum | VALID, INVALID, MISSING, UNKNOWN |
 | `quality_reason` | string? | Human-readable explanation if not VALID |
-| `quality_checks` | JSON? | Which validation checks were run and their results |
 
-### 11.4 Compatibility with Existing Mechanisms
+### 10.4 Compatibility with Existing Mechanisms
 
 The existing system provides:
 - `features.confidenceScore` (0-100) — source availability weighted score
@@ -481,11 +458,15 @@ P6 quality extends this by:
 - Providing explicit status classifications instead of numeric scores
 - Separating quality assessment from health calculation
 
+### 10.5 Additional Quality States
+
+Additional quality states beyond VALID, INVALID, MISSING, UNKNOWN may only appear under Open Decisions, not as active contract semantics. See Section 18.
+
 ---
 
-## 12. Missing / Null Semantics
+## 11. Missing / Null Semantics
 
-### 12.1 Explicit Null Policy
+### 11.1 Explicit Null Policy
 
 P6 adopts an **explicit null** policy for observations:
 
@@ -493,38 +474,37 @@ P6 adopts an **explicit null** policy for observations:
 - A missing observation is NOT the same as a null-valued observation
 - Missing data must be represented as absence, not as a placeholder value
 
-### 12.2 Missing Data Representation
+### 11.2 Missing Data Representation
 
 | Scenario | Representation |
 |---|---|
-| Source returned no data | `availability: MISSING` — no observation record created |
-| Source returned partial data | `quality_status: DEGRADED` — observation exists with explicit missing fields marked |
+| Source returned no data | `quality_status: MISSING` — observation record may exist with MISSING status |
+| Source returned partial data | `quality_status: INVALID` with reason — observation exists but flagged |
 | Source returned invalid data | `quality_status: INVALID` — observation exists but flagged |
-| Source is unavailable | `availability: NOT_APPLICABLE` or `availability: MISSING` depending on whether metric applies |
-| Metric not applicable for entity | `availability: NOT_APPLICABLE` |
+| Source is unavailable | `quality_status: MISSING` depending on whether metric applies |
+| Metric not applicable for entity | No observation record created; downstream uses `MISSING` or excludes |
 
-### 12.3 Downstream Consumer Rules
+### 11.3 Downstream Consumer Rules
 
 When consuming observations, downstream systems (feature engine, health scoring) must:
 
-1. Check `availability` before reading `value`
-2. Check `quality_status` before trusting `value`
-3. Check `freshness_status` before using `value` as current state
-4. NEVER substitute a default value for missing data without explicit configuration
-5. NEVER silently carry forward a stale value as if it were current
+1. Check `quality_status` before reading `value`
+2. Check `freshness_status` before using `value` as current state
+3. NEVER substitute a default value for missing data without explicit configuration
+4. NEVER silently carry forward a stale value as if it were current
 
-### 12.4 Graceful Degradation
+### 11.4 Graceful Degradation
 
 The feature engine currently returns 50 (neutral) when <20 price rows are available. P6 preserves this behavior but requires:
-- The "insufficient data" condition is recorded as `quality_status: DEGRADED` on the derived metric
+- The "insufficient data" condition is recorded as `quality_status: MISSING` on the derived metric
 - The downstream UI can distinguish "calculated from insufficient data" from "calculated from full data"
 - The confidence score reflects data sufficiency
 
 ---
 
-## 13. Persistence Boundary
+## 12. Persistence Boundary
 
-### 13.1 What Gets Persisted
+### 12.1 What Gets Persisted
 
 | Layer | Persisted? | Table | Notes |
 |---|---|---|---|
@@ -535,25 +515,25 @@ The feature engine currently returns 50 (neutral) when <20 price rows are availa
 | Quality metadata | YES | Within observation record | Inline with canonical observation |
 | Freshness metadata | YES | Within observation record | Computed at write time, updated on refresh |
 
-### 13.2 Persistence Principles
+### 12.2 Persistence Principles
 
 1. **Canonical observations are the durable source of truth.** Derived metrics can be recalculated from canonical observations.
 2. **Raw observations are optional but recommended.** They support reproducibility but are not required for day-to-day operation.
 3. **Quality and freshness are inline, not separate tables.** They are properties of the observation, not independent records.
 4. **Observations are append-only in semantic effect.** Re-ingestion of the same data updates the existing record (upsert on identity tuple), not appends a new record.
 
-### 13.3 Storage Alignment with Existing Schema
+### 12.3 Storage Alignment with Existing Schema
 
 | Existing Table | P6 Relationship | Action |
 |---|---|---|
-| `market_price_daily` | Partial overlap with canonical PRICE/OPEN/HIGH/LOW/CLOSE/VOLUME | P6 may extend or replace with canonical observations table |
-| `coin_metrics` | Partial overlap with OPEN_INTEREST, FUNDING_RATE, MARKET_CAP | P6 may extend or replace with canonical observations table |
+| `market_price_daily` | Partial overlap with canonical PRICE/OPEN/HIGH/LOW/CLOSE/VOLUME/QUOTE_VOLUME | P6 may extend or replace with canonical observations table |
+| `coin_metrics` | Partial overlap with OPEN_INTEREST, FUNDING_RATE, MARKET_CAP, FDV | P6 may extend or replace with canonical observations table |
 | `features` | Derived metrics — fully reusable | No change to schema; P6 adds new derived metrics |
 | `health_scores` | Derived intelligence — fully reusable | No change; P6 extends with new dimensions |
 | `source_status` | Source availability — reusable as input | P6 freshness extends this concept |
 | `indicators` | Derived indicators — reusable | P6 may reference for provenance |
 
-### 13.4 Migration Boundary
+### 12.4 Migration Boundary
 
 P6-01E will define the exact persistence implementation. This contract does NOT specify:
 - Exact table schema
@@ -565,9 +545,9 @@ Those are implementation details for the persistence task.
 
 ---
 
-## 14. Versioning Contract
+## 13. Versioning Contract
 
-### 14.1 Versioned Artifacts
+### 13.1 Versioned Artifacts
 
 | Artifact | Version Field | Semantics |
 |---|---|---|
@@ -575,16 +555,15 @@ Those are implementation details for the persistence task.
 | Canonical normalization rules | `normalizationVersion` | Version of the Raw→Canonical mapping |
 | Derived metric algorithm | `algorithmVersion` | Version of the calculation algorithm |
 | Threshold configuration | `thresholdVersion` | Version of the threshold/parameter set |
-| Quality classification rules | `qualityVersion` | Version of the quality assessment rules |
 
-### 14.2 Version Immutability
+### 13.2 Version Immutability
 
 - Changing a version number is a semantic change, not a patch
-- Historical observations retain their original version标记
+- Historical observations retain their original version marker
 - Re-processing historical data with a new version does NOT silently overwrite the old version's results
 - Version changes are documented in migration notes
 
-### 14.3 Compatibility with Existing Versioning
+### 13.3 Compatibility with Existing Versioning
 
 The existing system has:
 - `featureVersions` table — tracks feature calculation versions
@@ -593,13 +572,12 @@ The existing system has:
 P6 extends this with:
 - `dataSchemaVersion` for observation records
 - `normalizationVersion` for Raw→Canonical mapping
-- `qualityVersion` for quality assessment rules
 
 ---
 
-## 15. P3/P4/P5 Compatibility
+## 14. P3/P4/P5 Compatibility
 
-### 15.1 What P6 Reuses Without Change
+### 14.1 What P6 Reuses Without Change
 
 | Existing Asset | P6 Usage | Compatibility |
 |---|---|---|
@@ -614,7 +592,7 @@ P6 extends this with:
 | CoinGecko collector | Market cap collection | No change; P6 adds normalization layer |
 | Feature engine | Derived metric calculation | Extended with new metrics, not replaced |
 
-### 15.2 What P6 Must NOT Modify
+### 14.2 What P6 Must NOT Modify
 
 Per the P4-P5 Handoff frozen boundaries:
 - P4 decision support semantics
@@ -628,7 +606,7 @@ Per the P4-P5 Handoff frozen boundaries:
 - decisionId derivation
 - Square pipeline (opportunity → content → publish)
 
-### 15.3 P6 Extension Points
+### 14.3 P6 Extension Points
 
 P6 may:
 - Add new observation tables alongside existing market data tables
@@ -647,9 +625,9 @@ P6 must NOT:
 
 ---
 
-## 16. Mapping: Current Data → Canonical Contract
+## 15. Mapping: Current Data → Canonical Contract
 
-### 16.1 market_price_daily → Canonical Observations
+### 15.1 market_price_daily → Canonical Observations
 
 | Current Field | Canonical Field | Mapping |
 |---|---|---|
@@ -665,7 +643,7 @@ P6 must NOT:
 | (openTime from API) | `observed_at` | Must be extracted and stored |
 | (collection time) | `collected_at` | Must be added |
 
-### 16.2 coin_metrics → Canonical Observations
+### 15.2 coin_metrics → Canonical Observations
 
 | Current Field | Canonical Field | Mapping |
 |---|---|---|
@@ -682,7 +660,7 @@ P6 must NOT:
 | (missing) | `quality_status` | MUST be added |
 | (missing) | `freshness_status` | MUST be added |
 
-### 16.3 Gap Summary
+### 15.3 Gap Summary
 
 | Gap | Impact | Resolution |
 |---|---|---|
@@ -695,91 +673,110 @@ P6 must NOT:
 
 ---
 
-## 17. Semantic Invariants
+## 16. Semantic Invariants
 
-These invariants must hold for all P6 observation operations:
+These 15 invariants must hold for all P6 observation operations:
 
-### INV-OBS-01: Identity Determinism
-Same (entity_id, metric, source, observed_at, timeframe) → same observation_id. Always.
+### O-01: Identity Determinism
+Same `(entity_id, metric, source, observed_at, timeframe)` → same `observation_id`. Always. No exceptions.
 
-### INV-OBS-02: observed_at Integrity
-`observed_at` represents source time, not ingestion time. Never silently substituted.
+### O-02: observed_at Integrity
+`observed_at` represents source time, not ingestion time. Never silently substituted with `collected_at`.
 
-### INV-OBS-03: Explicit Null
-A missing observation is absence, not zero, not null, not a default value.
+### O-03: collected_at Independence
+`collected_at` is never used as an observation identity component. Two collections of the same source data produce the same observation.
 
-### INV-OBS-04: Quality Independence
-Data quality is independent from market health. Never hidden or conflated.
+### O-04: Explicit Null
+A missing observation is absence, not zero, not null, not a default value, not a carry-forward.
 
-### INV-OBS-05: Freshness Independence
-Data freshness is independent from data quality and market health. Always surfaced.
+### O-05: Quality Independence
+Data quality (`quality_status`) is independent from market health. Never hidden, conflated, or used to suppress health intelligence.
 
-### INV-OBS-06: Provenance Traceability
-Every canonical observation is traceable to its raw source. Every derived metric is traceable to its input observations.
+### O-06: Freshness Independence
+Data freshness (`freshness_status`) is independent from data quality and market health. Always surfaced alongside intelligence.
 
-### INV-OBS-07: No Silent Substitution
-Missing or stale data is never silently replaced with current data, default values, or last-known values without explicit configuration.
+### O-07: Provenance Traceability
+Every canonical observation is traceable to its raw source. Every derived metric is traceable to its input observations. The chain is unbroken.
 
-### INV-OBS-08: Version Immutability
-Historical observations retain their version标记. Re-processing with a new version does not overwrite old results.
+### O-08: No Silent Substitution
+Missing, stale, or invalid data is never silently replaced with current data, default values, or last-known values without explicit configuration.
 
-### INV-OBS-09: P4/P5 Boundary Preservation
-P6 observation semantics do not alter, reinterpret, or replace P4/P5 frozen contracts.
+### O-09: Deterministic Normalization
+Same raw input + same normalization version → same canonical output. Always. No side effects, no randomness, no wall-clock dependency.
 
-### INV-OBS-10: Deterministic Normalization
-Same raw input + same normalization version → same canonical output. Always.
+### O-10: Version Immutability
+Historical observations retain their original version marker. Re-processing with a new version does not overwrite old results.
+
+### O-11: Metric Vocabulary Fidelity
+Only metrics defined in Section 6.1 are canonical observations. Derived metrics (trend, momentum, health, breadth, participation, etc.) are NEVER observations, regardless of storage format.
+
+### O-12: P4/P5 Boundary Preservation
+P6 observation semantics do not alter, reinterpret, or replace P4/P5 frozen contracts. P4/P5 meanings are invariant.
+
+### O-13: Graceful Degradation
+Insufficient or degraded evidence never silently becomes normal/healthy intelligence. Quality and freshness degradation must be explicit.
+
+### O-14: Temporal Substitution Prohibition
+`observed_at`, `collected_at`, and `business_date` are never silently substituted for each other. Each has a distinct semantic role.
+
+### O-15: Unit Consistency
+All observations of the same metric use the same canonical unit. Unit conversion failures result in `quality_status: INVALID`, not silent unit mismatch.
 
 ---
 
-## 18. Open Items / Decisions Required
+## 17. Open Items / Decisions Required
 
-| # | Question | Decision Needed From | Impact |
+| # | Question | Status | Impact |
 |---|---|---|---|
-| 1 | Should raw observations be stored in a separate table or as JSON within canonical records? | Planner/Owner | Affects storage design and reproducibility |
-| 2 | Should existing `market_price_daily` be extended or replaced with a new canonical observations table? | Planner/Owner | Affects migration strategy and backward compatibility |
-| 3 | Should existing `coin_metrics` be extended or replaced? | Planner/Owner | Same as above |
-| 4 | What is the initial `dataSchemaVersion` number? | Planner | Versioning convention |
-| 5 | Should `QUOTE_VOLUME` be a first-class V1 metric or deferred? | Planner | Affects initial metric vocabulary scope |
-| 6 | Should the normalization boundary produce one observation per OHLCV field (5 records) or one observation per kline (1 record with 5 fields)? | Planner/Owner | Affects observation granularity and query patterns |
+| 1 | Should raw observations be stored in a separate table or as JSON within canonical records? | **PLANNER DECISION REQUIRED** | Affects storage design and reproducibility |
+| 2 | Should existing `market_price_daily` be extended or replaced with a new canonical observations table? | **PLANNER DECISION REQUIRED** | Affects migration strategy and backward compatibility |
+| 3 | Should existing `coin_metrics` be extended or replaced? | **PLANNER DECISION REQUIRED** | Same as above |
+| 4 | What is the initial `dataSchemaVersion` number? | **PLANNER DECISION REQUIRED** | Versioning convention |
+| 5 | Should the normalization boundary produce one observation per OHLCV field (5 records) or one observation per kline (1 record with 5 fields)? | **PLANNER DECISION REQUIRED** | Affects observation granularity and query patterns |
+| 6 | What are the per-metric freshness thresholds (FRESH vs STALE boundary)? | **PLANNER DECISION REQUIRED** | Determines when data is classified as stale |
+| 7 | What is the data retention policy for canonical observations? | **PLANNER DECISION REQUIRED** | Affects storage growth and historical query capability |
+| 8 | How should historical membership (coin_narratives effective dates) be handled? | **PLANNER DECISION REQUIRED** | Affects breadth/participation temporal accuracy |
+| 9 | What source fallback strategy should be used when primary source is unavailable? | **PLANNER DECISION REQUIRED** | Affects quality_status and freshness semantics |
+| 10 | Which future temporal resolutions (1H, 15M, etc.) should be pre-approved? | **PLANNER DECISION REQUIRED** | Affects V1 scope and future collection infrastructure |
+| 11 | Should raw API payloads be retained for reproducibility? If so, for how long? | **PLANNER DECISION REQUIRED** | Affects storage design and audit capability |
 
 ---
 
-## 19. Acceptance Criteria
+## 18. Acceptance Criteria
 
 This contract document is complete when:
 
 - [x] Core semantic model defined (Raw/Canonical/Derived)
 - [x] Observation identity contract defined
 - [x] Temporal contract defined (observed_at, collected_at, business_date, timeframe)
-- [x] Initial metric vocabulary defined (PRICE, OPEN, HIGH, LOW, CLOSE, VOLUME)
+- [x] Initial metric vocabulary defined (all 11 V1 metrics)
 - [x] Source provenance contract defined
 - [x] Unit semantics defined
-- [x] Freshness model defined
-- [x] Availability model defined
-- [x] Data quality model defined
+- [x] Freshness model defined (FRESH/STALE/UNKNOWN)
+- [x] Data quality model defined (VALID/INVALID/MISSING/UNKNOWN)
 - [x] Missing/null semantics defined
 - [x] Persistence boundary defined
 - [x] Versioning contract defined
 - [x] P3/P4/P5 compatibility verified
-- [x] Semantic invariants stated
-- [x] Open items documented
+- [x] 15 semantic invariants stated (O-01 through O-15)
+- [x] Open items documented with PLANNER DECISION REQUIRED
 - [x] No production code modified
 - [x] No P4/P5 contracts modified
 
 ---
 
-## 20. Next Steps
+## 19. Next Steps
 
 After this contract is accepted:
 
 1. **P6-01C** — Source Registry: Define source identity, reliability metadata, supported metrics, expected cadence
-2. **P6-01D** — Freshness + Data Quality Contract: Implement the freshness classification rules and quality assessment logic
+2. **P6-01D** — Freshness + Data Quality Contract: Implement the freshness classification rules and quality assessment logic (including threshold decisions from Section 17)
 3. **P6-01E** — Observation Persistence: Implement the canonical observation tables and Raw→Canonical normalization
 4. **P6-01F** — Normalization Boundary: Implement the normalization functions that transform raw API responses into canonical observations
 
 ---
 
-**P6-01B CANONICAL OBSERVATION CONTRACT — COMPLETE**
+**P6-01B OBSERVATION CONTRACT — REVISION 1 COMPLETE**
 **NO PRODUCTION CODE CHANGES**
 **NO SCHEMA CHANGES**
 **NO API CHANGES**
