@@ -21,6 +21,7 @@ __pycache__/
 
 # More
 zip/
-*next-env*-e 
+*next-env*
+
 # TypeScript build info
 tsconfig.tsbuildinfo
