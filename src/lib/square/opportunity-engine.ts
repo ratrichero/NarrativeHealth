@@ -114,7 +114,7 @@ export const DEFAULT_SCORING_CONFIG: OpportunityScoringConfig = {
   narrativeCooldownHours: 48,
   dailySoftCap: 10,
   dailyHardCap: 100,
-  maxLeadingCoins: 3,
+  maxLeadingCoins: 1,
 };
 
 // ─── Data Collection ───────────────────────────────────
