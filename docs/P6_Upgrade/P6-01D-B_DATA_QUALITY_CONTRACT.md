@@ -118,7 +118,7 @@ AGING, INSUFFICIENT, DEGRADED, SUSPECT, UNAVAILABLE, WARNING, PARTIAL
 An observation is `VALID` when all applicable validation checks defined for its metric pass on the recorded value. VALID means "semantically usable as recorded" — it is NOT a guarantee of truth about the real world; it asserts conformance to the contract's validity rules.
 
 **INVALID**
-An observation is `INVALID` when at least one applicable validation check fails **with recorded evidence**. INVALID requires positive evidence of rule violation. Absence of evidence can never produce INVALID (see Section 8).
+An observation may be classified `INVALID` only on the basis of positive recorded evidence of rule violation — i.e., at least one executed check produced a `FAIL` outcome, AND the applicable Planner-approved mapping assigns INVALID to that evidence pattern. INVALID requires positive evidence of rule violation. Absence of evidence can never produce INVALID (see Section 8). Where the evidence-to-state mapping is explicitly deferred (see Sections 9 and 11), a FAIL alone does not freeze the final state.
 
 **MISSING**
 A field is `MISSING` when the system knows the field was expected but no value exists for it — e.g., the collector returned nothing for the field, or the source payload omitted it. MISSING is a statement about **value absence**, not value badness.
@@ -190,11 +190,19 @@ Outcome semantics:
 | Outcome | Meaning |
 |---|---|
 | `PASS` | Check ran; value conforms. |
-| `FAIL` | Check ran; value violates the rule → contributes toward INVALID. |
+| `FAIL` | Check ran; the check has evidence of a rule violation against the value. |
 | `NOT_APPLICABLE` | Rule does not apply to this metric/context (e.g., funding-rate range check on OPEN). |
-| `NOT_EVALUABLE` | Check could not run (missing prerequisite, unparsable input) → contributes toward UNKNOWN, never INVALID. |
+| `NOT_EVALUABLE` | Check could not run because the assessment capability or prerequisite evidence was unavailable. |
 
-**Frozen rule:** A FAIL outcome requires the check to have actually executed against a present value. If a value is absent, the correct outcome is a MISSING classification, not a FAIL.
+**Frozen rule (evidence-only outcomes):** Check outcomes are EVIDENCE ONLY. A `FAIL` means "the executed check has evidence of a rule violation" — it MUST NOT, by itself, freeze the final quality state. The mapping from evidence to final classification (`VALID` / `INVALID` / `MISSING` / `UNKNOWN`) is a separate step:
+
+```text
+check execution  →  evidence (outcome)  →  classification (final quality state)
+```
+
+For most straightforward violations this mapping is trivial (FAIL → INVALID); however, where this contract explicitly defers the mapping (e.g., NUMERIC_PARSE failures — see Section 11; entity failures — see Section 14; OHLC violation scope — see Section 12), the final classification remains subject to the corresponding Planner decision. No conforming implementation may hard-code a deferred mapping into evaluation logic.
+
+**Frozen rule (FAIL requires presence):** A FAIL outcome requires the check to have actually executed against a present value. If a value is absent, the correct outcome is a MISSING classification, not a FAIL.
 
 ---
 
@@ -235,15 +243,26 @@ FROZEN distinction:
 | Situation | Classification |
 |---|---|
 | Field expected; collector did not obtain a value (source omitted field, API error for that field, coin has no mapping for that source) | `MISSING` |
-| Value exists but validity cannot be assessed (validator crashed, input format unparseable, prerequisite evidence absent) | `UNKNOWN` |
-| Value exists and violates an executed rule | `INVALID` |
-| Value exists and passes all executed rules | `VALID` |
+| Assessment itself cannot run or its result cannot be determined (validator crashed, prerequisite evidence unavailable, classification capability unavailable) | `UNKNOWN` |
+| Value exists and the applicable Planner-approved mapping assigns INVALID from recorded FAIL evidence | `INVALID` |
+| Value exists and all applicable mappings assign VALID from recorded PASS evidence | `VALID` |
+
+**Malformed / unparseable values (explicit):**
+
+A present but malformed/unparseable value (e.g., a numeric field containing a non-numeric string, or a value that parses to NaN/Infinity) is handled as follows:
+
+1. The value IS present evidence — it is not absence, so it is not automatically MISSING.
+2. The `NUMERIC_PARSE` check EXECUTES against it.
+3. The check outcome is `FAIL` (evidence of a parse-rule violation).
+4. The FINAL quality classification for such evidence (INVALID vs MISSING vs another state) remains **deferred to Planner decision PD-02**.
+
+Do NOT automatically classify malformed values as `UNKNOWN`. `UNKNOWN` is reserved exclusively for situations where quality assessment cannot be determined because the required assessment evidence or capability is unavailable — e.g., the validator crashed, an input structure is so broken that even presence/absence of the field cannot be established, or a prerequisite reference is missing. Malformed-but-present values have assessable evidence (the parse ran and failed); they therefore produce FAIL evidence, not UNKNOWN by default.
 
 Boundary clarifications:
 
 1. MISSING is always **field-level first**. An observation-level MISSING applies only when every field of the observation is missing.
 2. A missing field is NEVER classified INVALID. "No value" cannot violate a value rule.
-3. UNKNOWN never results merely from a missing value. If the only problem is absence → MISSING. UNKNOWN requires an assessment capability failure.
+3. UNKNOWN never results merely from a missing value. If the only problem is absence → MISSING. UNKNOWN requires an assessment capability/evidence failure (see the malformed-value clarification above for the contrast).
 4. Source-level API failure (HTTP error, timeout, empty response) makes affected fields **MISSING**, not INVALID. See Section 10.
 
 ---
@@ -271,7 +290,7 @@ FROZEN (boundary only — concrete ranges are Planner decisions):
 3. Frozen facts from recon (P6-01D-A) that constrain design:
    - `FUNDING_RATE` is legitimately negative in normal operation → a blanket non-negative rule would be WRONG. Sign rules are per-metric.
    - Zero is legitimate for some metrics (VOLUME, QUOTE_VOLUME, OPEN_INTEREST, FUNDING_RATE neutral) and anomalous for others (OPEN/HIGH/LOW/CLOSE, MARKET_CAP, FDV). Per-metric zero policy = Planner decision (SD-05).
-4. A value failing `NUMERIC_PARSE` (NaN/Infinity/malformed string): whether this maps to INVALID or MISSING is a **Planner decision** (SD-06). The contract requires only that the situation be captured as evidence with outcome `FAIL` (parse attempted on a present-but-unusable value) and final state assigned per the Planner's later rule.
+4. A value failing `NUMERIC_PARSE` (NaN/Infinity/malformed string) is a PRESENT value with executed-check evidence: the check runs, the outcome is `FAIL`, and the final classification (INVALID vs MISSING) is a **Planner decision** (PD-02). The contract requires only that the situation be captured as evidence with outcome `FAIL` (parse attempted on a present-but-unusable value) and final state assigned per the Planner's later rule — never hard-coded into evaluation logic.
 
 **Not decided here:** acceptable negative bounds, zero policies per metric, absolute range limits, decimal precision tolerances.
 
@@ -281,13 +300,45 @@ FROZEN (boundary only — concrete ranges are Planner decisions):
 
 FROZEN (boundary only):
 
-1. OHLC relational checks apply to the tuple `(OPEN, HIGH, LOW, CLOSE)` within a single observation window:
-   - `HIGH ≥ LOW`
-   - `LOW ≤ OPEN ≤ HIGH`
-   - `LOW ≤ CLOSE ≤ HIGH`
-2. These checks are recognized as first-class check IDs in the evidence model (e.g., `OHLC_HIGH_GE_LOW`, `OHLC_OPEN_IN_RANGE`, `OHLC_CLOSE_IN_RANGE`).
-3. Whether a relational violation marks the violating pair of fields, all four OHLC fields, or the entire observation as INVALID is a **Planner decision** (SD-03). The contract supports all three scopes via the `scope` attribute in Section 6.
-4. Relational checks run only when ALL referenced fields are present. If any referenced field is MISSING, the relational check outcome is `NOT_EVALUABLE` — never FAIL.
+### 12.1 Cross-Observation Group Context
+
+Per P6-01B, `OPEN`, `HIGH`, `LOW`, and `CLOSE` are FOUR SEPARATE canonical observations, each with its own identity:
+
+```text
+(entity_id, OPEN,    source, observed_at, timeframe)
+(entity_id, HIGH,    source, observed_at, timeframe)
+(entity_id, LOW,     source, observed_at, timeframe)
+(entity_id, CLOSE,   source, observed_at, timeframe)
+```
+
+OHLC relational checks are therefore NOT single-observation checks. They operate on a **conceptual validation group**: a set of sibling observations sharing common identity attributes:
+
+```text
+OHLCValidationGroup :=
+    group_key   = (entity_id, source, observed_at, timeframe)
+    members     = {OPEN, HIGH, LOW, CLOSE}      # each member is a full P6-01B observation
+```
+
+Boundary guarantees:
+
+1. This group is a VALIDATION CONTEXT only. It does NOT create a new observation identity, does NOT replace P6-01B identity, and does NOT merge the four observations into one.
+2. Each OHLC member keeps its own individual quality classification; relational checks ADDITIONALLY produce group-level evidence records referencing the member observations involved.
+3. Group membership requires exact match on `(entity_id, source, observed_at, timeframe)`. Observations differing in any key attribute belong to different groups and MUST NOT be relationally compared.
+
+### 12.2 Relational Checks
+
+Within a group, the recognized relational checks are:
+
+- `HIGH ≥ LOW`
+- `LOW ≤ OPEN ≤ HIGH`
+- `LOW ≤ CLOSE ≤ HIGH`
+
+These checks are first-class check IDs in the evidence model (e.g., `OHLC_HIGH_GE_LOW`, `OHLC_OPEN_IN_RANGE`, `OHLC_CLOSE_IN_RANGE`); their evidence records cite both the group key and the member fields evaluated.
+
+### 12.3 Scope and Presence Rules
+
+1. Whether a relational violation marks the violating pair of fields, all four OHLC members, or the whole group as INVALID is a **Planner decision** (PD-03). The contract supports all three scopes; the choice must not be hard-coded.
+2. A relational check runs only when ALL referenced group members are present. If any referenced member is MISSING, the check outcome is `NOT_EVALUABLE` — never FAIL. (A missing member never causes sibling members to fail.)
 
 **Not decided here:** violation severity, cross-source OHLC consistency (Spot vs Futures disagreement = SD-11), historical repair.
 
@@ -427,8 +478,8 @@ FROZEN:
 Requirements for any implementation of this contract:
 
 1. Every non-VALID classification carries machine-readable evidence (check_id, field, outcome, optional detail).
-2. Evidence MUST distinguish "rule failed on present value" (`FAIL`) from "could not assess" (`NOT_EVALUABLE`) — collapsing these two is a contract violation.
-3. Error objects from the classification process (exceptions, crashes) map to `UNKNOWN` outcomes with evidence — never silently to VALID, and never by altering the observation.
+2. Evidence MUST distinguish "check ran, violation evidenced" (`FAIL`) from "assessment capability/evidence unavailable" (`NOT_EVALUABLE`) — collapsing these two is a contract violation.
+3. Error objects from the classification process itself (exceptions, crashes) map to `UNKNOWN` outcomes with evidence — never silently to VALID, and never by altering the observation. Present-but-unusable VALUES (malformed numerics) are NOT process errors: they yield FAIL evidence with classification deferred per Section 11.
 4. Evidence detail payloads MUST NOT embed suggested corrections.
 
 ---
@@ -463,11 +514,13 @@ Each invariant is testable and implementation-independent where possible.
 
 ### Evidence Requirement
 
-**DQ-05** — Every `INVALID` classification is backed by at least one evidence record with outcome `FAIL` from a check that actually executed.
+**DQ-05** — Every `INVALID` classification is backed by at least one evidence record with outcome `FAIL` from a check that actually executed. (FAIL evidence is a NECESSARY condition for INVALID, never by itself sufficient where a Planner-deferred mapping applies.)
 
 **DQ-06** — Absence of evidence can never produce `INVALID`. With zero executed checks, the only permissible statuses are `MISSING` (value absent) or `UNKNOWN` (value present, unevaluable).
 
-**DQ-07** — Every evidence record distinguishes `FAIL` (rule ran, violated) from `NOT_EVALUABLE` (rule could not run). No conforming implementation merges them.
+**DQ-07** — Every evidence record distinguishes `FAIL` (rule ran, violation evidenced) from `NOT_EVALUABLE` (assessment capability/evidence unavailable). No conforming implementation merges them.
+
+**DQ-07a** — Check outcomes are evidence only: no outcome value (`PASS`, `FAIL`, `NOT_APPLICABLE`, `NOT_EVALUABLE`) may, by itself, determine the final quality state where this contract defers the evidence-to-state mapping to a Planner decision (PD-02, PD-03, PD-09). Deferred mappings MUST be external configuration, not evaluation logic.
 
 ### Missing Semantics
 
@@ -477,9 +530,11 @@ Each invariant is testable and implementation-independent where possible.
 
 ### Unknown Semantics
 
-**DQ-10** — `UNKNOWN` is reserved for cases where validity cannot be determined; a mere missing value never produces `UNKNOWN` at field level.
+**DQ-10** — `UNKNOWN` is reserved for cases where validity cannot be determined because the assessment evidence or capability is unavailable; a mere missing value never produces `UNKNOWN` at field level, and a present-but-malformed value produces FAIL evidence (with classification deferred), not automatic UNKNOWN.
 
-**DQ-11** — Failures of the classification process itself (exception, crash, unreadable input format) produce `UNKNOWN` with evidence, never `VALID` and never a modified observation.
+**DQ-11** — Failures of the classification process itself (exception, crash, structural input collapse preventing even presence determination) produce `UNKNOWN` with evidence, never `VALID` and never a modified observation. Present-but-malformed VALUES do not fall under DQ-11; they follow the NUMERIC_PARSE path (Section 11).
+
+**DQ-11a** — OHLC relational validation operates on validation groups keyed by `(entity_id, source, observed_at, timeframe)` over the member set {OPEN, HIGH, LOW, CLOSE}; it MUST NOT alter, merge, or extend P6-01B observation identity, and each member retains its own independent quality classification.
 
 ### No Correction
 
@@ -522,7 +577,7 @@ All items below are explicitly UNRESOLVED. None may be resolved during implement
 | ID | Question | Why it matters | Candidate options | Planner decision required |
 |---|---|---|---|---|
 | PD-01 | What constitutes INVALID per metric? (negative price, zero price, NaN-after-parse, etc.) | Defines core INVALID rules | Strict reject / lenient flag / per-metric matrix | YES |
-| PD-02 | Where is the MISSING vs UNKNOWN boundary for unparseable values? | Determines NaN/malformed-string classification | INVALID / MISSING / UNKNOWN | YES |
+| PD-02 | Final classification of present-but-malformed/unparseable values (NUMERIC_PARSE FAIL evidence) | Determines NaN/malformed-string final state. Evidence path is frozen (present value → FAIL); only the final mapping is open | INVALID / MISSING (automatic UNKNOWN is excluded by contract) | YES |
 | PD-03 | OHLC violation scope: field-pair, all-OHLC, or whole observation? | Determines blast radius of relational violations | Pair / OHLC set / observation | YES |
 | PD-04 | Negative-value policy for VOLUME, QUOTE_VOLUME, MARKET_CAP, FDV, OPEN_INTEREST | Sign rules per metric | INVALID / UNKNOWN / per-metric | YES |
 | PD-05 | Zero-value policy per metric (legitimate for VOLUME/OI/FR=neutral; anomalous for prices/MC/FDV?) | Avoids false INVALID on legitimate zeros | Per-metric allow/deny matrix | YES |
