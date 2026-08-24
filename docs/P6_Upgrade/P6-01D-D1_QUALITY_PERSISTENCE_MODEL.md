@@ -100,7 +100,7 @@ QualityRecord
 │   ├── entity_id             # integer, references coins.id
 │   ├── metric                # varchar, canonical metric name (P6-01B vocabulary)
 │   ├── source                # varchar, canonical source_id (P6-01C)
-│   ├── observed_at           # timestamptz or UNKNOWN sentinel
+│   ├── observed_at           # timestamptz | NULL (NULL = UNKNOWN, see §9)
 │   └── timeframe             # varchar, DAILY / 4H / SOURCE_SNAPSHOT
 │
 ├── classification
@@ -196,17 +196,52 @@ Three distinct timestamps, never confused:
 | `collected_at` | Source ingestion/collection time (when the system fetched the data) | Approximate: `market_price_daily.created_at` / `coin_metrics.created_at`; side table stores explicit value | Informational provenance; never substitutes observed_at |
 | `quality_evaluated_at` | Time the Data Quality evaluation occurred (system time at classification) | Side table `quality_evaluated_at` column | Provenance of the classification; never substitutes observed_at |
 
-**UNKNOWN observed_at handling:**
+**observed_at representation — two states:**
 
-When the source does not provide an observation timestamp, `observed_at` is stored as the sentinel value `'1970-01-01T00:00:00Z'` (PostgreSQL `timestamptz` epoch) in the side table, with a companion boolean flag `observed_at_unknown = true`.
+| State | Storage | Meaning |
+|---|---|---|
+| KNOWN | `observed_at = <timestamptz>` (real timestamp) | Source provided an observation timestamp |
+| UNKNOWN | `observed_at = NULL` | Source did not provide an observation timestamp |
 
-This sentinel:
-- IS the canonical representation of "observation time unknown."
-- DOES NOT substitute business_date, collected_at, or any other timestamp.
-- MAKES the OHLC group key unresolvable for relational checks (PD-03-RES: NOT_EVALUABLE).
-- Is queryable and indexable without type-unsafe NULL comparisons.
+**Design decision: NULL for UNKNOWN (no sentinel).**
 
-Alternative considered and rejected: storing NULL for unknown observed_at — rejected because PostgreSQL NULL has ambiguous semantics (absence vs. not-applicable), and the contract explicitly distinguishes UNKNOWN (assessment unavailable) from absence. A sentinel + flag is unambiguous.
+PostgreSQL NULL is used as the canonical representation of "observation time unknown." This replaces the originally proposed sentinel (`'1970-01-01T00:00:00Z'`), which was rejected on the grounds that a fake timestamp in an identity column creates ambiguity: downstream consumers cannot distinguish "the observation genuinely occurred at 1970-01-01" from "the system doesn't know when it occurred."
+
+NULL correctly represents the P6-01B semantics: `observed_at = UNKNOWN` means the source did not provide an observation timestamp. This is not "absence of a value" in the quality sense (DQ-08 MISSING); it is a specific identity component that is indeterminate.
+
+**Why NULL does NOT create the PostgreSQL-unique-constraint problem:**
+
+PostgreSQL does not consider two NULLs equal in a UNIQUE constraint — two rows with NULL `observed_at` and identical other columns would NOT conflict. This breaks the latest-only upsert guarantee (PD-17-RES) if a single `UNIQUE (entity_id, metric, source, observed_at, timeframe)` constraint were used.
+
+**Solution: partial unique indexes** (see §13). Two separate partial unique indexes replace the single constraint:
+
+1. For KNOWN observations (`observed_at IS NOT NULL`): unique on all five columns.
+2. For UNKNOWN observations (`observed_at IS NULL`): unique on four columns (entity_id, metric, source, timeframe).
+
+This correctly ensures:
+- At most one UNKNOWN classification per (entity_id, metric, source, timeframe) — latest-only within the UNKNOWN slot.
+- At most one KNOWN classification per (entity_id, metric, source, observed_at, timeframe) — latest-only within each KNOWN slot.
+- KNOWN and UNKNOWN can coexist for the same (entity_id, metric, source, timeframe) — they are different P6-01B identities because observed_at differs.
+
+**Impact analysis:**
+
+| Aspect | Impact |
+|---|---|
+| Unique identity | Split into two partial indexes; no sentinel, no fake identity component |
+| Latest-only | Works correctly within each slot (KNOWN/UNKNOWN); PD-17-RES satisfied |
+| OHLC grouping | When `observed_at IS NULL`, group key `(entity_id, source, NULL, timeframe)` is unresolvable → relational checks NOT_EVALUABLE (PD-03-RES) |
+| Querying | `WHERE observed_at IS NULL` selects all UNKNOWN observations; `WHERE observed_at IS NOT NULL` selects all KNOWN — simple, type-safe, no sentinel comparison |
+| Indexing | Partial indexes are PostgreSQL-native, efficient, and correctly scoped |
+| Approximate cross-table joins | KNOWN rows: join on `oq.observed_at::date = mpd.date`. UNKNOWN rows: cannot join on observed_at (NULL); join falls back to `(entity_id, source, timeframe)` only (fully documented as approximate) |
+
+**Rejected alternatives:**
+
+| Alternative | Why rejected |
+|---|---|
+| Sentinel `'1970-01-01T00:00:00Z'` | Creates a fake timestamp in an identity column; indistinguishable from a real 1970 observation; undermines semantic integrity |
+| `observed_at NOT NULL + observed_at_unknown BOOLEAN` | Requires sentinel to maintain NOT NULL; same fundamental problem |
+| JSONB identity | Breaks PostgreSQL index/constraint support; unacceptable performance |
+| Separate boolean flag with single UNIQUE including NULL | PostgreSQL NULL semantics break the constraint (two NULLs don't conflict) |
 
 ---
 
@@ -226,7 +261,11 @@ Initial V1 value: `"v1"`.
 
 One current quality classification per semantic identity `(entity_id, metric, source, observed_at, timeframe)`.
 
-**Mechanism:** PostgreSQL `INSERT … ON CONFLICT (identity_columns) DO UPDATE`, updating all non-identity columns. The conflict target is the five-column semantic unique constraint.
+**Mechanism:** PostgreSQL `INSERT … ON CONFLICT` targeting the partial unique indexes (§13). Two upsert paths:
+- KNOWN (`observed_at IS NOT NULL`): conflict on `(entity_id, metric, source, observed_at, timeframe)`.
+- UNKNOWN (`observed_at IS NULL`): conflict on `(entity_id, metric, source, timeframe)`.
+
+The application layer determines which path based on whether `observed_at` is present, then executes the appropriate upsert.
 
 **Rationale:** Matches PD-17-RES (latest-only); enables efficient upsert at write-time (PD-12-RES); avoids accumulating unbounded history.
 
@@ -247,11 +286,8 @@ CREATE TABLE p6_observation_quality (
     entity_id             INTEGER NOT NULL REFERENCES coins(id) ON DELETE CASCADE,
     metric                VARCHAR(50) NOT NULL,
     source                VARCHAR(50) NOT NULL,
-    observed_at           TIMESTAMPTZ NOT NULL,
+    observed_at           TIMESTAMPTZ,                    -- NULL = UNKNOWN (see §9)
     timeframe             VARCHAR(30) NOT NULL,
-
-    -- identity辅助标记
-    observed_at_unknown   BOOLEAN NOT NULL DEFAULT FALSE,
 
     -- classification
     quality_status        VARCHAR(20) NOT NULL,     -- VALID | INVALID | MISSING | UNKNOWN
@@ -269,10 +305,18 @@ CREATE TABLE p6_observation_quality (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- semantic unique constraint (latest-only, PD-17)
-    CONSTRAINT p6_observation_quality_unique
-        UNIQUE (entity_id, metric, source, observed_at, timeframe)
 );
+
+-- Partial unique indexes for latest-only retention (PD-17, see §13)
+-- KNOWN observations: full 5-column identity
+CREATE UNIQUE INDEX p6_oq_known_unique
+    ON p6_observation_quality (entity_id, metric, source, observed_at, timeframe)
+    WHERE observed_at IS NOT NULL;
+
+-- UNKNOWN observations: 4-column identity (observed_at absent)
+CREATE UNIQUE INDEX p6_oq_unknown_unique
+    ON p6_observation_quality (entity_id, metric, source, timeframe)
+    WHERE observed_at IS NULL;
 ```
 
 ### 12.2 Column Reference
@@ -283,8 +327,7 @@ CREATE TABLE p6_observation_quality (
 | `entity_id` | INTEGER | NOT NULL | Coin entity reference | FK → `coins.id` ON DELETE CASCADE |
 | `metric` | VARCHAR(50) | NOT NULL | Canonical metric name from P6-01B vocabulary | CHECK in application: must be one of the 10 canonical metrics |
 | `source` | VARCHAR(50) | NOT NULL | Canonical source ID from P6-01C | CHECK in application: BINANCE_SPOT / BINANCE_FUTURES / COINGECKO |
-| `observed_at` | TIMESTAMPTZ | NOT NULL | Source observation timestamp, or sentinel `'1970-01-01T00:00:00Z'` when UNKNOWN | Sentinel only when `observed_at_unknown = TRUE` |
-| `observed_at_unknown` | BOOLEAN | NOT NULL (default FALSE) | Flag: TRUE when observed_at is the UNKNOWN sentinel | Application-managed |
+| `observed_at` | TIMESTAMPTZ | NULLABLE | Source observation timestamp. NULL = UNKNOWN (see §9). NOT a sentinel or fake timestamp | NULL when source does not provide observation time |
 | `quality_status` | VARCHAR(20) | NOT NULL | Per-field quality classification | CHECK: IN ('VALID','INVALID','MISSING','UNKNOWN') |
 | `observation_status` | VARCHAR(20) | NOT NULL | Aggregated observation-level status (PD-15) | CHECK: IN ('VALID','INVALID','MISSING','UNKNOWN') |
 | `quality_config_version` | VARCHAR(20) | NOT NULL | Version of the rule set used for classification | FK concept to config table; NOT P6-01C config_version |
@@ -314,7 +357,27 @@ CREATE TABLE p6_quality_rule_config (
 
 **Purpose:** Stores the declarative rule definitions that implement PD-01-RES / PD-18-RES Part A. Each row is one check rule. The evaluator reads these rows to determine which checks to apply and how to interpret outcomes.
 
-**Part B items (OI-01/OI-02) remain absent:** No rows exist for FUNDING_RATE range bounds or temporal tolerance values. The evaluator encounters no rule and correctly produces no check for those metrics.
+**Frozen rule metadata (Part A — rows that WILL be seeded):**
+
+These are the frozen PD-18-RES Part A rules. They carry no unresolved numerical values:
+- `NUMERIC_PARSE` (all metrics) — binary finiteness check
+- `NUMERIC_SIGN` (per metric) — sign ≥ 0 check
+- `NUMERIC_RANGE` zero policy (per metric) — zero = VALID or INVALID
+- `OHLC_RELATIONAL` — HIGH ≥ LOW, OPEN/CLOSE in range
+- `ENTITY_RESOLUTION` — registry coverage check
+- Temporal checks — DEFINED but UNCONFIGURED (no rows)
+- Duplicate / cross-source — OFF (no rows)
+
+**Unresolved configuration (Part B — rows that MUST NOT exist):**
+
+The following items are explicitly PLANNER DECISION REQUIRED and are NOT materialized as default rows, placeholder entries, or hidden fallbacks:
+- OI-01: FUNDING_RATE absolute/percentile range bounds — **no row exists**
+- OI-02: Future/historical timestamp tolerances — **no row exists**
+- OI-08: Mixed VALID+MISSING aggregation rule — **not in config table** (lives in aggregation logic)
+
+If a row for OI-01 or OI-02 were to be added in the future, it would appear as a standard `p6_quality_rule_config` row with the appropriate `check_type` and `parameters`. The evaluator's behavior for absent rows is: no check is applied for that rule.
+
+**Implementation note for D2:** D2 may initially load frozen Part A rules from code constants for simpler initial implementation. The `p6_quality_rule_config` table remains the production persistence target for configuration-driven evaluation. If D2 loads from code, it must be documented as a D2 implementation choice, not a D1 design change.
 
 ### 12.4 Evidence Record Structure (jsonb element)
 
@@ -341,32 +404,46 @@ CREATE TABLE p6_quality_rule_config (
 
 ## 13. Unique Identity Strategy
 
-**Semantic unique constraint:**
+**Semantic uniqueness — partial unique indexes:**
+
+A single `UNIQUE (entity_id, metric, source, observed_at, timeframe)` constraint is not viable because PostgreSQL does not consider two NULLs equal — two rows with NULL `observed_at` would NOT conflict, breaking the latest-only guarantee.
+
+Instead, two **partial unique indexes** enforce uniqueness:
 
 ```sql
-UNIQUE (entity_id, metric, source, observed_at, timeframe)
+-- KNOWN observations: full 5-column identity
+CREATE UNIQUE INDEX p6_oq_known_unique
+    ON p6_observation_quality (entity_id, metric, source, observed_at, timeframe)
+    WHERE observed_at IS NOT NULL;
+
+-- UNKNOWN observations: 4-column identity (observed_at absent)
+CREATE UNIQUE INDEX p6_oq_unknown_unique
+    ON p6_observation_quality (entity_id, metric, source, timeframe)
+    WHERE observed_at IS NULL;
 ```
 
-This exactly mirrors the P6-01B canonical identity. It is the conflict target for upsert.
+This correctly implements PD-17 latest-only retention:
+- Within the KNOWN slot: at most one row per (entity_id, metric, source, observed_at, timeframe).
+- Within the UNKNOWN slot: at most one row per (entity_id, metric, source, timeframe).
+- KNOWN and UNKNOWN can coexist for the same (entity_id, metric, source, timeframe) — they are different P6-01B identities because observed_at differs.
 
 **Surrogate PK (`id`):**
 Exists as a convenience for application code and potential future joins. It is explicitly documented as NOT the semantic identity. Application code MUST NOT use `id` for semantic queries.
 
 **Approximate cross-table joins:**
 
-When quality records need to be joined to observation data in existing tables, the join uses:
+When quality records need to be joined to observation data in existing tables:
 
 ```sql
--- To market_price_daily (OHLCV):
+-- To market_price_daily (OHLCV) — KNOWN observations only:
 WHERE oq.entity_id = mpd.coin_id
   AND oq.source = mpd.source
   AND oq.timeframe = 'DAILY'
+  AND oq.observed_at IS NOT NULL
   AND oq.observed_at::date = mpd.date  -- approximate, documented
 
--- To coin_metrics (OI, FR, MC, FDV):
-WHERE oq.entity_id = cm.coin_id
-  AND oq.source = cm.source
-  AND oq.observed_at::date = cm.date  -- approximate, documented
+-- UNKNOWN observations cannot join on observed_at;
+-- fallback: (entity_id, source, timeframe) only (fully documented as approximate)
 ```
 
 These approximate joins are the best achievable without modifying existing tables. They are documented as approximate in code comments and will migrate to exact keys when observation persistence is upgraded.
@@ -375,15 +452,16 @@ These approximate joins are the best achievable without modifying existing table
 
 ## 14. Index Strategy
 
-| Index | Columns | Purpose | Protects invariant |
+| Index | Columns / Filter | Purpose | Protects invariant |
 |---|---|---|---|
-| `p6_oq_identity_idx` | (entity_id, metric, source, observed_at, timeframe) | Semantic identity lookup + upsert conflict | PQ-01, PQ-09 |
+| `p6_oq_known_unique` | (entity_id, metric, source, observed_at, timeframe) WHERE observed_at IS NOT NULL | Unique identity for KNOWN observations + upsert conflict target | PQ-01, PQ-09 |
+| `p6_oq_unknown_unique` | (entity_id, metric, source, timeframe) WHERE observed_at IS NULL | Unique identity for UNKNOWN observations + upsert conflict target | PQ-01, PQ-09 |
 | `p6_oq_status_idx` | (quality_status) | Filter by VALID/INVALID/MISSING/UNKNOWN | Operational convenience |
 | `p6_oq_config_idx` | (quality_config_version) | Version-based queries | PQ-07 |
 | `p6_oq_evaluated_idx` | (quality_evaluated_at) | Temporal range queries on evaluation time | Audit |
-| `p6_oq_approx_join_idx` | (entity_id, source, observed_at) | Approximate cross-table joins to existing observation tables | Join performance |
+| `p6_oq_approx_join_idx` | (entity_id, source, timeframe, observed_at) | Approximate cross-table joins to existing observation tables | Join performance |
 
-The unique constraint implicitly creates the identity index. The approximate-join index supports the documented cross-table join pattern.
+The two partial unique indexes replace a single constraint and enforce latest-only per slot (KNOWN/UNKNOWN). The approximate-join index supports the documented cross-table join pattern.
 
 ---
 
@@ -420,7 +498,7 @@ When the group relational check runs (all four members share the same group key 
 2. Runs relational checks (HIGH≥LOW, OPEN in range, CLOSE in range) → FAIL evidence records appended to each affected member's evidence array.
 3. Applies PD-03-RES scope (OHLC SET): if any relational FAIL exists, ALL FOUR members' `observation_status` is set to INVALID.
 
-**observed_at = UNKNOWN:** When `observed_at_unknown = TRUE`, the group key cannot be resolved. Relational checks evaluate NOT_EVALUABLE. Each member retains its independent field-level `quality_status` from field checks. No group-level propagation occurs. No business_date or collected_at is substituted.
+**observed_at = UNKNOWN:** When `observed_at IS NULL`, the group key `(entity_id, source, NULL, timeframe)` cannot be resolved. Relational checks evaluate NOT_EVALUABLE. Each member retains its independent field-level `quality_status` from field checks. No group-level propagation occurs. No business_date or collected_at is substituted.
 
 ---
 
@@ -475,11 +553,19 @@ CREATE TABLE p6_observation_quality ( ... );  -- as defined in §12.1
 -- 2. Quality rule configuration table
 CREATE TABLE p6_quality_rule_config ( ... );  -- as defined in §12.3
 
--- 3. Indexes
+-- 3. Partial unique indexes (replaces single UNIQUE constraint)
+CREATE UNIQUE INDEX p6_oq_known_unique
+    ON p6_observation_quality (entity_id, metric, source, observed_at, timeframe)
+    WHERE observed_at IS NOT NULL;
+CREATE UNIQUE INDEX p6_oq_unknown_unique
+    ON p6_observation_quality (entity_id, metric, source, timeframe)
+    WHERE observed_at IS NULL;
+
+-- 4. Operational indexes
 CREATE INDEX p6_oq_status_idx ON p6_observation_quality (quality_status);
 CREATE INDEX p6_oq_config_idx ON p6_observation_quality (quality_config_version);
 CREATE INDEX p6_oq_evaluated_idx ON p6_observation_quality (quality_evaluated_at);
-CREATE INDEX p6_oq_approx_join_idx ON p6_observation_quality (entity_id, source, observed_at);
+CREATE INDEX p6_oq_approx_join_idx ON p6_observation_quality (entity_id, source, timeframe, observed_at);
 
 -- 4. Seed: V1 rule configuration (PD-18-RES Part A)
 -- Deterministic INSERT of the 12 frozen semantic rules.
@@ -532,10 +618,10 @@ Exposure will be additive (new API route or extend existing coin API). No existi
 | PQ-06 | MISSING and NEVER collapse into the same SQL representation. UNKNOWN is represented by `quality_status = 'UNKNOWN'` with evidence explaining why assessment failed. MISSING is `quality_status = 'MISSING'` with evidence explaining absence. | DQ-08/DQ-10 |
 | PQ-07 | Every row carries a non-empty `quality_config_version`. No row exists without a version identifier. | DQ-16, PD-18-RES |
 | PQ-08 | `quality_config_version` is a separate namespace from P6-01C `config_version`. They never share values, never join, and never alias. | DQ-17 |
-| PQ-09 | The unique constraint on `(entity_id, metric, source, observed_at, timeframe)` ensures at most one current classification per semantic identity (PD-17 latest-only). | PD-17-RES |
+| PQ-09 | Two partial unique indexes enforce at most one current classification per semantic identity: KNOWN observations on `(entity_id, metric, source, observed_at, timeframe)` WHERE observed_at IS NOT NULL; UNKNOWN observations on `(entity_id, metric, source, timeframe)` WHERE observed_at IS NULL (PD-17 latest-only). | PD-17-RES |
 | PQ-10 | Every non-VALID quality status carries at least one evidence record with outcome FAIL or an explanation entry for NOT_EVALUABLE/MISSING. Evidence is traceable to a `check_id` present in `p6_quality_rule_config`. | DQ-05, DQ-07a |
 | PQ-11 | OHLC relational checks operate against the exact P6-01B group key. No approximation is used for relational check execution. Approximate joins are used only for cross-table data retrieval, not for quality evaluation logic. | PD-03-RES |
-| PQ-12 | When `observed_at_unknown = TRUE`, `observed_at` is the sentinel `'1970-01-01T00:00:00Z'`. This value is queryable, indexable, and never confused with a real observation time. | P6-01B UNKNOWN semantics |
+| PQ-12 | When the source does not provide an observation timestamp, `observed_at` is stored as NULL. NULL is the canonical PostgreSQL representation of "observation time unknown" — it is not a sentinel, not a fake timestamp, and not confused with any real observation time. | P6-01B UNKNOWN semantics |
 | PQ-13 | Quality persistence does not modify, correct, delete, or replace any observation value in existing tables. It is read-only with respect to observations. | DQ-12 |
 | PQ-14 | `p6_observation_quality` and `p6_quality_rule_config` are additive tables. No existing table is created, altered, or dropped by this migration. | DQ-20 (schema boundary) |
 | PQ-15 | No P4/P5 table, contract, or semantic is modified by the persistence model. | DQ-20 |
@@ -552,7 +638,7 @@ When this document is frozen, P6-01D-D2 may implement:
 3. **Type exports** for quality record and evidence types in `src/lib/p6/quality/types.ts`.
 4. **Registry access service** for reading quality rule configuration in `src/lib/p6/quality/config.ts`.
 5. **Upsert service** for writing quality classifications in `src/lib/p6/quality/service.ts`.
-6. **Unit tests** for: schema constraints, config loading, upsert behavior, identity uniqueness, approximate-join correctness, sentinel observed_at handling.
+6. **Unit tests** for: schema constraints, config loading, upsert behavior (KNOWN/UNKNOWN paths), partial unique index enforcement, approximate-join correctness, NULL observed_at handling.
 
 D2 MUST NOT implement: validators, quality rule evaluation logic, aggregation engine, collector changes, refresh route changes, feature gating, API endpoints.
 
@@ -565,7 +651,7 @@ D2 MUST NOT implement: validators, quality rule evaluation logic, aggregation en
 - [x] PD-13 implemented at design level (side-table model)
 - [x] PD-17 latest-only semantics represented (unique constraint + upsert)
 - [x] P6-01B identity preserved (five columns in side table)
-- [x] observed_at never substituted (sentinel for UNKNOWN, not business_date/collected_at)
+- [x] observed_at never substituted (NULL for UNKNOWN, not business_date/collected_at)
 - [x] collected_at remains collection timestamp (informational column)
 - [x] quality_evaluated_at separately defined
 - [x] VALID/INVALID/MISSING/UNKNOWN preserved (CHECK constraint)
@@ -575,7 +661,7 @@ D2 MUST NOT implement: validators, quality rule evaluation logic, aggregation en
 - [x] quality_config_version represented (separate namespace)
 - [x] Freshness config_version remains separate (PQ-08)
 - [x] OHLC exact identity constraint preserved (PQ-11)
-- [x] UNKNOWN observed_at handled without fabrication (sentinel + flag)
+- [x] UNKNOWN observed_at handled without fabrication (NULL, not sentinel or fake timestamp)
 - [x] Physical schema proposed but NOT implemented
 - [x] Migration proposed but NOT created
 - [x] OI-01…OI-08 not resolved
