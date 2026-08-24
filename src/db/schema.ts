@@ -1204,3 +1204,69 @@ export const p6FreshnessPolicies = pgTable(
 // P6 Freshness Policy type exports
 export type P6FreshnessPolicy = typeof p6FreshnessPolicies.$inferSelect;
 export type NewP6FreshnessPolicy = typeof p6FreshnessPolicies.$inferInsert;
+
+// ==================== P6 DATA QUALITY — OBSERVATION QUALITY ====================
+// Frozen contract: P6-01D-D1 (commit bfeac25)
+// Partial unique indexes: KNOWN (observed_at IS NOT NULL) / UNKNOWN (observed_at IS NULL)
+
+export const p6ObservationQuality = pgTable(
+  "p6_observation_quality",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    entityId: integer("entity_id")
+      .notNull()
+      .references(() => coins.id, { onDelete: "cascade" }),
+    metric: varchar("metric", { length: 50 }).notNull(),
+    source: varchar("source", { length: 50 }).notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }),
+    timeframe: varchar("timeframe", { length: 30 }).notNull(),
+    qualityStatus: varchar("quality_status", { length: 20 }).notNull(),
+    observationStatus: varchar("observation_status", { length: 20 }).notNull(),
+    qualityConfigVersion: varchar("quality_config_version", { length: 20 }).notNull(),
+    evidence: jsonb("evidence").notNull().default([]),
+    qualityEvaluatedAt: timestamp("quality_evaluated_at", { withTimezone: true }).notNull(),
+    collectedAt: timestamp("collected_at", { withTimezone: true }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (_table) => ({
+    // Partial unique indexes enforced via raw SQL in migration
+    // (Drizzle does not natively support WHERE clauses in unique indexes)
+    entityIdIdx: index("p6_oq_entity_idx").on(_table.entityId),
+    qualityStatusIdx: index("p6_oq_status_idx").on(_table.qualityStatus),
+    configVersionIdx: index("p6_oq_config_idx").on(_table.qualityConfigVersion),
+    evaluatedAtIdx: index("p6_oq_evaluated_idx").on(_table.qualityEvaluatedAt),
+    approxJoinIdx: index("p6_oq_approx_join_idx").on(_table.entityId, _table.source, _table.timeframe, _table.observedAt),
+  })
+);
+
+// ==================== P6 DATA QUALITY — RULE CONFIGURATION ====================
+// Frozen contract: P6-01D-D1 §12.3
+
+export const p6QualityRuleConfig = pgTable(
+  "p6_quality_rule_config",
+  {
+    id: serial("id").primaryKey(),
+    qualityConfigVersion: varchar("quality_config_version", { length: 20 }).notNull(),
+    checkId: varchar("check_id", { length: 100 }).notNull(),
+    metric: varchar("metric", { length: 50 }),
+    checkType: varchar("check_type", { length: 30 }).notNull(),
+    parameters: jsonb("parameters").notNull().default({}),
+    isEnabled: boolean("is_enabled").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    ruleConfigUnique: unique("p6_quality_rule_config_unique").on(
+      table.qualityConfigVersion,
+      table.checkId,
+      table.metric
+    ),
+    configVersionIdx: index("p6_qrc_config_idx").on(table.qualityConfigVersion),
+  })
+);
+
+// P6 Data Quality type exports
+export type P6ObservationQuality = typeof p6ObservationQuality.$inferSelect;
+export type NewP6ObservationQuality = typeof p6ObservationQuality.$inferInsert;
+export type P6QualityRuleConfig = typeof p6QualityRuleConfig.$inferSelect;
+export type NewP6QualityRuleConfig = typeof p6QualityRuleConfig.$inferInsert;
