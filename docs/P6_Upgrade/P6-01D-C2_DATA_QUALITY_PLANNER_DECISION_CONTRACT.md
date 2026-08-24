@@ -101,13 +101,23 @@ Rationale: paused/delisted pairs and new contracts legitimately report zero volu
 
 ## 7. Group C — OHLC Cross-Observation Validation
 
-### PD-03-RES (PROPOSED): Violation scope = OHLC SET; storage prerequisite resolved by documented approximation
+### PD-03-RES (PROPOSED): Violation scope = OHLC SET; exact P6-01B group identity required
 
 **Decision:** On a relational violation (`HIGH<LOW`, `OPEN` out of range, `CLOSE` out of range), ALL FOUR members of the validation group are classified INVALID (scope = OHLC set). Field-level checks still run independently first.
 
-**Storage prerequisite (resolves EG-02 from C1):** V1 group evaluation operates on the single persisted kline row, using group key `(entity_id = coinId, source, observed_at ≈ business date bucket, timeframe = DAILY)`. This is an explicitly documented APPROXIMATION of the frozen conceptual group key, valid because all four members derive from one kline with one openTime by construction. When observation-level persistence (P6 future task) lands, group evaluation migrates to exact keys. The approximation MUST be recorded in each group-level evidence record via a detail flag.
+**Group identity:** The validation group key is the exact frozen P6-01B conceptual key:
 
-**Conformance:** DQ-11a ✅ (identity untouched; approximation is evaluation context, not identity) DQ-19 ✅
+```text
+OHLCValidationGroup :=
+    group_key = (entity_id, source, observed_at, timeframe)
+    members   = {OPEN, HIGH, LOW, CLOSE}
+```
+
+No approximation, no business_date substitution, no collected_at substitution.
+
+**observed_at = UNKNOWN consequence:** When the observation's `observed_at = UNKNOWN` (which is the current state for all SOURCE_SNAPSHOT observations per P6-01C-E1, and remains possible for any source that does not provide observation time), the group key cannot be fully resolved. In this case, relational checks for all four members evaluate to `NOT_EVALUABLE` per frozen contract §7: the check could not run because prerequisite evidence (a resolvable group key) is unavailable. The member observations retain their independent field-level statuses; only the relational group check is suppressed.
+
+**Conformance:** DQ-11a ✅ (exact identity; no new observation identity) DQ-14 ✅ (collected_at never substituted) DQ-19 ✅ (member independence preserved; group check is additive only) DQ-07a ✅ (NOT_EVALUABLE = assessment prerequisite absent, not a FAIL)
 
 ---
 
@@ -173,7 +183,9 @@ Exact physical schema is deferred to P6-01D-D under this decision's constraints.
 
 ### PD-17-RES (PROPOSED): Latest-only retention in V1
 
-One current classification per observation reference (upsert). Historical replay/version-history NOT implemented (mirrors freshness precedent). History remains OI-05.
+**Decision:** One current classification per observation reference (upsert behavior). Historical replay/version-history NOT implemented in V1.
+
+**Note:** This is the proposed V1 policy. The freshness precedent (P6-01C open item on version history) is advisory context only — it is NOT a binding inherited requirement. The Planner may override this proposal. Full history retention remains OI-05.
 
 ---
 
@@ -186,10 +198,23 @@ observation_status =
     INVALID   if ANY field status = INVALID
     else UNKNOWN if ANY field status = UNKNOWN
     else MISSING if ALL field statuses = MISSING
-    else VALID     (includes mixed VALID/MISSING sets)
+    else VALID
 ```
 
 Field-level statuses are ALWAYS retained in evidence, so no information is lost by the aggregate. Deterministic, threshold-free, testable.
+
+**⚠️ Unresolved semantic question (EXPOSED, NOT SILENTLY RESOLVED):**
+
+The formula above resolves the `else VALID` branch by classifying mixed VALID/MISSING sets as VALID at observation level. This is the proposed V1 behavior. However, the Planner should explicitly confirm or override this specific case, because it implies:
+
+> An observation with some required fields present and VALID, and other required fields MISSING, is classified VALID at the observation level — the missing fields are visible only at field level.
+
+Alternative positions the Planner may wish to consider:
+- **Position A (current proposal):** VALID — the observation is usable where present fields suffice; missing fields visible via field-level evidence.
+- **Position B:** MISSING — any missing required field makes the entire observation MISSING, regardless of present fields' validity.
+- **Position C:** V1 explicitly refuses observation-level aggregation for mixed sets; consumers must inspect fields directly.
+
+Until the Planner resolves this, the `else VALID` branch remains PROPOSED and should be treated as an open item (OI-08).
 
 **Conformance:** DQ-05/DQ-07a ✅ DQ-19 ✅ (field independence preserved; aggregation reads, never mutates)
 
@@ -210,23 +235,42 @@ All existing signals keep semantics and ownership unchanged:
 
 Unification/replacement is future-scope (OI-07).
 
-### PD-18-RES (PROPOSED): Concrete V1 rule values
+### PD-18-RES (PROPOSED): V1 rule configuration — semantic rules + numerical configuration
 
-Complete V1 value table (all derivable from frozen constraints + evidence; none invented beyond binary thresholds already implied by the matrices above):
+This decision is split into two parts:
 
-| Check | Value / Rule | Source of authority |
+#### Part A — Frozen semantic rules (binary, fully determined by PD decisions)
+
+These rules carry no unresolved numerical values — they are fully resolved by the PD decisions above:
+
+| Check | Rule | Derived from |
 |---|---|---|
 | NUMERIC_PARSE | reject NaN, ±Infinity, non-numeric strings → INVALID | PD-02-RES |
-| NUMERIC_SIGN | value ≥ 0 required for OPEN/HIGH/LOW/CLOSE/VOLUME/QUOTE_VOLUME/MARKET_CAP/FDV/OPEN_INTEREST | PD-04-RES |
-| NUMERIC_RANGE (zero) | zero=INVALID for prices/MC/FDV; zero=VALID for VOLUME/QUOTE_VOLUME/OI/FR | PD-05-RES |
-| FUNDING_RATE | finite only; NO range bound | PD-06-RES |
+| NUMERIC_SIGN (per metric) | value ≥ 0 required for: OPEN, HIGH, LOW, CLOSE, VOLUME, QUOTE_VOLUME, MARKET_CAP, FDV, OPEN_INTEREST | PD-04-RES |
+| NUMERIC_RANGE zero (per metric) | zero → INVALID: OPEN, HIGH, LOW, CLOSE, MARKET_CAP, FDV | PD-05-RES |
+| NUMERIC_RANGE zero (per metric) | zero → VALID: VOLUME, QUOTE_VOLUME, OPEN_INTEREST, FUNDING_RATE | PD-05-RES |
+| FUNDING_RATE finiteness | reject NaN, ±Infinity | PD-06-RES |
 | OHLC relational | HIGH ≥ LOW; LOW ≤ OPEN ≤ HIGH; LOW ≤ CLOSE ≤ HIGH; violation → all four members INVALID | PD-03-RES |
+| OHLC observed_at guard | relational check → NOT_EVALUABLE when observed_at = UNKNOWN | PD-03-RES |
 | ENTITY_RESOLUTION | registry coverage requirement unmet → MISSING + evidence | PD-09-RES |
-| TEMPORAL future/historical | UNCONFIGURED in V1 | PD-07/08-RES |
-| Duplicate remediation | detect-only | PD-10-RES |
+| Temporal checks | UNCONFIGURED — no state impact | PD-07/08-RES |
+| Duplicate handling | detect-only — no remediation | PD-10-RES |
 | Cross-source comparator | OFF | PD-11-RES |
 
-Initial version identifier: `quality_config_version = "v1"` (smallest deterministic identifier consistent with the P6-01C-B config-version pattern).
+#### Part B — Unresolved numerical configuration (requires OI resolution)
+
+The following numerical parameters remain **PLANNER DECISION REQUIRED** and are NOT resolved by this draft:
+
+| Parameter | Status | Open Item |
+|---|---|---|
+| FUNDING_RATE absolute/percentile range bounds | UNRESOLVED | OI-01 |
+| Future-timestamp tolerance value | UNRESOLVED | OI-02 |
+| Historical-timestamp tolerance value | UNRESOLVED | OI-02 |
+| Mixed VALID+MISSING observation aggregation rule | UNRESOLVED | OI-08 |
+
+While OI-01 and OI-02 remain unresolved, the corresponding checks are deactivated (unconfigured). This is the deliberately chosen V1 stance — it is not an oversight.
+
+**Version identifier:** `quality_config_version = "v1"` (smallest deterministic identifier consistent with P6-01C-B config-version pattern).
 
 ---
 
@@ -245,7 +289,7 @@ Resolutions follow the C1 recommended order: PD-12 → PD-01 → PD-02 → PD-04
 | No correction (DQ-12) | ✅ classification only |
 | Temporal (DQ-13/14) | ✅ collected_at never substitutes observed_at |
 | Identity/provenance (DQ-15/16/17) | ✅ side-table keyed to identity; own version namespace `"v1"` |
-| Duplicates/partials (DQ-18/19) | ✅ detect-only; worst-case aggregation reads only |
+| Duplicates/partials (DQ-18/19) | ✅ detect-only; aggregation proposed but mixed VALID+MISSING branch exposed as OI-08 |
 | Boundaries (DQ-20/21/22) | ✅ no P4/P5 semantics; config-carried rules; PRICE alias respected |
 
 ## 17. Residual Open Items (remain PLANNER DECISION REQUIRED)
@@ -259,16 +303,17 @@ Resolutions follow the C1 recommended order: PD-12 → PD-01 → PD-02 → PD-04
 | OI-05 | Classification history/replay retention | PD-17 deferral |
 | OI-06 | Feature-engine gating / quality-weighted confidence | PD-14 deferral |
 | OI-07 | Unification with dataCompleteness/confidenceScore/source_status | PD-16 coexist choice revisit |
+| OI-08 | Mixed VALID+MISSING required-field observation-level aggregation rule | PD-15-RES exposed semantic question |
 
 ## 18. Implementation Readiness (upon freeze)
 
 If the Planner freezes this draft, P6-01D-D may proceed with:
 
 1. Additive side-table migration (per PD-13-RES);
-2. Pure validator module implementing the PD-18-RES check table;
+2. Pure validator module implementing the PD-18-RES Part A check table (Part B values remain unconfigured where OI-01/OI-02 unresolved);
 3. Write-time classification hook at the refresh-pipeline persistence boundary (PD-12-RES), collectors untouched;
 4. Side-table query service exposing classifications keyed to identity (additive API exposure later);
-5. Unit tests covering: parse failures, sign violations, zero policies per metric, OHLC group propagation, aggregation precedence, entity-resolution evidence, UNKNOWN propagation, no-correction guarantees, duplicate detection.
+5. Unit tests covering: parse failures, sign violations, zero policies per metric, OHLC group propagation with observed_at guard, aggregation precedence (including the OI-08 mixed-set question), entity-resolution evidence, UNKNOWN propagation, NOT_EVALUABLE path for unresolvable group keys, no-correction guarantees, duplicate detection.
 
 Estimated blast radius: new `src/lib/p6/quality/*` module + one migration + refresh-route hook. No changes to collectors, features, health, P4/P5.
 
@@ -278,7 +323,7 @@ Estimated blast radius: new `src/lib/p6/quality/*` module + one migration + refr
 - [x] No option invented outside C1 candidate spaces
 - [x] No numeric value fabricated beyond constraint-implied binaries
 - [x] Every resolution checked against frozen invariants
-- [x] Residual open items explicit (OI-01…OI-07)
+- [x] Residual open items explicit (OI-01…OI-08)
 - [x] Nothing marked FROZEN by this document
 - [ ] Planner audit pending
 
@@ -288,6 +333,7 @@ Estimated blast radius: new `src/lib/p6/quality/*` module + one migration + refr
 |---|---|
 | Audit each PDx-RES against P6-01D-B invariants | Planner |
 | Confirm V1 scope exclusions (temporal, cross-source, gating) acceptable | Planner |
+| Resolve OI-08: mixed VALID+MISSING aggregation rule | Planner |
 | Freeze document + version identifier `quality_config_version = "v1"` | Planner |
 | Authorize P6-01D-D implementation | Planner |
 
