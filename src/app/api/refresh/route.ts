@@ -40,6 +40,7 @@ import { ruleVersionService } from "@/lib/services/rule-version.service";
 import { indicatorService } from "@/lib/services/indicator.service";
 import { ruleEngineService } from "@/lib/services/rule-engine.service";
 import { snapshotService } from "@/lib/services/snapshot.service";
+import { evaluateKlineObservationQuality } from "@/lib/p6/ingestion/kline-quality-hook";
 import { calculateWeightedNarrativeHealth, type CoinHealthData } from "@/lib/scoring/narrative-health";
 import { KlineData } from "@/lib/technical-analysis/types";
 
@@ -388,6 +389,17 @@ export async function POST(request: NextRequest) {
           for (const kline of klines) {
             // Convert UTC timestamp to business timezone date
             const klineDate = getBusinessDate(new Date(kline.openTime));
+
+            // P6-01E-C: canonical observation → quality evaluation + persistence
+            // BEFORE the existing observation DB write (PD-E1).
+            // Classification never blocks ingestion (PD-E2); a persistence
+            // failure here is an infrastructure error and propagates to the
+            // existing per-coin error handler like any other DB failure.
+            await evaluateKlineObservationQuality(kline, {
+              entityId: coin.id,
+              priceSource,
+              timeframe: "DAILY",
+            });
 
             await db
               .insert(marketPriceDaily)

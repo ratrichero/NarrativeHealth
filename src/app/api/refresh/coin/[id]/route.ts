@@ -24,6 +24,7 @@ import {
 import { fetchCoinGeckoMarkets } from "@/lib/collectors/coingecko";
 import { runFeatureEngine, calculateHealthScore, getRecommendationSignal, generateRecommendationReason } from "@/lib/features/engine";
 import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
+import { evaluateKlineObservationQuality } from "@/lib/p6/ingestion/kline-quality-hook";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -340,6 +341,17 @@ export async function POST(
       for (const kline of klines) {
         // Convert UTC timestamp to business timezone date
         const klineDate = getBusinessDate(new Date(kline.openTime));
+
+        // P6-01E-C: canonical observation → quality evaluation + persistence
+        // BEFORE the existing observation DB write (PD-E1).
+        // Classification never blocks ingestion (PD-E2); a persistence
+        // failure here is an infrastructure error and propagates to the
+        // existing per-coin error handler like any other DB failure.
+        await evaluateKlineObservationQuality(kline, {
+          entityId: coin.id,
+          priceSource,
+          timeframe: "DAILY",
+        });
 
         await db
           .insert(marketPriceDaily)
