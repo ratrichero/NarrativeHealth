@@ -1270,3 +1270,32 @@ export type P6ObservationQuality = typeof p6ObservationQuality.$inferSelect;
 export type NewP6ObservationQuality = typeof p6ObservationQuality.$inferInsert;
 export type P6QualityRuleConfig = typeof p6QualityRuleConfig.$inferSelect;
 export type NewP6QualityRuleConfig = typeof p6QualityRuleConfig.$inferInsert;
+
+// ==================== P6 FEATURE VERSIONS (PD-4) ====================
+// Structured version tuple: (algorithm_version, parameter_version, schema_version, config_hash)
+// P6-02C2 §3.3 — additive, does not replace legacy feature_versions
+export const p6FeatureVersions = pgTable(
+  "p6_feature_versions",
+  {
+    id: serial("id").primaryKey(),
+    algorithmVersion: text("algorithm_version").notNull(),
+    parameterVersion: text("parameter_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    configHash: text("config_hash").notNull(),
+    description: text("description"),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    activatedAt: timestamp("activated_at"),
+  },
+  (table) => [
+    unique("p6_feature_version_unique").on(
+      table.algorithmVersion,
+      table.parameterVersion,
+      table.schemaVersion,
+      table.configHash
+    ),
+  ]
+);
+
+export type P6FeatureVersion = typeof p6FeatureVersions.$inferSelect;
+export type NewP6FeatureVersion = typeof p6FeatureVersions.$inferInsert;
