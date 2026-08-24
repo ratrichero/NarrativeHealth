@@ -39,3 +39,12 @@ export {
   validateEntityResolution,
   validateObservation,
 } from "./validator";
+export type {
+  EvaluationResult,
+  OHLCEvaluationResult,
+} from "./evaluation-service";
+export {
+  evaluateAndPersistQuality,
+  evaluateAndPersistOHLCQuality,
+  evaluateAndPersistMultiple,
+} from "./evaluation-service";
