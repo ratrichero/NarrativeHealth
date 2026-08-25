@@ -1448,3 +1448,66 @@ export const p6Warnings = pgTable(
 
 export type P6Warning = typeof p6Warnings.$inferSelect;
 export type NewP6Warning = typeof p6Warnings.$inferInsert;
+
+// ====== P6-06D: Intelligence Aggregation ======
+// PD-06A-07: latest-only persistence
+// PD-06B-05: identity (entity_type, entity_id, timeframe, window_end)
+// PD-06C-02: idempotent re-run via upsert (no duplicate CURRENT rows)
+export const p6IntelligenceSummaries = pgTable(
+  "p6_intelligence_summaries",
+  {
+    id: serial("id").primaryKey(),
+    // Identity (PD-06B-05)
+    entityType: varchar("entity_type", { length: 20 }).notNull(), // "coin" | "narrative"
+    entityId: integer("entity_id").notNull(),
+    timeframe: varchar("timeframe", { length: 20 }).notNull().default("DAILY"),
+    windowEnd: timestamp("window_end").notNull(),
+    // Lifecycle (PD-06B-06): CURRENT | SUPERSEDED
+    status: varchar("status", { length: 20 }).notNull().default("CURRENT"),
+    // Current state — pass-through from frozen layers
+    healthScore: real("health_score"),
+    snapshotConfidence: real("snapshot_confidence"),
+    regimeState: varchar("regime_state", { length: 30 }),
+    regimeConfidence: real("regime_confidence"),
+    // Warning synthesis (from P6-05, read-only)
+    activeWarningCount: integer("active_warning_count").notNull().default(0),
+    highestSeverity: varchar("highest_severity", { length: 20 }),
+    activeWarnings: jsonb("active_warnings").notNull().default([]),
+    // Change detection (PD-06A-03: current vs immediate previous only)
+    healthDelta: real("health_delta"),
+    healthChangePct: real("health_change_pct"),
+    regimeChanged: boolean("regime_changed").notNull().default(false),
+    previousRegimeState: varchar("previous_regime_state", { length: 30 }),
+    newWarningCount: integer("new_warning_count").notNull().default(0),
+    resolvedWarningCount: integer("resolved_warning_count").notNull().default(0),
+    // Structured explanations (PD-06A-02) — always present, possibly empty (IA-25)
+    whatChanged: jsonb("what_changed").notNull().default([]),
+    whyExplanation: jsonb("why_explanation").notNull().default([]),
+    whatToWatch: jsonb("what_to_watch").notNull().default([]),
+    // Metadata
+    qualityMetadata: jsonb("quality_metadata"),
+    freshnessMetadata: jsonb("freshness_metadata"),
+    // Version tuple (PD-06A-10 — standalone)
+    algorithmVersion: text("algorithm_version").notNull(),
+    parameterVersion: text("parameter_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    configHash: text("config_hash").notNull(),
+    // Provenance (full chain to snapshot/regime/warnings)
+    provenance: jsonb("provenance").notNull(),
+    // Timestamps
+    calculatedAt: timestamp("calculated_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("p6_summaries_entity_idx").on(table.entityType, table.entityId, table.timeframe),
+    index("p6_summaries_status_idx").on(table.status),
+    index("p6_summaries_window_idx").on(table.windowEnd),
+    unique(
+      "p6_summaries_identity_unique"
+    ).on(table.entityType, table.entityId, table.timeframe, table.windowEnd),
+  ]
+);
+
+export type P6IntelligenceSummary = typeof p6IntelligenceSummaries.$inferSelect;
+export type NewP6IntelligenceSummary = typeof p6IntelligenceSummaries.$inferInsert;
