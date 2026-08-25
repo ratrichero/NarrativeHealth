@@ -1304,3 +1304,46 @@ export const p6FeatureVersions = pgTable(
 
 export type P6FeatureVersion = typeof p6FeatureVersions.$inferSelect;
 export type NewP6FeatureVersion = typeof p6FeatureVersions.$inferInsert;
+
+// ==================== P6 SNAPSHOTS (PD-03B-05) ====================
+// Intelligence snapshot persistence — additive, does not repurpose legacy snapshot tables
+export const p6Snapshots = pgTable(
+  "p6_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    entityType: varchar("entity_type", { length: 20 }).notNull(), // "coin" | "narrative"
+    entityId: integer("entity_id").notNull(),
+    snapshotType: varchar("snapshot_type", { length: 30 }).notNull(), // "COIN_HEALTH" | "NARRATIVE_HEALTH"
+    timeframe: varchar("timeframe", { length: 20 }).notNull().default("DAILY"),
+    windowEnd: timestamp("window_end").notNull(),
+    // Scores
+    healthScore: real("health_score").notNull(),
+    confidenceScore: real("confidence_score"),
+    dataCompleteness: real("data_completeness"),
+    // Lifecycle
+    status: varchar("status", { length: 20 }).notNull().default("CURRENT"), // CURRENT | SUPERSEDED
+    // Version linkage
+    snapshotAlgorithmVersion: text("snapshot_algorithm_version").notNull(),
+    snapshotParameterVersion: text("snapshot_parameter_version").notNull(),
+    snapshotSchemaVersion: text("snapshot_schema_version").notNull(),
+    snapshotConfigHash: text("snapshot_config_hash").notNull(),
+    // P6-02 feature version consumed
+    featureVersionId: integer("feature_version_id").references(() => p6FeatureVersions.id, { onDelete: "set null" }),
+    // Metadata (JSONB)
+    healthDimensions: jsonb("health_dimensions"),
+    qualityMetadata: jsonb("quality_metadata"),
+    freshnessMetadata: jsonb("freshness_metadata"),
+    provenance: jsonb("provenance").notNull(),
+    // Timestamps
+    calculationTime: timestamp("calculation_time").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("p6_snapshots_entity_idx").on(table.entityType, table.entityId, table.snapshotType),
+    index("p6_snapshots_window_idx").on(table.windowEnd),
+    unique("p6_snapshots_unique").on(table.entityType, table.entityId, table.snapshotType, table.windowEnd),
+  ]
+);
+
+export type P6Snapshot = typeof p6Snapshots.$inferSelect;
+export type NewP6Snapshot = typeof p6Snapshots.$inferInsert;
