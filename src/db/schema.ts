@@ -1391,3 +1391,60 @@ export const p6RegimeStates = pgTable(
 
 export type P6RegimeState = typeof p6RegimeStates.$inferSelect;
 export type NewP6RegimeState = typeof p6RegimeStates.$inferInsert;
+
+// ====== P6-05D: Early Warning Engine ======
+// PD-05B-14: Append-only persistence
+// PD-05C-01: Occurrence-based identity
+export const p6Warnings = pgTable(
+  "p6_warnings",
+  {
+    id: serial("id").primaryKey(),
+    entityType: varchar("entity_type", { length: 20 }).notNull(), // "coin" | "narrative"
+    entityId: integer("entity_id").notNull(),
+    warningType: varchar("warning_type", { length: 30 }).notNull(),
+    severity: varchar("severity", { length: 20 }).notNull(),
+    lifecycle: varchar("lifecycle", { length: 20 }).notNull().default("DETECTED"),
+    message: text("message").notNull(),
+    // Health context
+    healthScore: real("health_score").notNull(),
+    previousHealthScore: real("previous_health_score"),
+    healthDelta: real("health_delta"),
+    // Regime context
+    regimeState: varchar("regime_state", { length: 30 }),
+    previousRegimeState: varchar("previous_regime_state", { length: 30 }),
+    confidence: real("confidence").notNull().default(0),
+    // Dedup
+    dedupKey: text("dedup_key").notNull(),
+    // Metadata (JSONB)
+    qualityMetadata: jsonb("quality_metadata"),
+    freshnessMetadata: jsonb("freshness_metadata"),
+    evidence: jsonb("evidence"),
+    // Version tuple
+    algorithmVersion: text("algorithm_version").notNull(),
+    parameterVersion: text("parameter_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    configHash: text("config_hash").notNull(),
+    // Provenance
+    provenance: jsonb("provenance").notNull(),
+    // Lifecycle status (for quick queries)
+    lifecycleStatus: varchar("lifecycle_status", { length: 20 }).notNull().default("DETECTED"),
+    // Timestamps
+    detectionWindow: timestamp("detection_window").notNull(),
+    detectedAt: timestamp("detected_at").notNull(),
+    effectiveFrom: timestamp("effective_from").notNull(),
+    effectiveUntil: timestamp("effective_until"),
+    supersededAt: timestamp("superseded_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("p6_warnings_entity_idx").on(table.entityType, table.entityId, table.warningType),
+    index("p6_warnings_status_idx").on(table.lifecycleStatus),
+    index("p6_warnings_detected_idx").on(table.detectedAt),
+    index("p6_warnings_dedup_idx").on(table.dedupKey),
+    unique("p6_warnings_dedup_unique").on(table.dedupKey),
+  ]
+);
+
+export type P6Warning = typeof p6Warnings.$inferSelect;
+export type NewP6Warning = typeof p6Warnings.$inferInsert;
