@@ -43,6 +43,9 @@ import { snapshotService } from "@/lib/services/snapshot.service";
 import { evaluateKlineObservationQuality } from "@/lib/p6/ingestion/kline-quality-hook";
 import { calculateWeightedNarrativeHealth, type CoinHealthData } from "@/lib/scoring/narrative-health";
 import { KlineData } from "@/lib/technical-analysis/types";
+import { runSnapshotGeneration, type NarrativeMembershipData } from "@/lib/p6/snapshot/service";
+import { SNAPSHOT_V1_VERSION } from "@/lib/p6/snapshot/types";
+import type { CoinSnapshotInput } from "@/lib/p6/snapshot/types";
 
 // Business timezone constant (must match utils.ts)
 const BUSINESS_TIMEZONE = "Asia/Ho_Chi_Minh";
@@ -1005,6 +1008,102 @@ export async function POST(request: NextRequest) {
     } catch (snapshotError) {
       console.error("Error creating morning snapshot:", snapshotError);
       // Don't fail the refresh if snapshot creation fails
+    }
+
+    // P6 Intelligence Snapshot generation (PD-03B-09: synchronous)
+    // IS-25: coin snapshots first, then narratives
+    try {
+      // Collect coin feature data from the features table
+      const todayFeatures = await db
+        .select({
+          coinId: features.coinId,
+          id: features.id,
+          trendScore: features.trendScore,
+          volumeScore: features.volumeScore,
+          momentumScore: features.momentumScore,
+          derivativeScore: features.derivativeScore,
+          confidenceScore: features.confidenceScore,
+          dataCompleteness: features.dataCompleteness,
+          versionId: features.versionId,
+          calculatedAt: features.calculatedAt,
+        })
+        .from(features)
+        .where(eq(features.date, today));
+
+      // Build CoinSnapshotInput[] from persisted feature records
+      const coinSnapshotInputs: CoinSnapshotInput[] = todayFeatures.map((f) => ({
+        entity_id: f.coinId,
+        health_score: 0, // Will be computed from dimension scores below
+        trend_score: f.trendScore,
+        volume_score: f.volumeScore,
+        momentum_score: f.momentumScore,
+        derivative_score: f.derivativeScore,
+        confidence_score: f.confidenceScore,
+        data_completeness: f.dataCompleteness,
+        feature_record_id: f.id,
+        feature_version_id: f.versionId,
+        feature_algorithm_version: SNAPSHOT_V1_VERSION.algorithm_version,
+        feature_parameter_version: SNAPSHOT_V1_VERSION.parameter_version,
+        feature_schema_version: SNAPSHOT_V1_VERSION.schema_version,
+        feature_config_hash: SNAPSHOT_V1_VERSION.config_hash,
+        quality_metadata: null,
+        freshness_metadata: null,
+        feature_provenance: null,
+      }));
+
+      // Compute health_score from dimension scores (PD-03B-10: pass-through)
+      for (const input of coinSnapshotInputs) {
+        const scores = [input.trend_score, input.volume_score, input.momentum_score, input.derivative_score].filter(
+          (s): s is number => s !== null
+        );
+        input.health_score = scores.length > 0
+          ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100
+          : 50; // SNAPSHOT_NEUTRAL_SCORE
+      }
+
+      // Build NarrativeMembershipData from live coin_narratives (PD-03B-14)
+      const activeNarrativesForSnapshot = await db
+        .select()
+        .from(narratives)
+        .where(eq(narratives.isActive, true));
+
+      const narrativeMemberships: NarrativeMembershipData[] = [];
+      for (const narrative of activeNarrativesForSnapshot) {
+        const members = await db
+          .select({ coinId: coinNarratives.coinId, symbol: coins.symbol })
+          .from(coinNarratives)
+          .innerJoin(coins, eq(coins.id, coinNarratives.coinId))
+          .where(and(
+            eq(coinNarratives.narrativeId, narrative.id),
+            eq(coins.isActive, true)
+          ));
+
+        narrativeMemberships.push({
+          entityId: narrative.id,
+          narrativeName: narrative.name,
+          members: members.map((m) => ({ coin_id: m.coinId, coin_symbol: m.symbol })),
+        });
+      }
+
+      // IS-25: runSnapshotGeneration processes coins first, then narratives
+      const snapshotResult = await runSnapshotGeneration(
+        new Date(),
+        SNAPSHOT_V1_VERSION,
+        coinSnapshotInputs,
+        narrativeMemberships
+      );
+
+      console.log(
+        "P6 snapshot: coins=" + snapshotResult.coinSnapshotsPersisted + "/" + snapshotResult.coinSnapshotsGenerated +
+        " narratives=" + snapshotResult.narrativeSnapshotsPersisted + "/" + snapshotResult.narrativeSnapshotsGenerated +
+        (snapshotResult.coinSnapshotPersistenceFailed > 0 || snapshotResult.narrativeSnapshotPersistenceFailed > 0
+          ? " (failures: coin=" + snapshotResult.coinSnapshotPersistenceFailed + " narrative=" + snapshotResult.narrativeSnapshotPersistenceFailed + ")"
+          : "")
+      );
+    } catch (snapshotError) {
+      // IS-24: persistence failure is infrastructure failure, never quality state
+      // PD-E2: never block refresh on snapshot failure
+      console.error("Error generating P6 snapshots:", snapshotError);
     }
 
     // Binance Square content pipeline (non-blocking side effect)

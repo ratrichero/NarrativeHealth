@@ -2,6 +2,7 @@
 // Authority: P6-03B §9, P6-03C2 PD-03B-06
 // IS-11: Complete provenance chain required
 // IS-12: Provenance immutable once persisted
+// C-1 FIX: feature_record_id wired from CoinSnapshotInput
 
 import type {
   SnapshotVersionTuple,
@@ -14,6 +15,7 @@ import type {
 /**
  * Assemble coin snapshot provenance.
  * PD-03B-06: Full provenance — snapshot → feature → observation lineage.
+ * C-1: Uses feature_record_id from input instead of hardcoded null.
  */
 export function assembleCoinProvenance(
   input: CoinSnapshotInput,
@@ -26,7 +28,9 @@ export function assembleCoinProvenance(
     snapshot_version: snapshotVersion,
     input_features: [
       {
-        feature_id: null, // filled by persistence layer if available
+        // C-1: wire feature_record_id from persisted feature row
+        // NULL only when input feature has no persisted identity
+        feature_id: input.feature_record_id ?? null,
         feature_name: "HEALTH",
         feature_score: input.health_score,
         feature_p6_version_id: input.feature_version_id,

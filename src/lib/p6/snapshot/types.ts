@@ -41,6 +41,8 @@ export interface CoinSnapshotInput {
   derivative_score: number | null;
   confidence_score: number | null;
   data_completeness: number | null;
+  // Feature record identity (C-1: provenance feature_id fix)
+  feature_record_id: number | null; // FK to features table row
   // Feature version
   feature_version_id: number | null;
   feature_algorithm_version: string;

@@ -669,6 +669,64 @@ export async function POST(
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
 
+    // P6 Intelligence Snapshot for this coin (PD-03B-09: synchronous)
+    try {
+      const [coinFeature] = await db
+        .select({
+          id: features.id,
+          trendScore: features.trendScore,
+          volumeScore: features.volumeScore,
+          momentumScore: features.momentumScore,
+          derivativeScore: features.derivativeScore,
+          confidenceScore: features.confidenceScore,
+          dataCompleteness: features.dataCompleteness,
+          versionId: features.versionId,
+        })
+        .from(features)
+        .where(and(eq(features.coinId, coin.id), eq(features.date, today)))
+        .limit(1);
+
+      if (coinFeature) {
+        const { runSnapshotGeneration } = await import("@/lib/p6/snapshot/service");
+        const { SNAPSHOT_V1_VERSION } = await import("@/lib/p6/snapshot/types");
+
+        const scores = [coinFeature.trendScore, coinFeature.volumeScore, coinFeature.momentumScore, coinFeature.derivativeScore].filter(
+          (s): s is number => s !== null
+        );
+        const healthScore = scores.length > 0
+          ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100
+          : 50;
+
+        await runSnapshotGeneration(
+          new Date(),
+          SNAPSHOT_V1_VERSION,
+          [{
+            entity_id: coin.id,
+            health_score: healthScore,
+            trend_score: coinFeature.trendScore,
+            volume_score: coinFeature.volumeScore,
+            momentum_score: coinFeature.momentumScore,
+            derivative_score: coinFeature.derivativeScore,
+            confidence_score: coinFeature.confidenceScore,
+            data_completeness: coinFeature.dataCompleteness,
+            feature_record_id: coinFeature.id,
+            feature_version_id: coinFeature.versionId,
+            feature_algorithm_version: SNAPSHOT_V1_VERSION.algorithm_version,
+            feature_parameter_version: SNAPSHOT_V1_VERSION.parameter_version,
+            feature_schema_version: SNAPSHOT_V1_VERSION.schema_version,
+            feature_config_hash: SNAPSHOT_V1_VERSION.config_hash,
+            quality_metadata: null,
+            freshness_metadata: null,
+            feature_provenance: null,
+          }],
+          [] // No narratives in single-coin refresh
+        );
+      }
+    } catch (snapshotError) {
+      // IS-24: persistence failure is infrastructure failure
+      console.error(`P6 snapshot error for ${coin.symbol}:`, snapshotError);
+    }
+
     // Update scheduler log
     await db
       .update(schedulerLogs)
