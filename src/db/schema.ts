@@ -1347,3 +1347,47 @@ export const p6Snapshots = pgTable(
 
 export type P6Snapshot = typeof p6Snapshots.$inferSelect;
 export type NewP6Snapshot = typeof p6Snapshots.$inferInsert;
+
+// ====== P6-04D: Regime Detection State ======
+// Tracks regime classification for coins and narratives.
+// PD-04B-09: New p6_regime_states table
+export const p6RegimeStates = pgTable(
+  "p6_regime_states",
+  {
+    id: serial("id").primaryKey(),
+    entityType: varchar("entity_type", { length: 20 }).notNull(), // "coin" | "narrative"
+    entityId: integer("entity_id").notNull(),
+    regimeType: varchar("regime_type", { length: 30 }).notNull().default("HEALTH"), // "HEALTH"
+    regimeState: varchar("regime_state", { length: 30 }).notNull(), // STRONG|STABLE|WEAK|TRANSITIONING|INSUFFICIENT_DATA|UNKNOWN
+    previousState: varchar("previous_state", { length: 30 }), // previous regime state
+    confidence: real("confidence").notNull().default(0), // 0-100
+    consecutiveCount: integer("consecutive_count").notNull().default(0),
+    healthScore: real("health_score").notNull(), // current health score
+    // Version tuple (standalone from P6-02 feature version)
+    algorithmVersion: text("algorithm_version").notNull(),
+    parameterVersion: text("parameter_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    configHash: text("config_hash").notNull(),
+    // Snapshot linkage
+    snapshotVersionId: integer("snapshot_version_id"),
+    // Timeframe
+    timeframe: varchar("timeframe", { length: 20 }).notNull().default("DAILY"),
+    // Metadata (JSONB)
+    qualityMetadata: jsonb("quality_metadata"),
+    freshnessMetadata: jsonb("freshness_metadata"),
+    provenance: jsonb("provenance").notNull(),
+    // Lifecycle
+    status: varchar("status", { length: 20 }).notNull().default("CURRENT"), // CURRENT | SUPERSEDED
+    // Timestamps
+    calculationTime: timestamp("calculation_time").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("p6_regime_entity_idx").on(table.entityType, table.entityId, table.regimeType),
+    index("p6_regime_status_idx").on(table.status),
+    index("p6_regime_calculation_idx").on(table.calculationTime),
+  ]
+);
+
+export type P6RegimeState = typeof p6RegimeStates.$inferSelect;
+export type NewP6RegimeState = typeof p6RegimeStates.$inferInsert;
