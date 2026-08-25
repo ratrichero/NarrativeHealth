@@ -166,6 +166,11 @@ export const features = pgTable(
     sourceProvenance: jsonb("source_provenance"),
     calculatedAt: timestamp("calculated_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
+    // P6-02E: additive P6 columns (PD-4, PD-7)
+    p6VersionId: integer("p6_version_id")
+      .references(() => p6FeatureVersions.id, { onDelete: "set null" }),
+    p6Provenance: jsonb("p6_provenance"),
+    p6QualityMetadata: jsonb("p6_quality_metadata"),
   },
   (table) => ({
     coinDateIdx: index("features_coin_date_idx").on(table.coinId, table.date),
