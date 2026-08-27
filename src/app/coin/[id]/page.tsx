@@ -15,6 +15,7 @@ import { ScoreBreakdown } from "@/components/ScoreBreakdown";
 import { WatchlistDialog } from "@/components/WatchlistDialog";
 import { HealthTimeline } from "@/components/health-timeline";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { P6IntelligencePanel } from "@/components/P6IntelligencePanel";
 import { ArrowLeft, AlertCircle, ExternalLink, RefreshCw, TrendingUp, TrendingDown, Minus, Star } from "lucide-react";
 import {
   LineChart,
@@ -603,6 +604,13 @@ export default function CoinDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* P6 Intelligence — PD-09A-02: P6-native intelligence + P6-08 historical comparison */}
+      <P6IntelligencePanel
+        entityType="coin"
+        entityId={coin.id}
+        entityName={coin.symbol}
+      />
 
       {/* Metrics Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">

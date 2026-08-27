@@ -8,7 +8,7 @@ import { HealthBadge } from "@/components/HealthBadge";
 import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { CoinRankingTable } from "@/components/CoinRankingTable";
-// P6-07F: Legacy P3/P4/P5 panels retired — P6-native presentation via /api/p6/*
+import { P6IntelligencePanel } from "@/components/P6IntelligencePanel";
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import {
   LineChart,
@@ -138,7 +138,12 @@ export default function NarrativeDetailPage() {
         </CardContent>
       </Card>
 
-      {/* P6-07F: Legacy P3/P4/P5 panels retired — P6 intelligence via /api/p6/narratives/[id] */}
+      {/* P6 Intelligence — PD-09A-02: P6-native intelligence + P6-08 historical comparison */}
+      <P6IntelligencePanel
+        entityType="narrative"
+        entityId={narrative.id}
+        entityName={narrative.name}
+      />
 
       {/* Correlation Matrix */}
       <CorrelationHeatmap data={correlation ?? null} isLoading={correlationLoading} />
