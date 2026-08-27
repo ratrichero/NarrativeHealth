@@ -1106,6 +1106,16 @@ export async function POST(request: NextRequest) {
       console.error("Error generating P6 snapshots:", snapshotError);
     }
 
+    // P6-07: Wire P6-04 → P6-05 → P6-06 after P6-03 snapshot (PD-07A-01)
+    // PD-E2: never block refresh on P6-04/05/06 failure
+    try {
+      const { runP6DownstreamPipeline } = await import("@/lib/p6/presentation/pipeline");
+      const pipelineResult = await runP6DownstreamPipeline();
+      console.log(`P6 downstream pipeline: regime=${pipelineResult.regimeCount} warnings=${pipelineResult.warningCount} summaries=${pipelineResult.summaryCount}`);
+    } catch (pipelineError) {
+      console.error("P6 downstream pipeline error (non-blocking):", pipelineError);
+    }
+
     // Binance Square content pipeline (non-blocking side effect)
     // Fires after refresh completes; failures do NOT affect refresh status
     try {
