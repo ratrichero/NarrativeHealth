@@ -261,6 +261,24 @@ export async function readSnapshotHistory(
 }
 
 /**
+ * Read all current narrative snapshots.
+ * PD-03B-11: narrative consumes persisted coin snapshots.
+ */
+export async function readCurrentNarrativeSnapshots(): Promise<SnapshotRecord[]> {
+  return db
+    .select()
+    .from(p6Snapshots)
+    .where(
+      and(
+        eq(p6Snapshots.entityType, "narrative"),
+        eq(p6Snapshots.snapshotType, "NARRATIVE_HEALTH"),
+        eq(p6Snapshots.status, "CURRENT")
+      )
+    )
+    .orderBy(desc(p6Snapshots.calculationTime));
+}
+
+/**
  * A raw snapshot record from the database.
  */
 export type SnapshotRecord = typeof p6Snapshots.$inferSelect;
