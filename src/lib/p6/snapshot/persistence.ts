@@ -10,7 +10,7 @@
  * Per IS-28: uniqueness per (entity_type, entity_id, snapshot_type, window_end).
  */
 
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, asc, desc } from "drizzle-orm";
 import { db } from "@/db";
 import { p6Snapshots } from "@/db/schema";
 import type {
@@ -234,6 +234,30 @@ export async function readCurrentCoinSnapshots(): Promise<SnapshotRecord[]> {
       )
     )
     .orderBy(desc(p6Snapshots.calculationTime));
+}
+
+/**
+ * Read historical snapshots for an entity, ordered by window_end ASC.
+ * P6-08: Returns ALL records (CURRENT + SUPERSEDED) for temporal browsing.
+ */
+export async function readSnapshotHistory(
+  entityType: "coin" | "narrative",
+  entityId: number,
+  snapshotType: "COIN_HEALTH" | "NARRATIVE_HEALTH",
+  limit: number = 100
+): Promise<SnapshotRecord[]> {
+  return db
+    .select()
+    .from(p6Snapshots)
+    .where(
+      and(
+        eq(p6Snapshots.entityType, entityType),
+        eq(p6Snapshots.entityId, entityId),
+        eq(p6Snapshots.snapshotType, snapshotType)
+      )
+    )
+    .orderBy(asc(p6Snapshots.windowEnd))
+    .limit(limit);
 }
 
 /**

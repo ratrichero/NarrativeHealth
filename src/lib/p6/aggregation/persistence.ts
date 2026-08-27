@@ -8,7 +8,7 @@
  * IA-08: never writes to P5 tables.
  */
 
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import { p6IntelligenceSummaries } from "@/db/schema";
 import type {
@@ -158,6 +158,37 @@ export async function readCurrentSummary(
   } catch (error) {
     console.error("[P6-Summary] Read failure:", error);
     return null;
+  }
+}
+
+/**
+ * Read summary history for an entity.
+ * P6-08: Returns ALL records (CURRENT + SUPERSEDED) ordered by window_end ASC.
+ */
+export async function readSummaryHistory(
+  entityType: string,
+  entityId: number,
+  timeframe: string = "DAILY",
+  limit: number = 100
+): Promise<StoredSummaryRow[]> {
+  try {
+    const rows = await db
+      .select()
+      .from(p6IntelligenceSummaries)
+      .where(
+        and(
+          eq(p6IntelligenceSummaries.entityType, entityType),
+          eq(p6IntelligenceSummaries.entityId, entityId),
+          eq(p6IntelligenceSummaries.timeframe, timeframe)
+        )
+      )
+      .orderBy(asc(p6IntelligenceSummaries.windowEnd))
+      .limit(limit);
+
+    return rows.map(rowToStoredSummary);
+  } catch (error) {
+    console.error("[P6-Summary] Read history failure:", error);
+    return [];
   }
 }
 
