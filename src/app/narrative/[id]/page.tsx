@@ -8,9 +8,7 @@ import { HealthBadge } from "@/components/HealthBadge";
 import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { CoinRankingTable } from "@/components/CoinRankingTable";
-import { P3IntelligencePanel } from "@/components/P3IntelligencePanel";
-import { P4DecisionSupportPanel } from "@/components/P4DecisionSupportPanel";
-import { P5ActionDecisionPanel } from "@/components/P5ActionDecisionPanel";
+// P6-07F: Legacy P3/P4/P5 panels retired — P6-native presentation via /api/p6/*
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import {
   LineChart,
@@ -140,18 +138,7 @@ export default function NarrativeDetailPage() {
         </CardContent>
       </Card>
 
-      {/* P3 Intelligence */}
-      <P3IntelligencePanel
-        narrativeName={narrative.name}
-        viewModel={narrative.p3Intelligence ?? null}
-        history={narrative.p3IntelligenceHistory ?? null}
-      />
-
-      {/* P4 Decision Support (P4-02 §11 — between P3 Intelligence and CorrelationHeatmap) */}
-      <P4DecisionSupportPanel viewModel={narrative.p4DecisionSupport ?? null} />
-
-      {/* P5 Action Decision (P5-06C — canonical data from NarrativeDetail) */}
-      <P5ActionDecisionPanel narrativeId={id} initialData={narrative.p5ActionDecision ?? null} />
+      {/* P6-07F: Legacy P3/P4/P5 panels retired — P6 intelligence via /api/p6/narratives/[id] */}
 
       {/* Correlation Matrix */}
       <CorrelationHeatmap data={correlation ?? null} isLoading={correlationLoading} />
