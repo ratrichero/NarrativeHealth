@@ -395,14 +395,18 @@ export async function POST(request: NextRequest) {
 
             // P6-01E-C: canonical observation → quality evaluation + persistence
             // BEFORE the existing observation DB write (PD-E1).
-            // Classification never blocks ingestion (PD-E2); a persistence
-            // failure here is an infrastructure error and propagates to the
-            // existing per-coin error handler like any other DB failure.
-            await evaluateKlineObservationQuality(kline, {
-              entityId: coin.id,
-              priceSource,
-              timeframe: "DAILY",
-            });
+            // PD-E2: Classification never blocks ingestion — infrastructure errors
+            // from quality persistence (e.g. missing table) are caught here so
+            // they cannot skip downstream indicator calculation or feature creation.
+            try {
+              await evaluateKlineObservationQuality(kline, {
+                entityId: coin.id,
+                priceSource,
+                timeframe: "DAILY",
+              });
+            } catch (qualityError) {
+              console.warn(`[P6-01E-C] Quality evaluation failed for ${coin.symbol} kline:`, qualityError instanceof Error ? qualityError.message : qualityError);
+            }
 
             await db
               .insert(marketPriceDaily)
