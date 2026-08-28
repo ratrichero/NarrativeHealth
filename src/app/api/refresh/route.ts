@@ -527,17 +527,29 @@ export async function POST(request: NextRequest) {
         if (klines.length > 0) {
           try {
             const { convertBinanceKlines } = await import("@/lib/technical-analysis/indicators");
-            await indicatorService.calculateAndSave(convertBinanceKlines(klines), coin.id, today, '1d', priceSource);
+            const klineData1d = convertBinanceKlines(klines);
+            console.log(`[INDICATOR-1D] ${coin.symbol} (id=${coin.id}): klines=${klines.length} → klineData=${klineData1d.length}, date=${today}, source=${priceSource}`);
+            await indicatorService.calculateAndSave(klineData1d, coin.id, today, '1d', priceSource);
+            console.log(`[INDICATOR-1D-OK] ${coin.symbol} (id=${coin.id}): saved for ${today}`);
           } catch (e) {
-            console.error(`Failed to calculate 1d indicators for ${coin.symbol}:`, e);
+            const errMsg = e instanceof Error ? e.message : String(e);
+            const errStack = e instanceof Error ? e.stack : undefined;
+            console.error(`[INDICATOR-1D-FAIL] ${coin.symbol} (id=${coin.id}, date=${today}, source=${priceSource}): ${errMsg}`);
+            if (errStack) console.error(`[INDICATOR-1D-STACK] ${coin.symbol}:`, errStack);
           }
         }
         if (klines4h.length > 0) {
           try {
             const { convertBinanceKlines } = await import("@/lib/technical-analysis/indicators");
-            await indicatorService.calculateAndSave(convertBinanceKlines(klines4h), coin.id, today, '4h', priceSource);
+            const klineData4h = convertBinanceKlines(klines4h);
+            console.log(`[INDICATOR-4H] ${coin.symbol} (id=${coin.id}): klines4h=${klines4h.length} → klineData=${klineData4h.length}, date=${today}, source=${priceSource}`);
+            await indicatorService.calculateAndSave(klineData4h, coin.id, today, '4h', priceSource);
+            console.log(`[INDICATOR-4H-OK] ${coin.symbol} (id=${coin.id}): saved for ${today}`);
           } catch (e) {
-            console.error(`Failed to calculate 4h indicators for ${coin.symbol}:`, e);
+            const errMsg = e instanceof Error ? e.message : String(e);
+            const errStack = e instanceof Error ? e.stack : undefined;
+            console.error(`[INDICATOR-4H-FAIL] ${coin.symbol} (id=${coin.id}, date=${today}, source=${priceSource}): ${errMsg}`);
+            if (errStack) console.error(`[INDICATOR-4H-STACK] ${coin.symbol}:`, errStack);
           }
         }
 
