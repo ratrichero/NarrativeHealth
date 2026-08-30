@@ -204,6 +204,9 @@ export async function POST(request: NextRequest) {
 
     let coinsProcessed = 0;
     let errors: string[] = [];
+    let indicatorSuccessCount = 0;
+    let indicatorFailCount = 0;
+    let indicatorSkipCount = 0; // klines.length === 0
 
     // Collect CoinGecko data for FDV only
     const coingeckoIds = activeCoins
@@ -524,6 +527,11 @@ export async function POST(request: NextRequest) {
         });
 
         // Calculate indicators (P1A)
+        // DIAG: also capture when klines is empty (silent skip root cause)
+        if (klines.length === 0) {
+          indicatorSkipCount++;
+          console.warn(`[INDICATOR-SKIP] ${coin.symbol} (id=${coin.id}): klines.length=0, indicator calculation skipped. klines4h=${klines4h.length}, priceSource=${priceSource}`);
+        }
         if (klines.length > 0) {
           try {
             const { convertBinanceKlines } = await import("@/lib/technical-analysis/indicators");
@@ -531,11 +539,14 @@ export async function POST(request: NextRequest) {
             console.log(`[INDICATOR-1D] ${coin.symbol} (id=${coin.id}): klines=${klines.length} → klineData=${klineData1d.length}, date=${today}, source=${priceSource}`);
             await indicatorService.calculateAndSave(klineData1d, coin.id, today, '1d', priceSource);
             console.log(`[INDICATOR-1D-OK] ${coin.symbol} (id=${coin.id}): saved for ${today}`);
+            indicatorSuccessCount++;
           } catch (e) {
             const errMsg = e instanceof Error ? e.message : String(e);
             const errStack = e instanceof Error ? e.stack : undefined;
             console.error(`[INDICATOR-1D-FAIL] ${coin.symbol} (id=${coin.id}, date=${today}, source=${priceSource}): ${errMsg}`);
             if (errStack) console.error(`[INDICATOR-1D-STACK] ${coin.symbol}:`, errStack);
+            errors.push(`[INDICATOR-1D] ${coin.symbol}: ${errMsg}`);
+            indicatorFailCount++;
           }
         }
         if (klines4h.length > 0) {
@@ -550,6 +561,7 @@ export async function POST(request: NextRequest) {
             const errStack = e instanceof Error ? e.stack : undefined;
             console.error(`[INDICATOR-4H-FAIL] ${coin.symbol} (id=${coin.id}, date=${today}, source=${priceSource}): ${errMsg}`);
             if (errStack) console.error(`[INDICATOR-4H-STACK] ${coin.symbol}:`, errStack);
+            errors.push(`[INDICATOR-4H] ${coin.symbol}: ${errMsg}`);
           }
         }
 
@@ -958,7 +970,7 @@ export async function POST(request: NextRequest) {
       recordsCollected: coinsProcessed,
     });
 
-    // Update scheduler log
+    // Update scheduler log — include INDICATOR diagnostic summary for production visibility
     await db
       .update(schedulerLogs)
       .set({
@@ -966,7 +978,16 @@ export async function POST(request: NextRequest) {
         completedAt: new Date(),
         duration,
         recordsProcessed: coinsProcessed,
-        details: errors.length > 0 ? { errors, scope: "global" } : { scope: "global" },
+        details: {
+          errors,
+          scope: "global",
+          indicator: {
+            success: indicatorSuccessCount,
+            failed: indicatorFailCount,
+            skipped_empty_klines: indicatorSkipCount,
+            businessDate: today,
+          },
+        },
       })
       .where(eq(schedulerLogs.id, logEntry.id));
 
