@@ -27,7 +27,7 @@ import {
   AreaChart,
   Area,
 } from "recharts";
-import { formatLargeNumber, formatPercent, formatIndicatorValue } from "@/lib/utils";
+import { formatLargeNumber, formatPercent, formatIndicatorValue, getBusinessDate } from "@/lib/utils";
 import { indicatorService } from "@/lib/services/indicator.service";
 import type { CoinDetail } from "@/types";
 
@@ -484,7 +484,7 @@ export default function CoinDetailPage() {
     enabled: !!coin, // Only run if coin data is loaded
   });
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = getBusinessDate();
   const {
     data: indicators,
     isLoading: indicatorsLoading,
