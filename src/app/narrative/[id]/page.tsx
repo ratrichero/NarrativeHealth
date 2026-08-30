@@ -9,6 +9,9 @@ import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { CoinRankingTable } from "@/components/CoinRankingTable";
 import { P6IntelligencePanel } from "@/components/P6IntelligencePanel";
+import { P3IntelligencePanel } from "@/components/P3IntelligencePanel";
+import { P4DecisionSupportPanel } from "@/components/P4DecisionSupportPanel";
+import { P5ActionDecisionPanel } from "@/components/P5ActionDecisionPanel";
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import {
   LineChart,
@@ -143,6 +146,18 @@ export default function NarrativeDetailPage() {
         entityType="narrative"
         entityId={narrative.id}
         entityName={narrative.name}
+      />
+
+      {/* P5 Action Decision — self-fetching from /api/narratives/[id]/action-decision */}
+      <P5ActionDecisionPanel narrativeId={narrative.id} />
+
+      {/* P4 Decision Support — narrative interpretation layer */}
+      <P4DecisionSupportPanel viewModel={null} />
+
+      {/* P3 Intelligence — narrative current-state intelligence */}
+      <P3IntelligencePanel
+        narrativeName={narrative.name}
+        viewModel={null}
       />
 
       {/* Correlation Matrix */}
