@@ -120,9 +120,16 @@ npx tsc --noEmit → exit code 0 (PASS)
 
 ## 7. Production Verification
 
-**Status: AWAITING DEPLOYMENT + REFRESH**
+**Status: FIX PUSHED — AWAITING DEPLOYMENT**
 
-After deployment, the next production refresh should:
+Production DB state as of 2026-08-30 (pre-fix):
+- Coin snapshots: 0 (all INSERT attempts failed with FK 23503)
+- Narrative snapshots: 27, ALL SUPERSEDED (unique constraint on subsequent refreshes)
+- Regime states: 9 CURRENT, 18 SUPERSEDED (downstream pipeline works)
+- Summaries: 9 CURRENT, 18 SUPERSEDED (downstream pipeline works)
+- Sequence: 410 (383 failed INSERT attempts)
+
+After deployment + next refresh:
 - Coin snapshots: INSERT succeeds (FK violation eliminated)
 - Narrative snapshots: INSERT succeeds on every refresh (unique constraint eliminated)
 - Both coin and narrative CURRENT snapshots should exist
@@ -170,7 +177,7 @@ ORDER BY calculation_time DESC LIMIT 5;
 ## 10. Final Verdict
 
 ```
-P6 SNAPSHOT PERSISTENCE RECOVERED
+P6 SNAPSHOT PERSISTENCE REPAIR DEPLOYED — AWAITING PRODUCTION VERIFICATION
 ```
 
 Two production defects identified and repaired:
@@ -178,3 +185,13 @@ Two production defects identified and repaired:
 2. Unique constraint violation — supersede-then-insert pattern incompatible with unique index
 
 Both fixes are minimal, evidence-based, and preserve P6 frozen contracts.
+
+TypeScript: PASS
+Commit: 4f7f517
+Push: main → origin/main
+
+Production verification requires deployment + refresh. Run post-deploy verification:
+```sql
+SELECT entity_type, status, COUNT(*) FROM p6_snapshots GROUP BY entity_type, status;
+-- Expected: coin CURRENT > 0, narrative CURRENT > 0
+```
