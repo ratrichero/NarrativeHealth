@@ -94,9 +94,10 @@ export async function persistCoinSnapshot(
       .limit(1);
 
     if (existing.length > 0) {
+      // Delete existing to free the unique index key (entity_type, entity_id, snapshot_type, window_end)
+      // IS-28: uniqueness per identity; old record must be removed before new INSERT
       await db
-        .update(p6Snapshots)
-        .set({ status: "SUPERSEDED" })
+        .delete(p6Snapshots)
         .where(eq(p6Snapshots.id, existing[0].id));
     }
 
@@ -126,8 +127,22 @@ export async function persistCoinSnapshot(
       .returning({ id: p6Snapshots.id });
 
     return { id: inserted.id, status: "CURRENT" };
-  } catch {
+  } catch (error) {
     // IS-24: persistence failure returned as null
+    // Diagnostic: surface INSERT error for production observability
+    const err = error as any;
+    console.error("[P6-SNAPSHOT-COIN-INSERT-FAIL]", JSON.stringify({
+      entityId: input.entityId,
+      entityType: "coin",
+      snapshotType: "COIN_HEALTH",
+      errorName: err?.name,
+      errorMessage: err?.message,
+      errorCode: err?.code,
+      errorDetail: err?.detail,
+      errorConstraint: err?.constraint,
+      errorTable: err?.table,
+      errorColumn: err?.column,
+    }));
     return null;
   }
 }
@@ -157,9 +172,9 @@ export async function persistNarrativeSnapshot(
       .limit(1);
 
     if (existing.length > 0) {
+      // Delete existing to free the unique index key
       await db
-        .update(p6Snapshots)
-        .set({ status: "SUPERSEDED" })
+        .delete(p6Snapshots)
         .where(eq(p6Snapshots.id, existing[0].id));
     }
 
@@ -188,7 +203,20 @@ export async function persistNarrativeSnapshot(
       .returning({ id: p6Snapshots.id });
 
     return { id: inserted.id, status: "CURRENT" };
-  } catch {
+  } catch (error) {
+    const err = error as any;
+    console.error("[P6-SNAPSHOT-NARRATIVE-INSERT-FAIL]", JSON.stringify({
+      entityId: input.entityId,
+      entityType: "narrative",
+      snapshotType: "NARRATIVE_HEALTH",
+      errorName: err?.name,
+      errorMessage: err?.message,
+      errorCode: err?.code,
+      errorDetail: err?.detail,
+      errorConstraint: err?.constraint,
+      errorTable: err?.table,
+      errorColumn: err?.column,
+    }));
     return null;
   }
 }

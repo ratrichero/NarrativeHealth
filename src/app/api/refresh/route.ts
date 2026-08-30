@@ -1078,7 +1078,9 @@ export async function POST(request: NextRequest) {
         confidence_score: f.confidenceScore,
         data_completeness: f.dataCompleteness,
         feature_record_id: f.id,
-        feature_version_id: f.versionId,
+        // feature_version_id references p6_feature_versions, not feature_versions
+        // p6_feature_versions may be empty; pass null to avoid FK violation (23503)
+        feature_version_id: null,
         feature_algorithm_version: SNAPSHOT_V1_VERSION.algorithm_version,
         feature_parameter_version: SNAPSHOT_V1_VERSION.parameter_version,
         feature_schema_version: SNAPSHOT_V1_VERSION.schema_version,
