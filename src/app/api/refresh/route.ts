@@ -41,7 +41,7 @@ import { ruleVersionService } from "@/lib/services/rule-version.service";
 import { indicatorService } from "@/lib/services/indicator.service";
 import { ruleEngineService } from "@/lib/services/rule-engine.service";
 import { snapshotService } from "@/lib/services/snapshot.service";
-import { evaluateKlineObservationQuality } from "@/lib/p6/ingestion/kline-quality-hook";
+import { evaluateKlineObservationQualityBatch } from "@/lib/p6/ingestion/kline-quality-batch-hook";
 import { calculateWeightedNarrativeHealth, type CoinHealthData } from "@/lib/scoring/narrative-health";
 import { KlineData } from "@/lib/technical-analysis/types";
 import { runSnapshotGeneration, type NarrativeMembershipData } from "@/lib/p6/snapshot/service";
@@ -396,24 +396,25 @@ export async function POST(request: NextRequest) {
 
         // Save price data
         if (klines.length > 0) {
+          // P6-PERF-01: Batch quality evaluation for all klines at once.
+          // This replaces per-kline evaluateKlineObservationQuality calls
+          // with a single bulk in-memory validation + batch DB persistence.
+          // PD-E2: Classification never blocks ingestion — infrastructure errors
+          // from quality persistence are caught here so they cannot skip
+          // downstream indicator calculation or feature creation.
+          try {
+            await evaluateKlineObservationQualityBatch(klines, {
+              entityId: coin.id,
+              priceSource,
+              timeframe: "DAILY",
+            });
+          } catch (qualityError) {
+            console.warn(`[P6-PERF-01] Batch quality evaluation failed for ${coin.symbol}:`, qualityError instanceof Error ? qualityError.message : qualityError);
+          }
+
           for (const kline of klines) {
             // Convert UTC timestamp to business timezone date
             const klineDate = getBusinessDate(new Date(kline.openTime));
-
-            // P6-01E-C: canonical observation → quality evaluation + persistence
-            // BEFORE the existing observation DB write (PD-E1).
-            // PD-E2: Classification never blocks ingestion — infrastructure errors
-            // from quality persistence (e.g. missing table) are caught here so
-            // they cannot skip downstream indicator calculation or feature creation.
-            try {
-              await evaluateKlineObservationQuality(kline, {
-                entityId: coin.id,
-                priceSource,
-                timeframe: "DAILY",
-              });
-            } catch (qualityError) {
-              console.warn(`[P6-01E-C] Quality evaluation failed for ${coin.symbol} kline:`, qualityError instanceof Error ? qualityError.message : qualityError);
-            }
 
             await db
               .insert(marketPriceDaily)
