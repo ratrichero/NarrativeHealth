@@ -75,19 +75,31 @@ export function calculateDerivativeScore(
   };
 }
 
+/**
+ * Continuous OI scoring using tanh-based sigmoid.
+ * Maps OI change % to a smooth score in [10, 90].
+ * Neutral (0% change) maps to ~50.
+ * Positive change → bullish (higher score).
+ * Negative change → bearish (lower score).
+ */
 function scoreOIChange(pct: number): number {
-  if (pct > 20) return 90;
-  if (pct > 10) return 75;
-  if (pct > 0) return 60;
-  if (pct > -10) return 40;
-  return 20;
+  // tanh gives a smooth S-curve: [-∞,+∞] → [-1,+1]
+  // Scale: 15% OI change ≈ tanh(1) ≈ 0.76
+  const normalized = Math.tanh(pct / 15);
+  // Map [-1,+1] → [10, 90], centered at 50
+  return Math.round((50 + normalized * 40) * 10) / 10;
 }
 
+/**
+ * Continuous funding rate scoring using linear mapping with soft bounds.
+ * Maps funding rate to a smooth score in [15, 90].
+ * Negative funding = bullish (shorts paying longs) → higher score.
+ * Positive funding = bearish (longs paying shorts) → lower score.
+ * Neutral (0) maps to ~52.5.
+ */
 function scoreFunding(rate: number): number {
-  // rate is decimal: -0.0105 = -1.05%
-  if (rate < -0.0001) return 90; // Very negative = bullish (shorts paying longs heavily)
-  if (rate < 0) return 75; // Slightly negative = bullish
-  if (rate < 0.0002) return 55; // Neutral range
-  if (rate < 0.0005) return 35; // Slightly positive = bearish
-  return 15; // Very positive = bearish (longs paying shorts)
+  // Linear mapping: rate [-0.001, +0.001] → score [90, 15]
+  // Center at rate=0 → score=52.5 (slightly bullish default)
+  const clamped = Math.max(-0.001, Math.min(0.001, rate));
+  return Math.round((52.5 - clamped * 37500) * 10) / 10;
 }
