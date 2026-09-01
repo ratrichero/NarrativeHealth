@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS p5_p4_snapshots (
   id SERIAL PRIMARY KEY,
   identity_key VARCHAR(255) NOT NULL UNIQUE,
   narrative_id INTEGER NOT NULL,
-  window VARCHAR(20) NOT NULL,
+  "window" VARCHAR(20) NOT NULL,
   algorithm_key VARCHAR(100) NOT NULL,
   algorithm_version VARCHAR(50) NOT NULL,
   calculation_mode VARCHAR(30) NOT NULL,
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS p5_p4_snapshots (
   recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS p5_p4_snapshots_narrative_window_idx
-  ON p5_p4_snapshots(narrative_id, window);
+  ON p5_p4_snapshots(narrative_id, "window");
 
 CREATE TABLE IF NOT EXISTS p5_policies (
   id SERIAL PRIMARY KEY,
