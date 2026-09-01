@@ -42,6 +42,8 @@ import { indicatorService } from "@/lib/services/indicator.service";
 import { ruleEngineService } from "@/lib/services/rule-engine.service";
 import { snapshotService } from "@/lib/services/snapshot.service";
 import { evaluateKlineObservationQualityBatch } from "@/lib/p6/ingestion/kline-quality-batch-hook";
+import { processSingleCoin } from "@/lib/p6/refresh/coin-processor";
+import { pMap } from "@/lib/utils/p-map";
 import { calculateWeightedNarrativeHealth, type CoinHealthData } from "@/lib/scoring/narrative-health";
 import { KlineData } from "@/lib/technical-analysis/types";
 import { runSnapshotGeneration, type NarrativeMembershipData } from "@/lib/p6/snapshot/service";
@@ -208,9 +210,6 @@ export async function POST(request: NextRequest) {
 
     let coinsProcessed = 0;
     let errors: string[] = [];
-    let indicatorSuccessCount = 0;
-    let indicatorFailCount = 0;
-    let indicatorSkipCount = 0; // klines.length === 0
 
     // Collect CoinGecko data for FDV only
     const coingeckoIds = activeCoins
@@ -229,564 +228,40 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Process each coin
-    for (const coin of activeCoins) {
-      try {
-        let binanceSpotOk = false;
-        let binanceFuturesOk = false;
-        let coinCoingeckoOk = false;
+    // P6-PERF-03: Process all coins in parallel with bounded concurrency.
+    // Each coin is fully independent — no cross-coin dependencies exist.
+    // Concurrency limit of 6 keeps Binance API calls well within rate limits
+    // (6 concurrent × 5 API calls = 30 requests, vs 1200/min limit).
+    const coinStartTime = Date.now();
+    const COIN_CONCURRENCY = 6;
 
-        // Collect price data - prioritize Futures if available, otherwise use Spot
-        let priceSource = "binance_spot";
-        let klines: Awaited<ReturnType<typeof fetchBinanceSpotKlines>> = [];
-        let klines4h: Awaited<ReturnType<typeof fetchBinanceSpotKlines>> = [];
-        let volume24h: number | null = null;
-        let marketCapFromCoingecko: number | null = null;
-
-        // Get CoinGecko market cap first (most accurate)
-        if (coin.coingeckoId && coingeckoData.has(coin.coingeckoId)) {
-          const cgData = coingeckoData.get(coin.coingeckoId);
-          if (cgData && cgData.marketCap) {
-            marketCapFromCoingecko = cgData.marketCap;
-            coinCoingeckoOk = true;
-            console.log(`Got market cap from CoinGecko for ${coin.symbol}: $${marketCapFromCoingecko?.toLocaleString() || 'N/A'}`);
-          }
-        }
-
-        if (coin.binanceFuturesSymbol) {
-          try {
-            klines = await fetchBinanceFuturesKlines(coin.binanceFuturesSymbol, 200);
-            priceSource = "binance_futures";
-            if (klines.length > 0) {
-              binanceFuturesOk = true;
-              console.log(`Successfully fetched ${klines.length} futures klines for ${coin.symbol}`);
-
-              try {
-                klines4h = await fetchBinanceFuturesKlines(coin.binanceFuturesSymbol, 100, "4h");
-              } catch (e) {
-                console.warn(`Failed to fetch 4h futures klines for ${coin.symbol}`);
-              }
-
-              // Get 24h volume from futures ticker
-              const futuresTicker = await fetchBinanceFuturesTicker(coin.binanceFuturesSymbol);
-              if (futuresTicker) {
-                volume24h = parseFloat(futuresTicker.quoteVolume);
-
-                // Use CoinGecko market cap if available, otherwise calculate approximate from Binance
-                const marketCapToSave = marketCapFromCoingecko || (volume24h * parseFloat(futuresTicker.lastPrice));
-
-                // Save market cap - prioritize CoinGecko (accurate) over Binance (approximate)
-                if (marketCapToSave !== null && marketCapToSave > 0) {
-                  await db
-                    .insert(coinMetrics)
-                    .values({
-                      coinId: coin.id,
-                      date: today,
-                      marketCap: marketCapToSave?.toString() || null,
-                      source: "binance_futures",
-                    })
-                    .onConflictDoUpdate({
-                      target: [coinMetrics.coinId, coinMetrics.date, coinMetrics.source],
-                      set: {
-                        marketCap: marketCapToSave?.toString() || null,
-                      },
-                    });
-                }
-              } else {
-                // Fallback: use CoinGecko market cap if available, otherwise calculate from Binance
-                const marketCapToSave = marketCapFromCoingecko || (klines.length > 0 ? parseFloat(klines[klines.length - 1].close) * parseFloat(klines[klines.length - 1].quoteVolume) : null);
-                
-                if (marketCapToSave !== null && marketCapToSave > 0) {
-                  await db
-                    .insert(coinMetrics)
-                    .values({
-                      coinId: coin.id,
-                      date: today,
-                      marketCap: marketCapToSave?.toString() || null,
-                      source: "binance_futures",
-                    })
-                    .onConflictDoUpdate({
-                      target: [coinMetrics.coinId, coinMetrics.date, coinMetrics.source],
-                      set: {
-                        marketCap: marketCapToSave?.toString() || null,
-                      },
-                    });
-                }
-              }
-            } else {
-              console.warn(`No futures klines returned for ${coin.symbol} (${coin.binanceFuturesSymbol})`);
-            }
-          } catch (error) {
-            console.error(`Binance futures klines collection failed for ${coin.symbol} (${coin.binanceFuturesSymbol}):`, error);
-            // Fallback to spot if futures fails
-            if (coin.binanceSpotSymbol) {
-              try {
-                klines = await fetchBinanceSpotKlines(coin.binanceSpotSymbol, 200);
-                priceSource = "binance_spot";
-                if (klines.length > 0) {
-                  binanceSpotOk = true;
-                  console.log(`Fallback: Successfully fetched ${klines.length} spot klines for ${coin.symbol}`);
-
-                  try {
-                    klines4h = await fetchBinanceSpotKlines(coin.binanceSpotSymbol, 100, "4h");
-                  } catch (e) {
-                    console.warn(`Failed to fetch 4h spot klines for ${coin.symbol}`);
-                  }
-
-                  // Get 24h volume from spot ticker
-                  const spotTicker = await fetchBinanceSpotTicker(coin.binanceSpotSymbol);
-                  if (spotTicker) {
-                    volume24h = parseFloat(spotTicker.quoteVolume);
-
-                    // Use CoinGecko market cap if available, otherwise calculate approximate from Binance
-                    const marketCapToSave = marketCapFromCoingecko || (volume24h * parseFloat(spotTicker.lastPrice));
-
-                    // Save market cap - prioritize CoinGecko (accurate) over Binance (approximate)
-                    if (marketCapToSave !== null && marketCapToSave > 0) {
-                      await db
-                        .insert(coinMetrics)
-                        .values({
-                          coinId: coin.id,
-                          date: today,
-                          marketCap: marketCapToSave?.toString() || null,
-                          source: "binance_spot",
-                        })
-                        .onConflictDoUpdate({
-                          target: [coinMetrics.coinId, coinMetrics.date, coinMetrics.source],
-                          set: {
-                            marketCap: marketCapToSave?.toString() || null,
-                          },
-                        });
-                    }
-                  }
-                }
-              } catch (spotError) {
-                console.error(`Binance spot fallback failed for ${coin.symbol}:`, spotError);
-              }
-            }
-          }
-        } else if (coin.binanceSpotSymbol) {
-          try {
-            klines = await fetchBinanceSpotKlines(coin.binanceSpotSymbol, 200);
-            priceSource = "binance_spot";
-            if (klines.length > 0) {
-              binanceSpotOk = true;
-              console.log(`Successfully fetched ${klines.length} spot klines for ${coin.symbol}`);
-
-              try {
-                klines4h = await fetchBinanceSpotKlines(coin.binanceSpotSymbol, 100, "4h");
-              } catch (e) {
-                console.warn(`Failed to fetch 4h spot klines for ${coin.symbol}`);
-              }
-
-              // Get 24h volume from spot ticker
-              const spotTicker = await fetchBinanceSpotTicker(coin.binanceSpotSymbol);
-              if (spotTicker) {
-                volume24h = parseFloat(spotTicker.quoteVolume);
-              }
-            } else {
-              console.warn(`No spot klines returned for ${coin.symbol} (${coin.binanceSpotSymbol})`);
-            }
-          } catch (error) {
-            console.error(`Binance spot collection failed for ${coin.symbol} (${coin.binanceSpotSymbol}):`, error);
-          }
-        } else {
-          console.warn(`No Binance symbol configured for ${coin.symbol}`);
-        }
-
-        // Save price data
-        if (klines.length > 0) {
-          // P6-PERF-01: Batch quality evaluation for all klines at once.
-          // This replaces per-kline evaluateKlineObservationQuality calls
-          // with a single bulk in-memory validation + batch DB persistence.
-          // PD-E2: Classification never blocks ingestion — infrastructure errors
-          // from quality persistence are caught here so they cannot skip
-          // downstream indicator calculation or feature creation.
-          try {
-            await evaluateKlineObservationQualityBatch(klines, {
-              entityId: coin.id,
-              priceSource,
-              timeframe: "DAILY",
-            });
-          } catch (qualityError) {
-            console.warn(`[P6-PERF-01] Batch quality evaluation failed for ${coin.symbol}:`, qualityError instanceof Error ? qualityError.message : qualityError);
-          }
-
-          for (const kline of klines) {
-            // Convert UTC timestamp to business timezone date
-            const klineDate = getBusinessDate(new Date(kline.openTime));
-
-            await db
-              .insert(marketPriceDaily)
-              .values({
-                coinId: coin.id,
-                date: klineDate,
-                open: kline.open,
-                high: kline.high,
-                low: kline.low,
-                close: kline.close,
-                volume: kline.volume,
-                quoteVolume: kline.quoteVolume,
-                source: priceSource,
-                volume24h: klineDate === today ? volume24h?.toString() : null,
-              })
-              .onConflictDoUpdate({
-                target: [marketPriceDaily.coinId, marketPriceDaily.date],
-                set: {
-                  open: kline.open,
-                  high: kline.high,
-                  low: kline.low,
-                  close: kline.close,
-                  volume: kline.volume,
-                  quoteVolume: kline.quoteVolume,
-                  source: priceSource,
-                  volume24h: klineDate === today ? volume24h?.toString() : null,
-                },
-              });
-          }
-        }
-
-        // Collect Binance Futures data (OI and Funding Rate)
-        let oiCurrent: number | null = null;
-        let oiPrev: number | null = null;
-        let fundingRate: number | null = null;
-
-        if (coin.binanceFuturesSymbol) {
-          try {
-            const futuresMetrics = await fetchBinanceFuturesMetrics(coin.binanceFuturesSymbol);
-            oiCurrent = futuresMetrics.openInterest;
-            fundingRate = futuresMetrics.fundingRate;
-
-            // Get historical OI for comparison
-            const oiHistory = await fetchBinanceOIHistory(coin.binanceFuturesSymbol, "1d", 2);
-            if (oiHistory.length > 0) {
-              oiPrev = oiHistory[oiHistory.length - 1].openInterest;
-            }
-
-            // Only save futures metrics if we have at least one value
-            if (oiCurrent !== null || fundingRate !== null) {
-              binanceFuturesOk = true;
-
-              await db
-                .insert(coinMetrics)
-                .values({
-                  coinId: coin.id,
-                  date: today,
-                  openInterest: oiCurrent?.toString() || null,
-                  fundingRate: fundingRate?.toString() || null,
-                  source: "binance_futures",
-                })
-                .onConflictDoUpdate({
-                  target: [coinMetrics.coinId, coinMetrics.date, coinMetrics.source],
-                  set: {
-                    openInterest: oiCurrent?.toString() || null,
-                    fundingRate: fundingRate?.toString() || null,
-                  },
-                });
-            } else {
-              console.warn(`No OI or funding data returned for ${coin.symbol} (${coin.binanceFuturesSymbol})`);
-            }
-
-            if (oiCurrent === null && fundingRate === null) {
-              console.warn(`No OI or funding data returned for ${coin.symbol} (${coin.binanceFuturesSymbol})`);
-            }
-          } catch (error) {
-            console.error(`Binance futures collection failed for ${coin.symbol} (${coin.binanceFuturesSymbol}):`, error);
-          }
-        } else {
-          console.log(`No Binance Futures symbol configured for ${coin.symbol}`);
-        }
-
-        // Get FDV from CoinGecko (only FDV, not Market Cap)
-        if (coin.coingeckoId && coingeckoData.has(coin.coingeckoId)) {
-          const cgData = coingeckoData.get(coin.coingeckoId)!;
-          coinCoingeckoOk = true;
-
-          await db
-            .insert(coinMetrics)
-            .values({
-              coinId: coin.id,
-              date: today,
-              fullyDilutedValuation: cgData.fullyDilutedValuation?.toString() || null,
-              source: "coingecko",
-            })
-            .onConflictDoUpdate({
-              target: [coinMetrics.coinId, coinMetrics.date, coinMetrics.source],
-              set: {
-                fullyDilutedValuation: cgData.fullyDilutedValuation?.toString() || null,
-              },
-            });
-        }
-
-        // Update source status for this coin - delete then insert approach
-        await db.delete(sourceStatus).where(
-          and(eq(sourceStatus.source, "binance_spot"), eq(sourceStatus.coinId, coin.id))
-        );
-        await db.insert(sourceStatus).values({
-          source: "binance_spot",
-          coinId: coin.id,
-          status: binanceSpotOk ? "OK" : "FAILED",
-          lastAttempt: new Date(),
-          lastSuccess: binanceSpotOk ? new Date() : null,
-          recordsCollected: binanceSpotOk ? 200 : 0,
+    const coinResults = await pMap(
+      activeCoins,
+      async (coin) => {
+        return processSingleCoin(coin, {
+          today,
+          yesterday,
+          healthWeights,
+          confidenceWeights,
+          activeVersion,
+          featureVersion,
+          p6FeatureVersion,
+          coingeckoData,
         });
+      },
+      { concurrency: COIN_CONCURRENCY },
+    );
 
-        // Calculate indicators (P1A)
-        // DIAG: also capture when klines is empty (silent skip root cause)
-        if (klines.length === 0) {
-          indicatorSkipCount++;
-          console.warn(`[INDICATOR-SKIP] ${coin.symbol} (id=${coin.id}): klines.length=0, indicator calculation skipped. klines4h=${klines4h.length}, priceSource=${priceSource}`);
-        }
-        if (klines.length > 0) {
-          try {
-            const { convertBinanceKlines } = await import("@/lib/technical-analysis/indicators");
-            const klineData1d = convertBinanceKlines(klines);
-            console.log(`[INDICATOR-1D] ${coin.symbol} (id=${coin.id}): klines=${klines.length} → klineData=${klineData1d.length}, date=${today}, source=${priceSource}`);
-            await indicatorService.calculateAndSave(klineData1d, coin.id, today, '1d', priceSource);
-            console.log(`[INDICATOR-1D-OK] ${coin.symbol} (id=${coin.id}): saved for ${today}`);
-            indicatorSuccessCount++;
-          } catch (e) {
-            const errMsg = e instanceof Error ? e.message : String(e);
-            const errStack = e instanceof Error ? e.stack : undefined;
-            console.error(`[INDICATOR-1D-FAIL] ${coin.symbol} (id=${coin.id}, date=${today}, source=${priceSource}): ${errMsg}`);
-            if (errStack) console.error(`[INDICATOR-1D-STACK] ${coin.symbol}:`, errStack);
-            errors.push(`[INDICATOR-1D] ${coin.symbol}: ${errMsg}`);
-            indicatorFailCount++;
-          }
-        }
-        if (klines4h.length > 0) {
-          try {
-            const { convertBinanceKlines } = await import("@/lib/technical-analysis/indicators");
-            const klineData4h = convertBinanceKlines(klines4h);
-            console.log(`[INDICATOR-4H] ${coin.symbol} (id=${coin.id}): klines4h=${klines4h.length} → klineData=${klineData4h.length}, date=${today}, source=${priceSource}`);
-            await indicatorService.calculateAndSave(klineData4h, coin.id, today, '4h', priceSource);
-            console.log(`[INDICATOR-4H-OK] ${coin.symbol} (id=${coin.id}): saved for ${today}`);
-          } catch (e) {
-            const errMsg = e instanceof Error ? e.message : String(e);
-            const errStack = e instanceof Error ? e.stack : undefined;
-            console.error(`[INDICATOR-4H-FAIL] ${coin.symbol} (id=${coin.id}, date=${today}, source=${priceSource}): ${errMsg}`);
-            if (errStack) console.error(`[INDICATOR-4H-STACK] ${coin.symbol}:`, errStack);
-            errors.push(`[INDICATOR-4H] ${coin.symbol}: ${errMsg}`);
-          }
-        }
-
-        // Calculate features
-        const priceData = await db
-          .select({
-            date: marketPriceDaily.date,
-            open: marketPriceDaily.open,
-            high: marketPriceDaily.high,
-            low: marketPriceDaily.low,
-            close: marketPriceDaily.close,
-            volume: marketPriceDaily.volume,
-          })
-          .from(marketPriceDaily)
-          .where(eq(marketPriceDaily.coinId, coin.id))
-          .orderBy(marketPriceDaily.date);
-
-        if (priceData.length >= 20) {
-          const priceDataFormatted = priceData.map((p) => ({
-            date: p.date,
-            open: parseFloat(p.open),
-            high: parseFloat(p.high),
-            low: parseFloat(p.low),
-            close: parseFloat(p.close),
-            volume: parseFloat(p.volume),
-          }));
-
-          const featureResult = runFeatureEngine(
-            priceDataFormatted,
-            {
-              openInterest: oiCurrent,
-              openInterestPrev: oiPrev,
-              fundingRate,
-              marketCap: marketCapFromCoingecko, // Use CoinGecko market cap if available
-            },
-            healthWeights,
-            confidenceWeights,
-            {
-              binance_spot: binanceSpotOk,
-              binance_futures: binanceFuturesOk,
-              coingecko: coinCoingeckoOk,
-            }
-          );
-
-          const provenance = {
-            trend: {
-              sources: [binanceSpotOk ? 'binance_spot' : null, binanceFuturesOk ? 'binance_futures' : null].filter(Boolean) as string[],
-              indicators: ['EMA_9', 'EMA_21', 'EMA_50', 'EMA_200', 'ADX_14'],
-              calculated_at: new Date().toISOString(),
-              confidence: featureResult.confidence_score,
-            },
-            derivative: {
-              sources: [binanceFuturesOk ? 'binance_futures' : null].filter(Boolean) as string[],
-              indicators: ['OI_CHANGE', 'FUNDING_RATE'],
-              calculated_at: new Date().toISOString(),
-              confidence: featureResult.confidence_score,
-              missing: [!binanceFuturesOk ? 'LIQUIDATION' : null].filter(Boolean) as string[],
-            },
-            volume: {
-              sources: [binanceSpotOk ? 'binance_spot' : null, binanceFuturesOk ? 'binance_futures' : null].filter(Boolean) as string[],
-              indicators: ['VOLUME_RATIO', 'OBV'],
-              calculated_at: new Date().toISOString(),
-              confidence: featureResult.confidence_score,
-            },
-            momentum: {
-              sources: [binanceSpotOk ? 'binance_spot' : null, binanceFuturesOk ? 'binance_futures' : null].filter(Boolean) as string[],
-              indicators: ['RSI_14', 'MACD'],
-              calculated_at: new Date().toISOString(),
-              confidence: featureResult.confidence_score,
-            },
-          };
-
-          // Save features
-          await db
-            .insert(features)
-            .values({
-              coinId: coin.id,
-              date: today,
-              versionId: featureVersion.id,
-              p6VersionId: p6FeatureVersion.id,
-              trendScore: featureResult.trend_score,
-              derivativeScore: featureResult.derivative_score,
-              volumeScore: featureResult.volume_score,
-              momentumScore: featureResult.momentum_score,
-              trendDetail: featureResult.trend_detail,
-              derivativeDetail: featureResult.derivative_detail,
-              volumeDetail: featureResult.volume_detail,
-              momentumDetail: featureResult.momentum_detail,
-              confidenceScore: featureResult.confidence_score,
-              dataCompleteness: featureResult.data_completeness,
-              missingSources: featureResult.missing_sources,
-              sourceProvenance: provenance as any,
-              calculatedAt: new Date(),
-            })
-            .onConflictDoUpdate({
-              target: [features.coinId, features.date, features.versionId],
-              set: {
-                p6VersionId: p6FeatureVersion.id,
-                trendScore: featureResult.trend_score,
-                derivativeScore: featureResult.derivative_score,
-                volumeScore: featureResult.volume_score,
-                momentumScore: featureResult.momentum_score,
-                trendDetail: featureResult.trend_detail,
-                derivativeDetail: featureResult.derivative_detail,
-                volumeDetail: featureResult.volume_detail,
-                momentumDetail: featureResult.momentum_detail,
-                confidenceScore: featureResult.confidence_score,
-                dataCompleteness: featureResult.data_completeness,
-                missingSources: featureResult.missing_sources,
-                sourceProvenance: provenance as any,
-                calculatedAt: new Date(),
-              },
-            });
-
-          // Calculate health score
-          const healthScore = calculateHealthScore(
-            featureResult.trend_score,
-            featureResult.derivative_score,
-            featureResult.volume_score,
-            featureResult.momentum_score,
-            healthWeights
-          );
-
-          // Get previous health score
-          const [prevHealth] = await db
-            .select()
-            .from(healthScores)
-            .where(and(eq(healthScores.coinId, coin.id), eq(healthScores.date, yesterday)))
-            .limit(1);
-
-          const scoreChange = prevHealth ? healthScore - prevHealth.healthScore : null;
-
-          // Save health score
-          await db
-            .insert(healthScores)
-            .values({
-              coinId: coin.id,
-              date: today,
-              healthScore,
-              previousScore: prevHealth?.healthScore || null,
-              scoreChange,
-              status: getHealthStatus(healthScore),
-              confidenceScore: featureResult.confidence_score,
-              weightBreakdown: {
-                trend: featureResult.trend_score * healthWeights.trend,
-                derivative: featureResult.derivative_score * healthWeights.derivative,
-                volume: featureResult.volume_score * healthWeights.volume,
-                momentum: featureResult.momentum_score * healthWeights.momentum,
-              },
-              ruleVersionId: activeVersion.id,
-            })
-            .onConflictDoUpdate({
-              target: [healthScores.coinId, healthScores.date],
-              set: {
-                healthScore,
-                previousScore: prevHealth?.healthScore || null,
-                scoreChange,
-                status: getHealthStatus(healthScore),
-                confidenceScore: featureResult.confidence_score,
-                weightBreakdown: {
-                  trend: featureResult.trend_score * healthWeights.trend,
-                  derivative: featureResult.derivative_score * healthWeights.derivative,
-                  volume: featureResult.volume_score * healthWeights.volume,
-                  momentum: featureResult.momentum_score * healthWeights.momentum,
-                },
-                ruleVersionId: activeVersion.id,
-              },
-            });
-
-          // Generate recommendation using Rule Engine (P1B)
-          const recommendation = await ruleEngineService.evaluate({
-            health:     healthScore,
-            trend:      featureResult.trend_score,
-            derivative: featureResult.derivative_score,
-            volume:     featureResult.volume_score,
-            momentum:   featureResult.momentum_score,
-            confidence: featureResult.confidence_score,
-          }, activeVersion.id);
-
-          await db
-            .insert(recommendations)
-            .values({
-              coinId: coin.id,
-              date: today,
-              signal: recommendation.signal,
-              reason: recommendation.reason,
-              reasonBreakdown: {
-                trend: featureResult.trend_score,
-                derivative: featureResult.derivative_score,
-                volume: featureResult.volume_score,
-                momentum: featureResult.momentum_score,
-                ruleId: recommendation.ruleId,
-                matched: recommendation.matched,
-              },
-              ruleVersionId: activeVersion.id,
-            })
-            .onConflictDoUpdate({
-              target: [recommendations.coinId, recommendations.date],
-              set: {
-                signal: recommendation.signal,
-                reason: recommendation.reason,
-                reasonBreakdown: {
-                  trend: featureResult.trend_score,
-                  derivative: featureResult.derivative_score,
-                  volume: featureResult.volume_score,
-                  momentum: featureResult.momentum_score,
-                  ruleId: recommendation.ruleId,
-                  matched: recommendation.matched,
-                },
-                ruleVersionId: activeVersion.id,
-              },
-            });
-        }
-
+    // Aggregate coin processing results
+    const coinProcessingDuration = Math.round((Date.now() - coinStartTime) / 1000);
+    for (const result of coinResults) {
+      if (result.success) {
         coinsProcessed++;
-      } catch (error) {
-        console.error(`Error processing coin ${coin.symbol}:`, error);
-        errors.push(`${coin.symbol}: ${error instanceof Error ? error.message : "Unknown error"}`);
+      } else {
+        errors.push(`${result.symbol}: ${result.error || "Unknown error"}`);
       }
     }
+    console.log(`[P6-PERF-03] Coin processing: ${coinsProcessed}/${activeCoins.length} succeeded in ${coinProcessingDuration}s (concurrency=${COIN_CONCURRENCY})`);
 
     // Calculate narrative health scores
     const activeNarratives = await db
@@ -1034,10 +509,8 @@ export async function POST(request: NextRequest) {
           errors,
           scope: "global",
           indicator: {
-            success: indicatorSuccessCount,
-            failed: indicatorFailCount,
-            skipped_empty_klines: indicatorSkipCount,
             businessDate: today,
+            note: "Indicator tracking moved into per-coin processor (P6-PERF-03)",
           },
         },
       })
