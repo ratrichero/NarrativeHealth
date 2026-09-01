@@ -36,6 +36,7 @@ import { fetchCoinGeckoMarkets } from "@/lib/collectors/coingecko";
 
 import { runFeatureEngine, calculateHealthScore, getRecommendationSignal, generateRecommendationReason } from "@/lib/features/engine";
 import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
+import { resolveActiveP6Version } from "@/lib/p6/version-resolver";
 import { ruleVersionService } from "@/lib/services/rule-version.service";
 import { indicatorService } from "@/lib/services/indicator.service";
 import { ruleEngineService } from "@/lib/services/rule-engine.service";
@@ -173,6 +174,9 @@ export async function POST(request: NextRequest) {
         })
         .returning();
     }
+
+    // P6-VERSION-01: Resolve active P6 feature algorithm version
+    const p6FeatureVersion = await resolveActiveP6Version();
 
     // Get score configs
     const configsData = await db
@@ -641,6 +645,7 @@ export async function POST(request: NextRequest) {
               coinId: coin.id,
               date: today,
               versionId: featureVersion.id,
+              p6VersionId: p6FeatureVersion.id,
               trendScore: featureResult.trend_score,
               derivativeScore: featureResult.derivative_score,
               volumeScore: featureResult.volume_score,
@@ -658,6 +663,7 @@ export async function POST(request: NextRequest) {
             .onConflictDoUpdate({
               target: [features.coinId, features.date, features.versionId],
               set: {
+                p6VersionId: p6FeatureVersion.id,
                 trendScore: featureResult.trend_score,
                 derivativeScore: featureResult.derivative_score,
                 volumeScore: featureResult.volume_score,
