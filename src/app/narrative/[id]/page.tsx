@@ -151,13 +151,14 @@ export default function NarrativeDetailPage() {
       {/* P5 Action Decision — self-fetching from /api/narratives/[id]/action-decision */}
       <P5ActionDecisionPanel narrativeId={narrative.id} />
 
-      {/* P4 Decision Support — narrative interpretation layer */}
-      <P4DecisionSupportPanel viewModel={null} />
+      {/* P4 Decision Support — narrative interpretation layer (P4-02 §10: additive field) */}
+      <P4DecisionSupportPanel viewModel={narrative.p4DecisionSupport} />
 
-      {/* P3 Intelligence — narrative current-state intelligence */}
+      {/* P3 Intelligence — narrative current-state intelligence (frozen P3 read model) */}
       <P3IntelligencePanel
         narrativeName={narrative.name}
-        viewModel={null}
+        viewModel={narrative.p3Intelligence}
+        history={narrative.p3IntelligenceHistory}
       />
 
       {/* Correlation Matrix */}
