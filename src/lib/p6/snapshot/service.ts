@@ -15,6 +15,9 @@ import {
   readCurrentCoinSnapshots,
 } from "./persistence";
 import type { NarrativeSnapshotInput } from "./types";
+import { db } from "@/db";
+import { coinMetrics } from "@/db/schema";
+import { eq, and, lte, desc } from "drizzle-orm";
 
 /**
  * Narrative membership data for snapshot generation.
@@ -96,16 +99,48 @@ export async function runSnapshotGeneration(
     persistedCoinSnapshots.map((cs) => [cs.entityId, cs])
   );
 
+  // Fetch market_cap for all coins at or before snapshot date
+  // Temporal semantics: latest available market_cap at or before calculatedAt
+  const snapshotDate = new Date(calculatedAt);
+  snapshotDate.setHours(0, 0, 0, 0);
+  const allCoinIds = narrativeMemberships.flatMap((m) => m.members.map((mem) => mem.coin_id));
+  const uniqueCoinIds = [...new Set(allCoinIds)];
+
+  const marketCapMap = new Map<number, number>();
+  if (uniqueCoinIds.length > 0) {
+    const rows = await db
+      .select({
+        coinId: coinMetrics.coinId,
+        marketCap: coinMetrics.marketCap,
+      })
+      .from(coinMetrics)
+      .where(
+        and(
+          lte(coinMetrics.date, snapshotDate.toISOString().split("T")[0]),
+        )
+      )
+      .orderBy(desc(coinMetrics.date))
+      .limit(uniqueCoinIds.length * 2); // allow for some duplication
+
+    // Deduplicate: take the first (most recent) market_cap per coin_id
+    for (const row of rows) {
+      if (!marketCapMap.has(row.coinId) && row.marketCap != null) {
+        marketCapMap.set(row.coinId, Number(row.marketCap));
+      }
+    }
+  }
+
   for (const membership of narrativeMemberships) {
     const members: NarrativeSnapshotInput["members"] = membership.members.map((m) => {
       const coinSnapshot = coinSnapshotMap.get(m.coin_id);
+      const marketCap = marketCapMap.get(m.coin_id) ?? null;
       if (!coinSnapshot) {
         // PD-03B-12: member without snapshot
         return {
           coin_id: m.coin_id,
           coin_symbol: m.coin_symbol,
           health_score: 50,
-          market_cap: null,
+          market_cap: marketCap,
           data_completeness: 0,
           snapshot_id: 0,
           quality_metadata: null as Record<string, unknown> | null,
@@ -115,7 +150,7 @@ export async function runSnapshotGeneration(
         coin_id: m.coin_id,
         coin_symbol: m.coin_symbol,
         health_score: coinSnapshot.healthScore ?? 50,
-        market_cap: null,
+        market_cap: marketCap,
         data_completeness: 0,
         snapshot_id: coinSnapshot.id,
         quality_metadata: (coinSnapshot.qualityMetadata ?? null) as Record<string, unknown> | null,
