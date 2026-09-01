@@ -271,6 +271,17 @@ export interface HistoricalArtifactWriter {
   insertAuditEvent(event: P5AuditEvent): Promise<void>;
 }
 
+/**
+ * Safely convert a P5 string timestamp to a Date for Drizzle timestamp columns.
+ * P5 types use ISO-8601 strings; Drizzle timestamp() expects Date objects.
+ * Returns null for null/undefined/empty values (column is nullable).
+ */
+function toDate(value: string | null | undefined): Date | null {
+  if (value === null || value === undefined || value === "") return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 export class PgHistoricalArtifactWriter implements HistoricalArtifactWriter {
   constructor(private readonly rows: P5RowStore) {}
 
@@ -289,7 +300,7 @@ export class PgHistoricalArtifactWriter implements HistoricalArtifactWriter {
       executionState: record.executionState,
       permissionResult: record.permissionResult,
       record,
-      decisionAt: record.provenance.timestamps.decisionAt ?? null,
+      decisionAt: toDate(record.provenance.timestamps.decisionAt),
     });
   }
 
@@ -306,7 +317,7 @@ export class PgHistoricalArtifactWriter implements HistoricalArtifactWriter {
       algorithmVersion: snapshot.narrativeIdentity.algorithmVersion,
       calculationMode: snapshot.narrativeIdentity.calculationMode,
       semanticVersion: snapshot.versionTuple.semanticVersion,
-      asOf: snapshot.asOf,
+      asOf: toDate(snapshot.asOf),
       status: snapshot.status,
       contentHash: snapshot.contentHash,
       snapshot,
@@ -321,8 +332,8 @@ export class PgHistoricalArtifactWriter implements HistoricalArtifactWriter {
       identityKey: policyIdentityKey(policy.policyId, policy.policyVersion),
       policyId: policy.policyId,
       policyVersion: policy.policyVersion,
-      effectiveAt: policy.effectiveAt,
-      evaluationAt: policy.evaluationAt,
+      effectiveAt: toDate(policy.effectiveAt),
+      evaluationAt: toDate(policy.evaluationAt),
       policy,
     });
   }
@@ -333,7 +344,7 @@ export class PgHistoricalArtifactWriter implements HistoricalArtifactWriter {
       guardrailId: guardrail.guardrailId,
       version: guardrail.version,
       outcome: guardrail.outcome,
-      evaluatedAt: guardrail.evaluatedAt,
+      evaluatedAt: toDate(guardrail.evaluatedAt),
       guardrail,
     });
   }
@@ -346,7 +357,7 @@ export class PgHistoricalArtifactWriter implements HistoricalArtifactWriter {
       state: approval.state,
       authorityRef: approval.authorityRef,
       actor: approval.actor,
-      approvedAt: approval.timestamp,
+      approvedAt: toDate(approval.timestamp),
       approvalPolicyVersion: approval.approvalPolicyVersion,
       approval,
     });
@@ -357,7 +368,7 @@ export class PgHistoricalArtifactWriter implements HistoricalArtifactWriter {
       identityKey: permission.ref,
       ref: permission.ref,
       result: permission.result,
-      evaluatedAt: permission.evaluatedAt,
+      evaluatedAt: toDate(permission.evaluatedAt),
       permission,
     });
   }
@@ -368,7 +379,7 @@ export class PgHistoricalArtifactWriter implements HistoricalArtifactWriter {
       eventId: event.eventId,
       decisionIdRef: event.decisionIdRef ?? "",
       eventType: event.eventType,
-      eventAt: event.timestamp,
+      eventAt: toDate(event.timestamp),
       actor: event.actor,
       previousState: event.previousState,
       newState: event.newState,

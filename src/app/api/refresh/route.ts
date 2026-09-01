@@ -925,6 +925,51 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // -----------------------------------------------------------------------
+    // P5-11: Post-Refresh Decision Pipeline (additive — non-blocking)
+    // -----------------------------------------------------------------------
+    // After P3/P4 data is computed for all narratives, run the frozen P5
+    // pipeline for each narrative. P5 consumes P4 → produces decision artifacts
+    // persisted to p5_decision_records. Each narrative is independently error-
+    // isolated; a failure in one narrative never prevents others from processing.
+    try {
+      const { P5RuntimeAdapter } = await import("@/lib/p5/integration");
+      const { pgDecisionProducer } = await import("@/lib/p5/producer/production");
+      const { getP4DecisionSupport } = await import("@/lib/p4/service");
+
+      const p5Adapter = new P5RuntimeAdapter(pgDecisionProducer);
+      let p5SuccessCount = 0;
+      let p5FailCount = 0;
+      let p5SkippedCount = 0;
+
+      for (const narrative of activeNarratives) {
+        try {
+          // P4 is read-time derived from P3 — compute it now for P5
+          const p4Snapshot = await getP4DecisionSupport(narrative.id);
+          if (!p4Snapshot) {
+            p5SkippedCount++;
+            continue; // No P4 data available — P5 cannot evaluate
+          }
+
+          const result = await p5Adapter.evaluate(narrative.id, p4Snapshot);
+          if (result.error) {
+            p5FailCount++;
+            console.error(`[P5] Decision pipeline failed for narrative ${narrative.id}: ${result.error.stage} — ${result.error.message}`);
+          } else {
+            p5SuccessCount++;
+          }
+        } catch (error) {
+          p5FailCount++;
+          console.error(`[P5] Unexpected error for narrative ${narrative.id}:`, error);
+        }
+      }
+
+      console.log(`[P5] Post-refresh pipeline: success=${p5SuccessCount} failed=${p5FailCount} skipped=${p5SkippedCount}`);
+    } catch (error) {
+      // P5 pipeline failure must never break refresh
+      console.error("[P5] Post-refresh pipeline initialization failed (non-blocking):", error);
+    }
+
     const duration = Math.round((Date.now() - startTime) / 1000);
 
     // Update global source status (coinId IS NULL for dashboard display)
