@@ -99,14 +99,21 @@ export function runFeatureEngine(
   // When refresh runs during the current day, the last daily candle has only
   // a fraction of full-day volume, causing artificially low volume ratios.
   // Filter it out so volume scoring uses only completed daily candles.
+  //
+  // Alignment invariant: volumes[i] === priceData[i].volume (both produced by
+  // preparePriceSeries from the same sorted priceData array), so filtering by
+  // priceData[i].date removes the correct volume element.
+  //
+  // Semantic contract: when NO completed candles remain (edge case: only 1 candle
+  // exists and it IS the current day), calculateVolumeScore([]) returns score=50
+  // (neutral / data-unavailable). We deliberately do NOT fall back to the
+  // incomplete candle, because that would reintroduce the original bug.
   const completedVolumes = currentBusinessDate
     ? volumes.filter((_, i) => priceData[i].date !== currentBusinessDate)
     : volumes;
 
   const trendResult = calculateTrendScore(closes);
-  const volumeResult = calculateVolumeScore(
-    completedVolumes.length > 0 ? completedVolumes : volumes
-  );
+  const volumeResult = calculateVolumeScore(completedVolumes);
   const momentumResult = calculateMomentumScore(closes, highs, lows);
   const hasFutures = metrics.openInterest !== null || metrics.fundingRate !== null;
   const derivativeResult = calculateDerivativeScore(
