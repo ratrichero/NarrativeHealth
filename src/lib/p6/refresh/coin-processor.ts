@@ -401,6 +401,7 @@ export async function processSingleCoin(
         ctx.healthWeights,
         ctx.confidenceWeights,
         { binance_spot: binanceSpotOk, binance_futures: binanceFuturesOk, coingecko: coinCoingeckoOk },
+        ctx.today,
       );
 
       const provenance = {

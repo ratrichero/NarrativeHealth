@@ -41,7 +41,8 @@ export function runFeatureEngine(
   },
   healthWeights: any,
   confidenceWeights: ConfidenceWeights,
-  sourceOk?: SourceOk
+  sourceOk?: SourceOk,
+  currentBusinessDate?: string
 ): FeatureEngineResult {
   // Validate minimum data
   if (priceData.length < 20) {
@@ -94,8 +95,18 @@ export function runFeatureEngine(
 
   const { closes, highs, lows, volumes } = preparePriceSeries(priceData);
 
+  // P6-DATA-02: Exclude incomplete current-day candle from volume calculation.
+  // When refresh runs during the current day, the last daily candle has only
+  // a fraction of full-day volume, causing artificially low volume ratios.
+  // Filter it out so volume scoring uses only completed daily candles.
+  const completedVolumes = currentBusinessDate
+    ? volumes.filter((_, i) => priceData[i].date !== currentBusinessDate)
+    : volumes;
+
   const trendResult = calculateTrendScore(closes);
-  const volumeResult = calculateVolumeScore(volumes);
+  const volumeResult = calculateVolumeScore(
+    completedVolumes.length > 0 ? completedVolumes : volumes
+  );
   const momentumResult = calculateMomentumScore(closes, highs, lows);
   const hasFutures = metrics.openInterest !== null || metrics.fundingRate !== null;
   const derivativeResult = calculateDerivativeScore(
