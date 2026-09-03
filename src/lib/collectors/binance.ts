@@ -58,8 +58,13 @@ export async function fetchBinanceSpotKlines(
       closeTime: k[6] as number,
       quoteVolume: k[7] as string,
     }));
-  } catch (error) {
-    console.error(`Binance API error for ${symbol}:`, error);
+  } catch (error: any) {
+    const status = error.response?.status;
+    if (status === 451) {
+      console.error(`[BINANCE-451] Spot klines ${symbol}: geo-blocked (HTTP 451)`);
+    } else {
+      console.error(`Binance API error for ${symbol}: [HTTP ${status || 'N/A'}] ${error.message}`);
+    }
     return [];
   }
 }
@@ -92,8 +97,13 @@ export async function fetchBinanceFuturesKlines(
       closeTime: k[6] as number,
       quoteVolume: k[7] as string,
     }));
-  } catch (error) {
-    console.error(`Binance Futures API error for ${symbol}:`, error);
+  } catch (error: any) {
+    const status = error.response?.status;
+    if (status === 451) {
+      console.error(`[BINANCE-451] Futures klines ${symbol}: geo-blocked (HTTP 451)`);
+    } else {
+      console.error(`Binance Futures API error for ${symbol}: [HTTP ${status || 'N/A'}] ${error.message}`);
+    }
     return [];
   }
 }
@@ -109,8 +119,14 @@ export async function fetchBinanceFuturesOI(symbol: string): Promise<number | nu
     });
 
     return parseFloat(response.data.openInterest);
-  } catch (error) {
-    console.error(`Binance futures OI error for ${symbol}:`, error);
+  } catch (error: any) {
+    const status = error.response?.status;
+    const msg = error.response?.data?.msg || error.message;
+    if (status === 451) {
+      console.error(`[BINANCE-451] Futures OI ${symbol}: geo-blocked (HTTP 451). Binance terms restrict this region.`);
+    } else {
+      console.error(`Binance futures OI error for ${symbol}: [HTTP ${status || 'N/A'}] ${msg}`);
+    }
     return null;
   }
 }
@@ -126,8 +142,14 @@ export async function fetchBinanceFundingRate(symbol: string): Promise<number | 
     });
 
     return parseFloat(response.data.lastFundingRate);
-  } catch (error) {
-    console.error(`Binance funding rate error for ${symbol}:`, error);
+  } catch (error: any) {
+    const status = error.response?.status;
+    const msg = error.response?.data?.msg || error.message;
+    if (status === 451) {
+      console.error(`[BINANCE-451] Funding rate ${symbol}: geo-blocked (HTTP 451). Binance terms restrict this region.`);
+    } else {
+      console.error(`Binance funding rate error for ${symbol}: [HTTP ${status || 'N/A'}] ${msg}`);
+    }
     return null;
   }
 }
@@ -166,8 +188,14 @@ export async function fetchBinanceOIHistory(
       timestamp: item.timestamp,
       openInterest: parseFloat(item.sumOpenInterest),
     }));
-  } catch (error) {
-    console.error(`Binance OI history error for ${symbol}:`, error);
+  } catch (error: any) {
+    const status = error.response?.status;
+    const msg = error.response?.data?.msg || error.message;
+    if (status === 451) {
+      console.error(`[BINANCE-451] OI history ${symbol}: geo-blocked (HTTP 451). Binance terms restrict this region.`);
+    } else {
+      console.error(`Binance OI history error for ${symbol}: [HTTP ${status || 'N/A'}] ${msg}`);
+    }
     return [];
   }
 }
