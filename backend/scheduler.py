@@ -152,8 +152,13 @@ class DataRefreshScheduler:
         )
         
         async with AsyncSessionLocal() as session:
+            # Use a distinct job_name for the wrapper log. The Next.js refresh
+            # route's lock check looks for an active SchedulerLog with the SAME
+            # job_name that is not stale — pre-inserting 'daily_refresh'/'interval_refresh'
+            # here would make every scheduled run 409-lock itself and fall back
+            # to the FastAPI refresh, which has no Square pipeline.
             log_entry = SchedulerLog(
-                job_name=job_id,
+                job_name=f"{job_id}_trigger",
                 status="STARTED",
                 started_at=started_at,
             )

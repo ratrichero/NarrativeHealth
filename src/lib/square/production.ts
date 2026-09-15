@@ -135,6 +135,14 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
       }
     }
 
+    // SQ-DIAG: if LLM has been silently falling back for every publish, make
+    // it visible in pipeline logs so the root cause is discoverable.
+    if (persistedOpps.length > 0 && !process.env.GOOGLE_API_KEY) {
+      console.warn(
+        "[SQ-PIPELINE] GOOGLE_API_KEY missing — all content for this cycle will use template fallback (llmUsed=false)."
+      );
+    }
+
     // 4. Publish top opportunities (respecting soft cap)
     const softCap = DEFAULT_SCORING_CONFIG.dailySoftCap;
     let quotaRemaining = quota.postsRemaining;

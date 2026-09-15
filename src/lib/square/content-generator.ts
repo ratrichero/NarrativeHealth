@@ -36,7 +36,11 @@ async function generateWithLLM(
   brief: SquareContentBrief
 ): Promise<GeneratedContent | null> {
   const apiKey = process.env.GOOGLE_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) {
+    // SQ-DIAG: the #1 reason every post falls back to template.
+    console.warn("[SQ-LLM] GOOGLE_API_KEY is not set — falling back to template.");
+    return null;
+  }
 
   const prompt = buildLLMPrompt(brief);
 
@@ -57,15 +61,27 @@ async function generateWithLLM(
       }
     );
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => "");
+      console.warn(
+        `[SQ-LLM] Gemini API HTTP ${response.status} — falling back to template: ${errBody.slice(0, 300)}`
+      );
+      return null;
+    }
 
     const data = await response.json();
     const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    if (!generatedText || typeof generatedText !== "string") return null;
+    if (!generatedText || typeof generatedText !== "string") {
+      console.warn("[SQ-LLM] Gemini returned empty/blocked content — falling back to template.");
+      return null;
+    }
 
     const validated = validateLLMOutput(generatedText, brief);
-    if (!validated) return null;
+    if (!validated) {
+      console.warn("[SQ-LLM] Gemini output failed validation — falling back to template.");
+      return null;
+    }
 
     return {
       text: validated,
@@ -154,10 +170,11 @@ function validateLLMOutput(text: string, brief: SquareContentBrief): string | nu
   if (text.length > MAX_TEXT_LENGTH) return null;
 
   const upper = text.toUpperCase();
-  const forbidden = ["BUY", "SELL", "LONG", "SHORT", "ORDER", "EXECUTE"];
-  for (const term of forbidden) {
-    if (upper.includes(term)) return null;
-  }
+  // SQ-FIX: previous substring check (includes("LONG")) also matched words like
+  // "along", "longer", "prolonged" — rejecting valid posts. Use whole-word match,
+  // and allow the common analysis phrases "long-term" / "short-term".
+  const forbidden = /\b(BUY|SELL|ORDER|EXECUTE)\b|\b(LONG|SHORT)(?!-?TERM)\b/;
+  if (forbidden.test(upper)) return null;
 
   if (brief.cashtags.length > 0) {
     for (const tag of brief.cashtags) {

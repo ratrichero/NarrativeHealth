@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -455,13 +455,25 @@ export default function CoinDetailPage() {
     refetchInterval: 5000,
   });
 
-  const prevPriceRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (currentPrice) {
-      prevPriceRef.current = currentPrice.price;
+  // Track { current, previous } price in one state; adjust during render when
+  // a new price arrives (React-endorsed alternative to setState in an effect).
+  const [priceTracker, setPriceTracker] = useState<{ current: number; previous: number | null } | null>(null);
+  let prevPrice: number | null = null;
+  let currentPriceColor = "text-slate-500";
+  if (currentPrice) {
+    if (priceTracker === null || priceTracker.current !== currentPrice.price) {
+      const next = { current: currentPrice.price, previous: priceTracker ? priceTracker.current : null };
+      prevPrice = next.previous;
+      setPriceTracker(next);
+    } else {
+      prevPrice = priceTracker.previous;
     }
-  }, [currentPrice]);
+    if (prevPrice === null || currentPrice.price === prevPrice) {
+      currentPriceColor = "text-white";
+    } else {
+      currentPriceColor = currentPrice.price > prevPrice ? "text-green-500" : "text-red-500";
+    }
+  }
 
   const {
     data: longShortRatio,
@@ -526,14 +538,6 @@ export default function CoinDetailPage() {
       </div>
     );
   }
-
-  const currentPriceColor = currentPrice
-    ? prevPriceRef.current === null || currentPrice.price === prevPriceRef.current
-      ? "text-white"
-      : currentPrice.price > prevPriceRef.current
-        ? "text-green-500"
-        : "text-red-500"
-    : "text-slate-500";
 
   return (
     <div className="space-y-6">

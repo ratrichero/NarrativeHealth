@@ -152,27 +152,27 @@ function CollapsibleSection({
   );
 }
 
-function EvidenceReferenceRow({ ref }: { ref: P4EvidenceReference }) {
-  const isP2 = ref.sourceLayer === "P2";
+function EvidenceReferenceRow({ evidence }: { evidence: P4EvidenceReference }) {
+  const isP2 = evidence.sourceLayer === "P2";
   return (
     <li className="flex flex-col gap-1.5 rounded-lg border border-slate-800 bg-slate-800/30 px-3 py-2.5 text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 font-medium ${REF_ROLE_BADGE_STYLES[ref.interpretationRole]}`}>
-          {REF_ROLE_LABELS[ref.interpretationRole]}
+        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 font-medium ${REF_ROLE_BADGE_STYLES[evidence.interpretationRole]}`}>
+          {REF_ROLE_LABELS[evidence.interpretationRole]}
         </span>
-        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 font-medium ${EVIDENCE_STATUS_STYLES[ref.status]}`}>
-          {ref.status}
+        <span className={`inline-flex items-center rounded border px-1.5 py-0.5 font-medium ${EVIDENCE_STATUS_STYLES[evidence.status]}`}>
+          {evidence.status}
         </span>
-        <span className="text-slate-300 font-medium">{ref.sourceType}</span>
+        <span className="text-slate-300 font-medium">{evidence.sourceType}</span>
         {isP2 && <span className="text-slate-400">P2 event risk</span>}
-        <span className="text-slate-500">#{ref.sourceId}</span>
+        <span className="text-slate-500">#{evidence.sourceId}</span>
       </div>
       <div className="text-slate-400">
-        field <span className="text-slate-300">{ref.field}</span>
-        {" · "}window/date <span className="text-slate-300">{ref.windowOrDate}</span>
-        {ref.artifactIdentity != null && (
+        field <span className="text-slate-300">{evidence.field}</span>
+        {" · "}window/date <span className="text-slate-300">{evidence.windowOrDate}</span>
+        {evidence.artifactIdentity != null && (
           <>
-            {" · "}artifact identity <span className="text-slate-300">{ref.artifactIdentity}</span>
+            {" · "}artifact identity <span className="text-slate-300">{evidence.artifactIdentity}</span>
           </>
         )}
       </div>
@@ -388,8 +388,8 @@ export function P4DecisionSupportPanel({
               <p className="text-xs text-slate-500">No evidence references available.</p>
             ) : (
               <ul className="space-y-2">
-                {viewModel.evidence.map((ref, index) => (
-                  <EvidenceReferenceRow key={`${ref.sourceType}-${ref.sourceId}-${ref.field}-${index}`} ref={ref} />
+                {viewModel.evidence.map((evidence, index) => (
+                  <EvidenceReferenceRow key={`${evidence.sourceType}-${evidence.sourceId}-${evidence.field}-${index}`} evidence={evidence} />
                 ))}
               </ul>
             )}
