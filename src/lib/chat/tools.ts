@@ -674,7 +674,7 @@ export const CHAT_TOOLS: ChatToolDef[] = [
   },
   {
     name: "get_coin_metrics",
-    description: "Metrics trong DB của 1 coin: trend/volume/momentum score, RSI, EMA, ATR, funding, OI.",
+    description: "Metrics trong DB của 1 coin (theo chu kỳ refresh, CÓ THỂ ĐÃ CŨ HÀNG GIỜ): trend/volume/momentum score, RSI, EMA, ATR, funding, OI. KHÔNG dùng cho câu hỏi về giá/điều kiện HIỆN TẠI — dùng get_live_price/get_futures_snapshot.",
     parameters: { type: "object", properties: { symbol: str("Coin symbol") }, required: ["symbol"] },
     execute: (a) => getCoinMetrics(String(a.symbol)),
   },
@@ -730,7 +730,7 @@ export const CHAT_TOOLS: ChatToolDef[] = [
   // Binance realtime tools
   {
     name: "get_live_price",
-    description: "Giá THỜI ĐIỂM HIỆN TẠI từ Binance (futures nếu có, fallback spot). Hoạt động với MỌI coin trên Binance kể cả coin ngoài hệ thống.",
+    description: "Giá THỜI ĐIỂM HIỆN TẠI từ Binance (futures nếu có, fallback spot). BẮT BUỘC dùng cho mọi câu hỏi giá “bây giờ/hiện tại/now” — không dùng số DB. Hoạt động với MỌI coin trên Binance kể cả coin ngoài hệ thống.",
     parameters: { type: "object", properties: { symbol: str("Coin symbol, ví dụ BTC hoặc PENDLE") }, required: ["symbol"] },
     execute: (a) => getLivePrice(String(a.symbol)),
   },
