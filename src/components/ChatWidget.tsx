@@ -20,14 +20,35 @@ interface ToolCallMeta {
 
 const SESSION_KEY = "nhd-chat-session-id";
 
+function randomId(): string {
+  // crypto.randomUUID only exists in secure contexts (HTTPS/localhost) —
+  // production is often served over plain http://IP, so fall back to
+  // getRandomValues / Math.random to avoid crashing the whole page.
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function getSessionId(): string {
   if (typeof window === "undefined") return "";
-  let id = localStorage.getItem(SESSION_KEY);
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem(SESSION_KEY, id);
+  try {
+    let id = localStorage.getItem(SESSION_KEY);
+    if (!id) {
+      id = randomId();
+      localStorage.setItem(SESSION_KEY, id);
+    }
+    return id;
+  } catch {
+    return randomId(); // localStorage may throw in strict privacy modes
   }
-  return id;
 }
 
 function fingerprint(): string {
