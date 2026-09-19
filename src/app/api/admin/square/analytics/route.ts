@@ -16,6 +16,7 @@ import {
   getTopNarratives,
   getExecutionHistory,
   getRecentPublications,
+  getPublicationsList,
   getTypeBreakdown,
   type TimeRange,
 } from "@/lib/square/analytics";
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest) {
     const validSections = [
       "overview", "funnel", "daily", "coins", "narratives", "llm",
       "failures", "retry", "latency", "quota", "scores", "trend",
-      "executions", "publications", "types", "all",
+      "executions", "publications", "types", "publication-list", "all",
     ];
     if (!validSections.includes(section)) {
       return NextResponse.json({ success: false, error: `Invalid section. Use: ${validSections.join(", ")}` }, { status: 400 });
@@ -57,6 +58,14 @@ export async function GET(request: NextRequest) {
     if (includeAll || section === "trend") data.trend = await getSuccessRateTrend(range);
     if (includeAll || section === "executions") data.executions = await getExecutionHistory(range);
     if (includeAll || section === "publications") data.publications = await getRecentPublications(range);
+    if (section === "publication-list") {
+      data.publicationList = await getPublicationsList(range, {
+        page: Number(request.nextUrl.searchParams.get("page")) || 1,
+        pageSize: Number(request.nextUrl.searchParams.get("pageSize")) || 25,
+        status: request.nextUrl.searchParams.get("status") || undefined,
+        provider: request.nextUrl.searchParams.get("provider") || undefined,
+      });
+    }
     if (includeAll || section === "types") data.types = await getTypeBreakdown(range);
 
     return NextResponse.json({ success: true, range, section, data });

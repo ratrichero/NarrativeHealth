@@ -4,7 +4,8 @@ Data refresh API endpoint
 from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, delete
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import time
 
 from backend.database import get_db
@@ -37,8 +38,13 @@ async def refresh_data_api(db: AsyncSession = Depends(get_db)):
 async def refresh_data(db: AsyncSession):
     """Trigger data refresh from all sources (internal function)"""
     start_time = time.time()
-    # Use UTC date to ensure consistency with Binance API timestamps
-    now = datetime.utcnow()
+    # Business timezone: Asia/Ho_Chi_Minh (UTC+7) — must match the Next.js
+    # pipeline (getBusinessDate in src/lib/utils.ts) so both pipelines write
+    # narrative_health / health_scores rows under the SAME business date.
+    # Previously this used datetime.utcnow().date() (UTC), which produced a
+    # one-day-offset row on mornings before 07:00 VN time and left the
+    # dashboard empty until a manual refresh.
+    now = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
     today = now.date()
     yesterday = today - timedelta(days=1)
 

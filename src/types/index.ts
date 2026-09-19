@@ -8,6 +8,10 @@ export type { P3IntelligenceViewModel, P3IntelligenceHistoryViewModel, P4Decisio
 
 export interface DashboardData {
   date: string;
+  /** Business date of the rows actually displayed (freshest with data). */
+  dataAsOf?: string;
+  /** True when dataAsOf is older than today's business date. */
+  dataIsStale?: boolean;
   narratives: NarrativeSummary[];
   sourceStatus: SourceStatusSummary;
   topMovers: CoinMover[];
@@ -19,10 +23,10 @@ export interface DashboardData {
 export interface NarrativeSummary {
   id: number;
   name: string;
-  healthScore: number;
+  healthScore: number | null;
   previousScore: number | null;
   scoreChange: number | null;
-  status: HealthStatus;
+  status: HealthStatus | null;
   coinCount: number;
   topCoin: CoinBasic | null;
   weakestCoin: CoinBasic | null;

@@ -1,5 +1,80 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
+## Ngày cập nhật: 2026-09-19
+
+---
+
+## SQ-BATCH-09-2026 — Bổ sung cập nhật Binance Square + Dashboard (2026-09-19)
+
+### 1. Chuyển LLM của Binance Square sang OpenAI-compatible multi-provider (Hướng A)
+
+- **Bối cảnh**: Bài post Square trước đây dùng Gemini hardcoded (`GOOGLE_API_KEY` + `gemini-2.0-flash`) trong `src/lib/square/content-generator.ts`. Không có fallback khi API fail.
+- **Giải pháp**:
+  - Viết lại `generateWithLLM()` thành provider chain chuẩn OpenAI-compatible: **Primary (Groq)** → **Fallback 1 (hcnsec)** → **Fallback 2 (OpenRouter)**.
+  - Provider chain đọc từ env: `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`MODEL_NAME`, `FALLBACK_OPENAI_*`, `FALLBACK2_OPENAI_*`.
+  - Failover tự động khi HTTP lỗi / timeout 15s / trả rỗng / output fail validation; mọi tầng fail đều log `[SQ-LLM]` rõ ràng (hết fail im lặng).
+  - Giữ nguyên: `buildLLMPrompt()`, `validateLLMOutput()` (whole-word check BUY/SELL/LONG/SHORT), template fallback, analytics `llm_used`.
+  - Cập nhật `production.ts`, `scripts/check-env.js` đọc `OPENAI_API_KEY` thay cho `GOOGLE_API_KEY`; `backend/provider/config.py` resolve `.env` từ project root bất kể cwd.
+
+### 2. Theo dõi provider tier cho từng bài post
+
+- `GeneratedContent` thêm `llmProvider` (`primary` | `fallback1` | `fallback2`), truyền qua `publishContent()` → lưu vào `content_snapshot.llmProvider` của `square_publications`.
+- Bài template có `llmProvider: null`. Chỉ áp dụng cho bài post mới sau deploy.
+
+### 3. Square Analytics — Publication History (danh sách toàn bộ bài post)
+
+- **Service** (`src/lib/square/analytics.ts`): thêm `getPublicationsList()` hỗ trợ phân trang (`page`/`pageSize` tối đa 100), filter theo `status` và `provider` (primary/fallback1/fallback2/template); `PublicationRecord` bổ sung `llmProvider`, `errorCode`, `retryCount`, `publishedAt`, `textPreview` (200 ký tự đầu), `latencyMs`.
+- **API**: section `publication-list` trong `GET /api/admin/square/analytics`.
+- **UI** (`src/app/square-analytics/page.tsx`): section **Publication History** mới — bảng toàn bộ bài post, 2 dropdown filter (Status / Source), badge màu theo tầng LLM (cyan=primary, blue=fallback1, violet=fallback2, slate=template), preview nội dung, error code/category cho bài FAILED, link "View ↗" tới Binance Square, phân trang 25/trang.
+
+### 4. Fix dashboard trống lần đầu mở mỗi ngày
+
+- **Nguyên nhân gốc**: FastAPI refresh (`backend/api/refresh.py`) dùng `datetime.utcnow()` (UTC) làm business date trong khi Next.js dùng Asia/Ho_Chi_Minh (UTC+7) → row health "hôm nay" bị lệch ngày lúc sáng sớm trước 07:00 VN.
+- **Fix 1 (timezone)**: `backend/api/refresh.py` đổi sang `datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))` — 2 pipeline cùng ghi chung business date.
+- **Fix 2 (freshest wins)**: `src/app/api/dashboard/route.ts` luôn lấy **ngày mới nhất có dữ liệu thực tế** trong `narrative_health` làm `dataDate` thay vì cứng ngày hôm nay → cả manual lẫn scheduler refresh đều hiển thị ngay. Response trả thêm `dataAsOf` + `dataIsStale`; UI hiện chú thích vàng "Showing latest available data (as of ...)" khi data cũ hơn hôm nay.
+- **Fix 3 (bỏ score 50 giả)**: `healthScore` giờ là `number | null` — không còn fallback `|| 50` tạo badge CAUTION ảo; `HealthBadge` hiển thị "No Data" khi null.
+
+### 5. Nội dung bài Square phiên bản viral (4 tầng)
+
+- **Tầng 1 — Brief già hóa metrics** (`opportunity-engine.ts`): interface `OpportunityMetrics` mới gồm giá hiện tại, market cap, volume 24h, % vs EMA20/50, RSI14, funding rate, OI, 4 score breakdown, narrative breadth (x/Y coins up), R:R ratio, % gain TP1 / % risk SL. Gắn vào cả COIN_SETUP lẫn NARRATIVE_SETUP.
+- **Tầng 2 — Template viral v2** (`content-generator.ts`): cấu trúc 6 khối Hook → Price/Setup (+% / R:R) → Data reads (mỗi metric 1 dòng 1 số + diễn giải) → Breadth → Invalidation → Question + disclaimer. `templateVersion` nâng lên `2.0.0`.
+- **Tầng 3 — LLM prompt mới**: style guide + few-shot example (bài PENDLE mẫu) + toàn bộ metrics dưới dạng FACTS. Validator giữ nguyên biên giới advisory (cấm BUY/SELL, LONG/SHORT trade-direction).
+- **Tầng 4 — Visual không cần ảnh**: ASCII price map tự sinh (`SL ━ ▓ ENTRY ▓ ━ → TP1 ━ → TP2`) đưa vào cả template lẫn prompt; 8 hook variants xoay deterministic theo opportunity ID (tránh mọi bài mở đầu giống nhau).
+- **Chart ảnh**: contract hiện chỉ verify `contentType: 1` (text); cashtag `$SYM` đã kích hoạt chart widget tự render của Binance. Thêm `scripts/test-square-image-upload.js` probe `contentType: 2` + `media/upload` — chạy trên production để xác nhận trước khi wire image upload vào publisher.
+
+### 6. Dashboard — section Top Recommend mới
+
+- **API** `GET /api/dashboard/top-recommendations`: top 3 coin tốt nhất theo composite ranking (health×0.4 + trend×0.35 + momentum×0.15 + scoreChange), kèm signal + reason từ recommendation engine, và setup Entry/TP/SL tính từ ATR_14 (cùng công thức với Square engine) + R:R + % gain/risk. Dùng "freshest date with data" — refresh mới luôn hiển thị ngay.
+- **UI** (`src/components/TopRecommendations.tsx`): 3 card trên dashboard (trên Narratives grid) hiển thị symbol, signal badge, hướng đọc (Bullish/Neutral/Bearish — advisory-only, không phải lệnh), health/change/price, khối Entry/TP/SL/R:R, chip metric nhanh (Trend/RSI/Funding/EMA20), reason từ rule engine, disclaimer. Section tự ẩn khi chưa có dữ liệu.
+
+### 7. Module Python LLM provider (chuẩn bị Hướng B cho P6)
+
+- `backend/provider/config.py` + `backend/provider/llm.py`: LLM factory LangChain (`ChatOpenAI` + `with_fallbacks` 2 tầng), cấu hình qua pydantic-settings, hỗ trợ mọi OpenAI-compatible endpoint (OpenAI/Groq/DeepSeek/OpenRouter/Ollama/vLLM). Chưa wire vào pipeline nào — giữ cho P6 dùng trực tiếp không cần HTTP hop.
+
+### Files changed (SQ-BATCH-09-2026)
+
+```
+.env.example, requirements.txt, scripts/check-env.js, scripts/test-square-image-upload.js (mới)
+backend/api/refresh.py, backend/provider/ (mới)
+src/app/api/dashboard/route.ts, src/app/api/dashboard/top-recommendations/ (mới)
+src/app/api/admin/square/analytics/route.ts, src/app/square-analytics/page.tsx
+src/app/page.tsx, src/components/TopRecommendations.tsx (mới), src/components/NarrativeCard.tsx
+src/lib/square/{analytics,content-generator,opportunity-engine,production,publisher}.ts
+src/types/index.ts
+```
+
+### Verification (SQ-BATCH-09-2026)
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `tsc --noEmit` | ✅ Sạch |
+| eslint | ✅ 0 errors |
+| Square tests | ✅ 69/69 PASS |
+| Python compile (refresh.py, provider) | ✅ OK |
+| Pending action | Set `OPENAI_API_KEY` / `FALLBACK_OPENAI_API_KEY` / `FALLBACK2_OPENAI_API_KEY` + MODEL_NAME/FALLBACK_* trong Settings → Environment; chạy `node scripts/test-square-image-upload.js` trên production để probe image upload |
+
+---
+
 ## Ngày cập nhật: 2026-08-08
 
 ---

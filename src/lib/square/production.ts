@@ -137,9 +137,9 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
 
     // SQ-DIAG: if LLM has been silently falling back for every publish, make
     // it visible in pipeline logs so the root cause is discoverable.
-    if (persistedOpps.length > 0 && !process.env.GOOGLE_API_KEY) {
+    if (persistedOpps.length > 0 && !process.env.OPENAI_API_KEY) {
       console.warn(
-        "[SQ-PIPELINE] GOOGLE_API_KEY missing — all content for this cycle will use template fallback (llmUsed=false)."
+        "[SQ-PIPELINE] OPENAI_API_KEY missing — all content for this cycle will use template fallback (llmUsed=false)."
       );
     }
 
@@ -233,7 +233,8 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
           generated.title,
           chartMeta,
           thesisFingerprint,
-          generated.llmUsed
+          generated.llmUsed,
+          generated.llmProvider
         );
         const pubLatency = Date.now() - pubStart;
 

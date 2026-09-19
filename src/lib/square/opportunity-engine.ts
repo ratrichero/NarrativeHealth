@@ -59,6 +59,36 @@ export interface SquareOpportunity {
   leaderCoinEntry?: PriceZone;
   leaderCoinTakeProfits?: PriceTarget[];
   leaderCoinStopLoss?: PriceTarget;
+  // SQ-VIRAL: rich market metrics for content generation (all optional —
+  // absent when source data is missing; the content layer must null-check).
+  metrics?: OpportunityMetrics;
+}
+
+/** Rich market snapshot attached to an opportunity for content generation. */
+export interface OpportunityMetrics {
+  /** Leader/coin current price. */
+  currentPrice: number;
+  marketCap: number | null;
+  volume24h: number | null;
+  /** Percent distance from EMA20 (positive = above). */
+  priceVsEma20Pct: number | null;
+  priceVsEma50Pct: number | null;
+  rsi14: number | null;
+  fundingRate: number | null;
+  openInterest: number | null;
+  /** 4-pillar score breakdown (0-100 each). */
+  trendScore: number;
+  derivativeScore: number;
+  volumeScore: number;
+  momentumScore: number;
+  /** Narrative breadth: how many coins are up vs total in narrative. */
+  coinsUp: number;
+  coinsTotal: number;
+  /** Risk/reward ratio of the setup: (TP1 - entryMid) / (entryMid - SL). */
+  riskRewardRatio: number | null;
+  /** Projected % gain to TP1 / % risk to SL from entry mid. */
+  tp1GainPct: number | null;
+  slRiskPct: number | null;
 }
 
 export interface OpportunityEvaluationResult {
@@ -656,6 +686,63 @@ function generateNarrativeInvalidationFromData(
 
 // ─── Opportunity Extraction ────────────────────────────
 
+/**
+ * SQ-VIRAL: build rich metrics snapshot for a coin (and optionally its
+ * narrative breadth) so the content layer can write data-dense posts.
+ */
+function buildOpportunityMetrics(
+  coin: CoinData,
+  setup: ReturnType<typeof calculateSetupLevels>,
+  breadth?: { coinsUp: number; coinsTotal: number }
+): OpportunityMetrics {
+  const priceVsEma20Pct =
+    coin.ema20 && coin.ema20 > 0
+      ? ((coin.currentPrice - coin.ema20) / coin.ema20) * 100
+      : null;
+  const priceVsEma50Pct =
+    coin.ema50 && coin.ema50 > 0
+      ? ((coin.currentPrice - coin.ema50) / coin.ema50) * 100
+      : null;
+
+  let riskRewardRatio: number | null = null;
+  let tp1GainPct: number | null = null;
+  let slRiskPct: number | null = null;
+  if (setup) {
+    const entryMid = (setup.entry.low + setup.entry.high) / 2;
+    const tp1 = setup.takeProfits[0]?.level;
+    const sl = setup.stopLoss.level;
+    if (tp1 && sl && entryMid > 0 && entryMid > sl) {
+      const reward = tp1 - entryMid;
+      const risk = entryMid - sl;
+      if (risk > 0) {
+        riskRewardRatio = Math.round((reward / risk) * 10) / 10;
+        tp1GainPct = Math.round((reward / entryMid) * 1000) / 10;
+        slRiskPct = Math.round((risk / entryMid) * 1000) / 10;
+      }
+    }
+  }
+
+  return {
+    currentPrice: coin.currentPrice,
+    marketCap: coin.marketCap,
+    volume24h: coin.volume24h,
+    priceVsEma20Pct,
+    priceVsEma50Pct,
+    rsi14: coin.rsi14,
+    fundingRate: coin.fundingRate,
+    openInterest: coin.openInterest,
+    trendScore: Math.round(coin.trendScore),
+    derivativeScore: Math.round(coin.derivativeScore),
+    volumeScore: Math.round(coin.volumeScore),
+    momentumScore: Math.round(coin.momentumScore),
+    coinsUp: breadth?.coinsUp ?? 0,
+    coinsTotal: breadth?.coinsTotal ?? 0,
+    riskRewardRatio,
+    tp1GainPct,
+    slRiskPct,
+  };
+}
+
 function extractCoinOpportunities(
   coinData: CoinData[],
   config: OpportunityScoringConfig
@@ -670,6 +757,7 @@ function extractCoinOpportunities(
       const quality = evaluateDataQuality(coin);
       const setup = calculateSetupLevels(coin);
       const rationale = generateRationale(coin);
+      const metrics = buildOpportunityMetrics(coin, setup);
 
       return {
         id: 0,
@@ -684,6 +772,7 @@ function extractCoinOpportunities(
         entry: setup?.entry,
         takeProfits: setup?.takeProfits,
         stopLoss: setup?.stopLoss,
+        metrics,
         status: "CANDIDATE" as OpportunityStatus,
       };
     })
@@ -763,6 +852,17 @@ function extractNarrativeOpportunities(
       const dataQuality: DataQuality =
           avgConfidence >= 70 ? "HIGH" : avgConfidence >= 40 ? "MEDIUM" : "LOW";
 
+      // SQ-VIRAL: narrative breadth = how many coins improved vs total
+      const coinsUp = coinsInNarrative.filter(
+        (c) => c.scoreChange !== null && c.scoreChange > 0
+      ).length;
+      const metrics = leaderCoin
+        ? buildOpportunityMetrics(leaderCoin, leaderSetup, {
+            coinsUp,
+            coinsTotal: coinsInNarrative.length,
+          })
+        : undefined;
+
       return {
         id: 0,
         type: "NARRATIVE_SETUP" as OpportunityType,
@@ -779,6 +879,7 @@ function extractNarrativeOpportunities(
         leaderCoinEntry: leaderSetup?.entry,
         leaderCoinTakeProfits: leaderSetup?.takeProfits,
         leaderCoinStopLoss: leaderSetup?.stopLoss,
+        metrics,
         status: "CANDIDATE" as OpportunityStatus,
       };
     })
@@ -842,6 +943,72 @@ export async function evaluateOpportunities(
   }
 }
 
+// ─── SQ-VIRAL: Visual + Hook Helpers ──────────────────
+
+/**
+ * Deterministic ASCII price map for text-only posts. Monospace-rendered by
+ * Binance Square; gives the visual anchor of a chart without image upload.
+ */
+function buildAsciiPriceMap(
+  entry: PriceZone,
+  takeProfits: PriceTarget[],
+  stopLoss: PriceTarget
+): string {
+  const fmt = (n: number) => (n >= 100 ? n.toFixed(0) : n >= 1 ? n.toFixed(4) : n.toFixed(6));
+  const parts: string[] = [];
+  parts.push(`SL ${fmt(stopLoss.level)}`);
+  parts.push(`▓ ENTRY ${fmt(entry.low)}–${fmt(entry.high)} ▓`);
+  for (const tp of takeProfits.slice(0, 2)) {
+    const label = tp.label ? tp.label.split(" ")[0] : "TP";
+    parts.push(`→ ${label} ${fmt(tp.level)}`);
+  }
+  return parts.join("  ━  ");
+}
+
+const HOOK_TEMPLATES_UP = [
+  "$SYM just jumped +PTS points on our narrative health engine — one of the strongest signals across tracked narratives today.",
+  "Momentum shift: $SYM moved +PTS points as market data stacks up in its favor.",
+  "$SYM is quietly building strength — health engine shows +PTS points of improvement.",
+  "Most traders watch price. Our data watched $SYM gain +PTS points of narrative health first.",
+];
+
+const HOOK_TEMPLATES_DOWN = [
+  "$SYM dropped PTS points on our health engine — a weakening signal worth understanding, not ignoring.",
+  "Warning signs: $SYM lost PTS points of narrative health. Here's what the data shows.",
+];
+
+const HOOK_TEMPLATES_STABLE = [
+  "$SYM is holding steady — but the underlying data tells a more interesting story.",
+  "Quiet on the surface: $SYM health engine update.",
+];
+
+/** Rotate hook deterministically per opportunity so posts never open alike. */
+function buildHookLine(opportunity: SquareOpportunity): string {
+  const sym = opportunity.coinSymbol ?? "This narrative";
+  const changeMatch = opportunity.rationale
+    .find((r) => r.includes("improv") || r.includes("declin"))
+    ?.match(/([+-]?[\d.]+)/);
+  const ptsVal = changeMatch ? Math.abs(parseFloat(changeMatch[1])) : 0;
+
+  const isUp = opportunity.rationale.some(
+    (r) => r.includes("improving") || r.includes("improved")
+  );
+  const isDown = opportunity.rationale.some((r) => r.includes("declin"));
+
+  const templates = isUp
+    ? HOOK_TEMPLATES_UP
+    : isDown
+      ? HOOK_TEMPLATES_DOWN
+      : HOOK_TEMPLATES_STABLE;
+
+  const idx = opportunity.id % templates.length;
+  const ptsText = ptsVal > 0 ? `+${ptsVal}` : `${ptsVal}`;
+  return templates[idx]
+    .replace("$SYM", `$${sym}`)
+    .replace("+PTS", ptsText)
+    .replace("PTS", ptsText.replace("+", ""));
+}
+
 // ─── Content Brief Builder ─────────────────────────────
 
 export interface SquareContentBrief {
@@ -863,6 +1030,12 @@ export interface SquareContentBrief {
   leaderCoinEntry?: PriceZone;
   leaderCoinTakeProfits?: PriceTarget[];
   leaderCoinStopLoss?: PriceTarget;
+  // SQ-VIRAL: rich market metrics passthrough for content generation.
+  metrics?: OpportunityMetrics;
+  /** Deterministic ASCII price map for the setup (visual hook in text posts). */
+  priceMap?: string;
+  /** Rotating hook line — varied per post to avoid repetitive openings. */
+  hookLine?: string;
 }
 
 export function buildContentBrief(
@@ -1008,6 +1181,10 @@ export function buildContentBrief(
       ? [`$${validatedChartCoin}`]
       : [];
 
+  const entryZone = opportunity.entry ?? opportunity.leaderCoinEntry;
+  const tps = opportunity.takeProfits ?? opportunity.leaderCoinTakeProfits;
+  const sl = opportunity.stopLoss ?? opportunity.leaderCoinStopLoss;
+
   return {
     opportunityId: opportunity.id,
     contentType: opportunity.entry || opportunity.leaderCoinEntry ? "image" : "text",
@@ -1026,5 +1203,8 @@ export function buildContentBrief(
     leaderCoinEntry: opportunity.leaderCoinEntry,
     leaderCoinTakeProfits: opportunity.leaderCoinTakeProfits,
     leaderCoinStopLoss: opportunity.leaderCoinStopLoss,
+    metrics: opportunity.metrics,
+    priceMap: entryZone && sl ? buildAsciiPriceMap(entryZone, tps ?? [], sl) : undefined,
+    hookLine: buildHookLine(opportunity),
   };
 }

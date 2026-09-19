@@ -117,7 +117,7 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <HealthBadge status={narrative.status} score={narrative.healthScore} />
+              <HealthBadge status={narrative.status} score={narrative.healthScore ?? undefined} />
               {correlation && correlation.avgCorrelation >= 0.4 && (
                 <span className={`text-xs flex items-center gap-1 px-2 py-0.5 rounded ${
                   correlation.avgCorrelation >= 0.7 ? 'bg-red-900/50 text-red-400' :

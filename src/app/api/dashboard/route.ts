@@ -29,13 +29,42 @@ export async function GET() {
       .from(narratives)
       .where(eq(narratives.isActive, true));
 
-    // Fetch narrative health data
+    // SQ-FIX: Always serve the freshest available data, never a blank report.
+    // The business date (Asia/Ho_Chi_Minh) rolls over at midnight VN. If the
+    // daily refresh has not run yet, there is no row for `today` and the old
+    // code rendered placeholder score 50 for every narrative until the user
+    // hit Refresh Data manually. Instead: detect the latest date that actually
+    // has narrative_health rows and query against that date, so both manual
+    // refresh and scheduler refresh show up immediately, first visit included.
+    const [latestHealthRow] = await db
+      .select({ date: narrativeHealth.date })
+      .from(narrativeHealth)
+      .where(
+        sql`${narrativeHealth.narrativeId} IN (${sql.join(
+          activeNarratives.map((n) => sql`${n.id}`),
+          sql`, `
+        )})`
+      )
+      .orderBy(desc(narrativeHealth.date))
+      .limit(1);
+
+    const latestDataDate: string | null = latestHealthRow?.date ?? null;
+    // Primary date = freshest date with data (falls back from today),
+    // secondary = the day before it (for score-change comparison).
+    const dataDate = latestDataDate ?? today;
+    const prevDate = latestDataDate
+      ? getBusinessDate(
+          new Date(new Date(latestDataDate + "T00:00:00+07:00").getTime() - 24 * 60 * 60 * 1000)
+        )
+      : yesterday;
+    const dataIsStale = latestDataDate !== null && latestDataDate !== today;
+    // Fetch narrative health data for the resolved data dates
     const narrativeHealthData = await db
       .select()
       .from(narrativeHealth)
       .where(
         and(
-          gte(narrativeHealth.date, yesterday),
+          gte(narrativeHealth.date, prevDate),
           sql`${narrativeHealth.narrativeId} IN (${sql.join(
             activeNarratives.map((n) => sql`${n.id}`),
             sql`, `
@@ -60,11 +89,14 @@ export async function GET() {
     // Build narrative summaries
     const narrativeSummaries = await Promise.all(
       activeNarratives.map(async (narrative) => {
+        // SQ-FIX: look up health rows against the resolved data dates, and
+        // never fabricate a score. If there is genuinely no data, status is
+        // null so the UI shows "No Data" instead of a fake 50/CAUTION badge.
         const healthData = narrativeHealthData.find(
-          (h) => h.narrativeId === narrative.id && h.date === today
+          (h) => h.narrativeId === narrative.id && h.date === dataDate
         );
         const prevHealthData = narrativeHealthData.find(
-          (h) => h.narrativeId === narrative.id && h.date === yesterday
+          (h) => h.narrativeId === narrative.id && h.date === prevDate
         );
 
         // Get top coin for this narrative
@@ -119,15 +151,15 @@ export async function GET() {
           }
         }
 
-        const score = healthData?.healthScore || 50;
+        const score = healthData?.healthScore ?? null;
 
         return {
           id: narrative.id,
           name: narrative.name,
           healthScore: score,
           previousScore: prevHealthData?.healthScore || null,
-          scoreChange: healthData?.scoreChange || null,
-          status: getHealthStatus(score),
+          scoreChange: healthData?.scoreChange ?? null,
+          status: score !== null ? getHealthStatus(score) : null,
           coinCount: coinCountMap.get(narrative.id) || 0,
           topCoin,
           weakestCoin,
@@ -137,10 +169,12 @@ export async function GET() {
       })
     );
 
-    // Sort by health score
-    narrativeSummaries.sort((a, b) => b.healthScore - a.healthScore);
+    // Sort by health score (nulls last)
+    narrativeSummaries.sort(
+      (a, b) => (b.healthScore ?? -1) - (a.healthScore ?? -1)
+    );
 
-    // Get top movers (biggest positive changes)
+    // Get top movers (biggest positive changes) — for the freshest date with data
     const topMoversData = await db
       .select({
         coinId: healthScores.coinId,
@@ -151,7 +185,7 @@ export async function GET() {
       })
       .from(healthScores)
       .innerJoin(coins, eq(coins.id, healthScores.coinId))
-      .where(and(eq(healthScores.date, today), eq(coins.isActive, true)))
+      .where(and(eq(healthScores.date, dataDate), eq(coins.isActive, true)))
       .orderBy(desc(healthScores.scoreChange))
       .limit(5);
 
@@ -166,7 +200,7 @@ export async function GET() {
       })
       .from(healthScores)
       .innerJoin(coins, eq(coins.id, healthScores.coinId))
-      .where(and(eq(healthScores.date, today), eq(coins.isActive, true)))
+      .where(and(eq(healthScores.date, dataDate), eq(coins.isActive, true)))
       .orderBy(healthScores.healthScore)
       .limit(5);
 
@@ -200,6 +234,10 @@ export async function GET() {
       success: true,
       data: {
         date: today,
+        // SQ-FIX: the business date of the rows actually being shown, so the
+        // UI can label the report "data as of ..." when it is not today.
+        dataAsOf: dataDate,
+        dataIsStale,
         narratives: narrativeSummaries,
         sourceStatus: {
           binanceSpot: sourceStatusMap.binance_spot,

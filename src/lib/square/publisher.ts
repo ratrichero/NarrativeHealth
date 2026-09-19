@@ -422,7 +422,8 @@ export async function publishContent(
   title?: string,
   chartMetadata?: { chartSymbol: string | null; chartMatchesSource: boolean },
   thesisFingerprint?: string,
-  llmUsed?: boolean
+  llmUsed?: boolean,
+  llmProvider?: string
 ): Promise<PublicationResult> {
   // 1. Check quota
   const quota = await getQuotaStatus();
@@ -606,6 +607,7 @@ export async function publishContent(
           chartSymbol: chartMetadata?.chartSymbol ?? null,
           chartMatchesSource: chartMetadata?.chartMatchesSource ?? null,
           latencyMs,
+          llmProvider: llmUsed ? (llmProvider ?? "unknown") : null,
         },
       })
       .returning();

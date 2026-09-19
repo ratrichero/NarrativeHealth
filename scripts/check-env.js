@@ -5,11 +5,11 @@ require('dotenv').config();
 console.log('=== SQ-LIVE-02 Pre-flight Environment Check ===\n');
 
 const binanceKey = process.env.BINANCE_SQUARE_OPENAPI_KEY;
-const googleKey = process.env.GOOGLE_API_KEY;
+const openaiKey = process.env.OPENAI_API_KEY; // LLM primary (Groq)
 const databaseUrl = process.env.DATABASE_URL;
 
 console.log('BINANCE_SQUARE_OPENAPI_KEY configured:', binanceKey ? 'YES' : 'NO');
-console.log('GOOGLE_API_KEY configured:', googleKey ? 'YES' : 'NO');
+console.log('OPENAI_API_KEY configured:', openaiKey ? 'YES' : 'NO');
 console.log('DATABASE_URL configured:', databaseUrl ? 'YES' : 'NO');
 
 if (binanceKey) {

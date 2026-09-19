@@ -135,9 +135,15 @@ export interface PublicationRecord {
   status: string;
   score: number | null;
   llmUsed: boolean;
+  llmProvider: string | null;
   externalPostId: string | null;
   chartSymbol: string | null;
   failureCategory: string | null;
+  errorCode: string | null;
+  retryCount: number;
+  publishedAt: string | null;
+  textPreview: string | null;
+  latencyMs: number | null;
 }
 
 export interface TypeBreakdown {
@@ -519,6 +525,13 @@ export async function getRecentPublications(range: TimeRange, limit = 20): Promi
       externalPostId: squarePublications.externalPostId,
       chartSymbol: squareOpportunities.coinSymbol,
       failureCategory: squarePublications.failureCategory,
+      // SQ-AN: provider + content metadata from snapshot
+      llmProvider: sql<string | null>`${squarePublications.contentSnapshot} ->> 'llmProvider'`,
+      errorCode: squarePublications.errorCode,
+      retryCount: squarePublications.retryCount,
+      publishedAt: squarePublications.publishedAt,
+      latencyMs: sql<number | null>`(${squarePublications.contentSnapshot} ->> 'latencyMs')::int`,
+      textPreview: sql<string | null>`left(${squarePublications.contentSnapshot} ->> 'text', 200)`,
     })
     .from(squarePublications)
     .leftJoin(squareOpportunities, eq(squarePublications.opportunityId, squareOpportunities.id))
@@ -537,10 +550,109 @@ export async function getRecentPublications(range: TimeRange, limit = 20): Promi
     status: r.status,
     score: r.score,
     llmUsed: r.llmUsed,
+    llmProvider: r.llmProvider ?? null,
     externalPostId: r.externalPostId,
     chartSymbol: r.chartSymbol,
     failureCategory: r.failureCategory,
+    errorCode: r.errorCode ?? null,
+    retryCount: r.retryCount ?? 0,
+    publishedAt: r.publishedAt instanceof Date ? r.publishedAt.toISOString() : r.publishedAt ? String(r.publishedAt) : null,
+    textPreview: r.textPreview ?? null,
+    latencyMs: typeof r.latencyMs === "number" ? r.latencyMs : null,
   }));
+}
+
+/**
+ * SQ-AN-04: Full paginated publication list for the Square Analytics UI.
+ * Filterable by status and LLM provider tier; includes content preview.
+ */
+export interface PublicationListResult {
+  items: PublicationRecord[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export async function getPublicationsList(
+  range: TimeRange,
+  options: { page?: number; pageSize?: number; status?: string; provider?: string } = {}
+): Promise<PublicationListResult> {
+  const dateStr = getDateStr(range);
+  const page = Math.max(1, options.page ?? 1);
+  const pageSize = Math.min(100, Math.max(1, options.pageSize ?? 25));
+  const offset = (page - 1) * pageSize;
+
+  const conditions = [gte(squarePublications.createdAt, new Date(dateStr))];
+  if (options.status) conditions.push(eq(squarePublications.status, options.status));
+  if (options.provider) {
+    if (options.provider === "template") {
+      conditions.push(eq(squarePublications.llmUsed, false));
+    } else {
+      conditions.push(sql`${squarePublications.contentSnapshot} ->> 'llmProvider' = ${options.provider}`);
+    }
+  }
+
+  const where = and(...conditions);
+
+  const [totalRow] = await db
+    .select({ total: count() })
+    .from(squarePublications)
+    .where(where);
+
+  const results = await db
+    .select({
+      id: squarePublications.id,
+      createdAt: squarePublications.createdAt,
+      coinSymbol: squareOpportunities.coinSymbol,
+      narrativeId: squareOpportunities.narrativeId,
+      narrativeName: narratives.name,
+      type: squareOpportunities.type,
+      status: squarePublications.status,
+      score: sql<number>`(${squareOpportunities.score})::numeric(5,2)`,
+      llmUsed: squarePublications.llmUsed,
+      externalPostId: squarePublications.externalPostId,
+      chartSymbol: squareOpportunities.coinSymbol,
+      failureCategory: squarePublications.failureCategory,
+      llmProvider: sql<string | null>`${squarePublications.contentSnapshot} ->> 'llmProvider'`,
+      errorCode: squarePublications.errorCode,
+      retryCount: squarePublications.retryCount,
+      publishedAt: squarePublications.publishedAt,
+      latencyMs: sql<number | null>`(${squarePublications.contentSnapshot} ->> 'latencyMs')::int`,
+      textPreview: sql<string | null>`left(${squarePublications.contentSnapshot} ->> 'text', 200)`,
+    })
+    .from(squarePublications)
+    .leftJoin(squareOpportunities, eq(squarePublications.opportunityId, squareOpportunities.id))
+    .leftJoin(narratives, eq(narratives.id, squareOpportunities.narrativeId))
+    .where(where)
+    .orderBy(desc(squarePublications.createdAt))
+    .limit(pageSize)
+    .offset(offset);
+
+  return {
+    items: results.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+      coinSymbol: r.coinSymbol,
+      narrativeId: r.narrativeId,
+      narrativeName: r.narrativeName ?? (r.narrativeId ? `Narrative #${r.narrativeId}` : null),
+      type: r.type ?? "UNKNOWN",
+      status: r.status,
+      score: r.score,
+      llmUsed: r.llmUsed,
+      llmProvider: r.llmProvider ?? null,
+      externalPostId: r.externalPostId,
+      chartSymbol: r.chartSymbol,
+      failureCategory: r.failureCategory,
+      errorCode: r.errorCode ?? null,
+      retryCount: r.retryCount ?? 0,
+      publishedAt: r.publishedAt instanceof Date ? r.publishedAt.toISOString() : r.publishedAt ? String(r.publishedAt) : null,
+      textPreview: r.textPreview ?? null,
+      latencyMs: typeof r.latencyMs === "number" ? r.latencyMs : null,
+    })),
+    total: totalRow.total,
+    page,
+    pageSize,
+  };
 }
 
 export async function getTypeBreakdown(range: TimeRange): Promise<TypeBreakdown[]> {

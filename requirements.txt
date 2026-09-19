@@ -27,3 +27,22 @@ python-dotenv==1.0.0
 
 # Static file serving (production)
 aiofiles==23.2.1
+
+# Provider
+# Core LLM & Framework Dependencies
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.3.0
+
+# Settings & Environment
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+python-dotenv>=1.0.0
+
+# Optional Native Providers (uncomment if using native packages instead of OpenAI-compatible endpoints)
+# langchain-anthropic>=0.3.0
+# langchain-google-genai>=2.0.0
+
+# Testing (optional)
+pytest>=8.0.0
+pytest-asyncio>=0.24.0

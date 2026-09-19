@@ -5,6 +5,7 @@ import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
 import { NarrativeCard } from "@/components/NarrativeCard";
 import { SourceStatusBar } from "@/components/SourceStatusBar";
 import { RefreshButton } from "@/components/RefreshButton";
+import { TopRecommendations } from "@/components/TopRecommendations";
 import { HealthBadge } from "@/components/HealthBadge";
 import { ScoreChange } from "@/components/ScoreChange";
 import { formatDateTime, getHealthStatus } from "@/lib/utils";
@@ -60,12 +61,20 @@ export default function DashboardPage() {
           <p className="text-slate-400">
             {formatDateTime(dashboard.lastUpdate)} • {dashboard.date}
           </p>
+          {dashboard.dataIsStale && dashboard.dataAsOf && (
+            <p className="text-xs text-amber-400 mt-1">
+              Showing latest available data (as of {dashboard.dataAsOf}). Today&apos;s refresh has not run yet.
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-4">
           <SourceStatusBar sourceStatus={dashboard.sourceStatus} />
           <RefreshButton onRefreshComplete={() => refetch()} />
         </div>
       </div>
+
+      {/* SQ-TOP-REC — Top 3 best-trend coins with actionable setups */}
+      <TopRecommendations />
 
       {/* Narratives Grid */}
       <section>

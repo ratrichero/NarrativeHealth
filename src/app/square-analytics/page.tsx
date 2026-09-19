@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
 import {
   BarChart3, TrendingUp, TrendingDown, AlertCircle, RefreshCw,
-  FileText, Coins, Zap, Clock, Shield, Activity,
+  FileText, Coins, Zap, Clock, Shield, Activity, List,
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip,
@@ -124,7 +124,21 @@ interface PubRecord {
   status: string;
   score: number | null;
   llmUsed: boolean;
+  llmProvider?: string | null;
   externalPostId: string | null;
+  failureCategory?: string | null;
+  errorCode?: string | null;
+  retryCount?: number;
+  publishedAt?: string | null;
+  textPreview?: string | null;
+  latencyMs?: number | null;
+}
+
+interface PublicationListResult {
+  items: PubRecord[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 interface TypeItem {
@@ -288,6 +302,185 @@ function QuotaGauge({ data }: { data: QuotaData }) {
   );
 }
 
+// ─── Publication History Table (SQ-AN-04) ─────────────
+
+function PublicationProviderBadge({ pub }: { pub: PubRecord }) {
+  if (!pub.llmUsed) {
+    return <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">Template</span>;
+  }
+  const label = pub.llmProvider ?? "unknown";
+  const cls =
+    label === "primary" ? "bg-cyan-900/50 text-cyan-400" :
+    label === "fallback1" ? "bg-blue-900/50 text-blue-400" :
+    label === "fallback2" ? "bg-violet-900/50 text-violet-400" :
+    "bg-slate-800 text-slate-400";
+  return <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>LLM · {label}</span>;
+}
+
+function PublicationHistory({
+  data, isLoading, page, onPageChange,
+  statusFilter, onStatusChange,
+  providerFilter, onProviderChange,
+}: {
+  data?: PublicationListResult;
+  isLoading: boolean;
+  page: number;
+  onPageChange: (p: number) => void;
+  statusFilter: string;
+  onStatusChange: (v: string) => void;
+  providerFilter: string;
+  onProviderChange: (v: string) => void;
+}) {
+  const items = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const pageSize = data?.pageSize ?? 25;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  const STATUS_OPTIONS = ["", "PUBLISHED", "FAILED", "RETRY_PENDING", "DEDUPED", "QUOTA_BLOCKED"];
+  const PROVIDER_OPTIONS = [
+    { value: "", label: "All providers" },
+    { value: "primary", label: "LLM · Primary" },
+    { value: "fallback1", label: "LLM · Fallback 1" },
+    { value: "fallback2", label: "LLM · Fallback 2" },
+    { value: "template", label: "Template" },
+  ];
+
+  return (
+    <SectionCard title={`Publication History (${total})`}>
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <select
+          value={statusFilter}
+          onChange={(e) => { onStatusChange(e.target.value); onPageChange(1); }}
+          className="bg-slate-800 border border-slate-700 rounded-lg text-sm text-white px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+        >
+          {STATUS_OPTIONS.map((s) => (
+            <option key={s} value={s}>{s || "All statuses"}</option>
+          ))}
+        </select>
+        <select
+          value={providerFilter}
+          onChange={(e) => { onProviderChange(e.target.value); onPageChange(1); }}
+          className="bg-slate-800 border border-slate-700 rounded-lg text-sm text-white px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+        >
+          {PROVIDER_OPTIONS.map((p) => (
+            <option key={p.value} value={p.value}>{p.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {isLoading ? (
+        <Skeleton />
+      ) : items.length === 0 ? (
+        <EmptyState message="No publications match the current filters." />
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                  <th className="pb-2 pr-4">Time</th>
+                  <th className="pb-2 pr-4">Subject</th>
+                  <th className="pb-2 pr-4">Status</th>
+                  <th className="pb-2 pr-4">Source</th>
+                  <th className="pb-2 pr-4">Score</th>
+                  <th className="pb-2 pr-4">Retries</th>
+                  <th className="pb-2 pr-4">Latency</th>
+                  <th className="pb-2">Post</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((pub) => (
+                  <tr key={pub.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors align-top">
+                    <td className="py-2.5 pr-4 text-xs text-slate-400 whitespace-nowrap">
+                      {new Date(pub.createdAt).toLocaleString()}
+                    </td>
+                    <td className="py-2.5 pr-4">
+                      <div className="text-sm text-white">
+                        {pub.coinSymbol ? `$${pub.coinSymbol}` : pub.narrativeName ?? "Unknown"}
+                      </div>
+                      <div className="text-xs text-slate-500">{pub.type?.replace("_SETUP", "").toLowerCase()}</div>
+                      {pub.textPreview && (
+                        <div className="text-xs text-slate-600 mt-0.5 max-w-md truncate" title={pub.textPreview}>
+                          {pub.textPreview}
+                        </div>
+                      )}
+                      {pub.status === "FAILED" && pub.failureCategory && (
+                        <div className="text-xs text-red-500/80 mt-0.5">
+                          {pub.failureCategory}{pub.errorCode ? ` · ${pub.errorCode}` : ""}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-2.5 pr-4">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        pub.status === "PUBLISHED" ? "bg-green-900/50 text-green-400" :
+                        pub.status === "FAILED" ? "bg-red-900/50 text-red-400" :
+                        pub.status === "RETRY_PENDING" ? "bg-yellow-900/50 text-yellow-400" :
+                        "bg-slate-800 text-slate-400"
+                      }`}>
+                        {pub.status}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-4">
+                      <PublicationProviderBadge pub={pub} />
+                    </td>
+                    <td className="py-2.5 pr-4 text-xs text-slate-300 font-mono">
+                      {pub.score != null ? Number(pub.score).toFixed(1) : "—"}
+                    </td>
+                    <td className="py-2.5 pr-4 text-xs text-slate-400 font-mono">
+                      {pub.retryCount ?? 0}
+                    </td>
+                    <td className="py-2.5 pr-4 text-xs text-slate-400 font-mono">
+                      {pub.latencyMs != null ? `${(pub.latencyMs / 1000).toFixed(1)}s` : "—"}
+                    </td>
+                    <td className="py-2.5">
+                      {pub.externalPostId ? (
+                        <a
+                          href={`https://www.binance.com/en/square/post/${pub.externalPostId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-cyan-400 hover:text-cyan-300 text-xs whitespace-nowrap"
+                        >
+                          View ↗
+                        </a>
+                      ) : (
+                        <span className="text-slate-600 text-xs">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-800">
+            <span className="text-xs text-slate-500">
+              Page {page} / {totalPages} · {total} records
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => onPageChange(Math.max(1, page - 1))}
+                disabled={page <= 1}
+                className="px-3 py-1 text-xs rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ← Prev
+              </button>
+              <button
+                onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+                disabled={page >= totalPages}
+                className="px-3 py-1 text-xs rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </SectionCard>
+  );
+}
+
 // ─── Time Range Selector ───────────────────────────────
 
 function TimeRangeSelector({ value, onChange }: { value: TimeRange; onChange: (v: TimeRange) => void }) {
@@ -314,6 +507,9 @@ function TimeRangeSelector({ value, onChange }: { value: TimeRange; onChange: (v
 
 export default function SquareAnalyticsPage() {
   const [range, setRange] = useState<TimeRange>("7D");
+  const [pubPage, setPubPage] = useState(1);
+  const [pubStatusFilter, setPubStatusFilter] = useState<string>("");
+  const [pubProviderFilter, setPubProviderFilter] = useState<string>("");
 
   const { data: analytics, isLoading, error, refetch } = useQuery({
     queryKey: ["square-analytics", range],
@@ -322,6 +518,25 @@ export default function SquareAnalyticsPage() {
       const json = await res.json();
       if (!json.success) throw new Error(json.error);
       return json.data;
+    },
+    refetchOnWindowFocus: false,
+  });
+
+  const { data: pubList, isLoading: pubListLoading } = useQuery({
+    queryKey: ["square-publication-list", range, pubPage, pubStatusFilter, pubProviderFilter],
+    queryFn: async (): Promise<PublicationListResult> => {
+      const params = new URLSearchParams({
+        range,
+        section: "publication-list",
+        page: String(pubPage),
+        pageSize: "25",
+      });
+      if (pubStatusFilter) params.set("status", pubStatusFilter);
+      if (pubProviderFilter) params.set("provider", pubProviderFilter);
+      const res = await fetch(`/api/admin/square/analytics?${params.toString()}`);
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data.publicationList;
     },
     refetchOnWindowFocus: false,
   });
@@ -694,7 +909,7 @@ export default function SquareAnalyticsPage() {
                       <span className="text-xs text-slate-500">{pub.type?.replace("_SETUP", "").toLowerCase()}</span>
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-xs text-slate-500">
-                      <span>{pub.llmUsed ? "LLM" : "Template"}</span>
+                      <PublicationProviderBadge pub={pub} />
                       {pub.score != null && <span>Score: {Number(pub.score).toFixed(1)}</span>}
                       {pub.externalPostId && (
                         <a
@@ -716,6 +931,20 @@ export default function SquareAnalyticsPage() {
             </div>
           )}
         </SectionCard>
+
+        {/* SQ-AN-04 — Publication History (full list, paginated + filters) */}
+        <div className="lg:col-span-3">
+          <PublicationHistory
+            data={pubList}
+            isLoading={pubListLoading}
+            page={pubPage}
+            onPageChange={setPubPage}
+            statusFilter={pubStatusFilter}
+            onStatusChange={setPubStatusFilter}
+            providerFilter={pubProviderFilter}
+            onProviderChange={setPubProviderFilter}
+          />
+        </div>
 
         {/* Success Rate Trend — full width */}
         {d.trend && d.trend.length > 0 && (
