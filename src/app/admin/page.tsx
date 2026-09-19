@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChatAnalyticsSection } from "@/components/admin/ChatAnalyticsSection";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -2578,6 +2579,8 @@ export default function AdminPage() {
 
               <div>
                 <h2 className="text-lg font-semibold text-white mb-4">Narrative Performance</h2>
+
+              <ChatAnalyticsSection />
                 {narrativePerformanceLoading ? (
                   <div className="py-8 text-center">
                     <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
