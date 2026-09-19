@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 import { Providers } from "./providers";
 import { Navigation } from "@/components/Navigation";
+import { ChatWidget } from "@/components/ChatWidget";
 
 export const metadata: Metadata = {
   title: "Crypto Narrative Health Dashboard",
@@ -16,6 +17,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <Providers>
           <Navigation />
           <main className="container mx-auto px-4 py-6">{children}</main>
+          <ChatWidget />
         </Providers>
       </body>
     </html>

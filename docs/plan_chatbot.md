@@ -1,6 +1,6 @@
 # Kế hoạch: ChatBot Widget với LLM core + Tool Calling
 
-> **Trạng thái:** PLANNED — chưa bắt đầu implement
+> **Trạng thái:** APPROVED — 4 câu hỏi mở đã chốt (xem mục 7), đang implement
 > **Ngày lập kế hoạch:** 2026-09-19
 > **Phạm vi:** ChatBot widget nhúng trên trang, lõi LLM bên trong, dùng data hiện có của hệ thống + data realtime từ Binance Futures qua tool calling.
 
@@ -88,6 +88,7 @@ Bot **không** đưa ra lệnh giao dịch — nhất quán với biên giới a
 ### 3.3. Thiết kế kỹ thuật cho nhóm Binance realtime
 
 - **Symbol resolution:** tool nhận `symbol` coin (PENDLE), lookup `binanceFuturesSymbol` trong bảng `coins` → `PENDLEUSDT`. Không cho LLM tự bịa symbol pair. `hasFutures = false` → tool trả lỗi rõ, LLM fallback sang spot price.
+- **Unknown coin (CHỐT 2026-09-19):** khi coin **không có sẵn** trong bảng `coins` (VD: coin mới listing chưa vào hệ thống), tool ĐƯỢC PHÉP gọi trực tiếp Binance API để tự xử lý: thử `GET /fapi/v1/exchangeInfo` / ticker để resolve `{SYMBOL}USDT` trên futures; có futures → trả data realtime kèm flag `source: "binance-direct"`; không có futures → thử spot ticker `{SYMBOL}USDT` qua `fetchBinanceCurrentPrice`; cũng không có → trả lỗi rõ ràng ("không tìm thấy symbol trên Binance") để LLM nói thật với user thay vì bịa. Nếu Binance geo-block (451) → fallback thông báo như trên. Nhờ vậy bot trả lời được **mọi coin trên Binance**, không giới hạn trong danh sách DB.
 - **Geo-block (HTTP 451):** collector đã handle — tool trả message rõ ("Binance data unavailable in this region") để LLM fallback về DB data thay vì bịa.
 - **Cache nhẹ:** 30–60s per symbol cho `get_live_price` / `get_futures_snapshot` — tránh rate limit khi nhiều user hỏi cùng coin.
 - **Giới hạn klines:** cap `limit ≤ 100`, interval whitelist — không cho LLM kéo 1000 nến ngốn token.
@@ -130,9 +131,13 @@ Bot **không** đưa ra lệnh giao dịch — nhất quán với biên giới a
 
 ---
 
-## 7. Câu hỏi mở (cần chốt trước khi implement)
+## 7. Quyết định đã chốt (2026-09-19)
 
-1. Widget đặt ở **mọi trang** hay chỉ dashboard?
-2. Có cần **streaming SSE** ngay v1 hay trả cả câu một lần?
-3. Có lưu **lịch sử hội thoại** vào DB (để phân tích sau) hay chỉ giữ trong session client?
-4. Ngôn ngữ trả lời: **tiếng Việt**, tiếng Anh, hay theo ngôn ngữ người dùng?
+| # | Câu hỏi | Quyết định |
+|---|---|---|
+| 1 | Vị trí widget | **Mọi trang** — mount 1 lần trong root layout |
+| 2 | Streaming | **Có SSE ngay v1** — hiển thị trạng thái tool calling ("đang tra cứu Binance...") trong lúc chờ |
+| 3 | Lịch sử hội thoại | **Lưu DB** — 2 bảng `chat_sessions` + `chat_messages`; vừa giữ context khi refresh, vừa là data phân tích chất lượng bot |
+| 4 | Ngôn ngữ | **Theo ngôn ngữ user** — system prompt yêu cầu giữ nguyên thuật ngữ kỹ thuật (RSI, funding, EMA...) khi trả lời tiếng Việt |
+
+**Bổ sung từ user:** với coin ngoài bảng `coins`, tool được phép truy xuất trực tiếp Binance API để trả ngữ cảnh (chi tiết mục 3.3 — Unknown coin).

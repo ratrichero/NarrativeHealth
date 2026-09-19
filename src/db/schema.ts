@@ -1511,3 +1511,44 @@ export const p6IntelligenceSummaries = pgTable(
 
 export type P6IntelligenceSummary = typeof p6IntelligenceSummaries.$inferSelect;
 export type NewP6IntelligenceSummary = typeof p6IntelligenceSummaries.$inferInsert;
+
+// ─── ChatBot conversations (CHAT-P1) ────────────────────
+
+export const chatSessions = pgTable(
+  "chat_sessions",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(), // client-generated UUID
+    clientFingerprint: varchar("client_fingerprint", { length: 128 }), // anonymous rate-limit bucket
+    title: varchar("title", { length: 200 }), // first user message, truncated
+    messageCount: integer("message_count").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("chat_sessions_updated_idx").on(table.updatedAt),
+  ]
+);
+
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    sessionId: varchar("session_id", { length: 64 })
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    role: varchar("role", { length: 20 }).notNull(), // user | assistant
+    content: text("content").notNull(),
+    // Assistant-only metadata: which tools were called + LLM tier used
+    toolCalls: jsonb("tool_calls"), // [{ name, latencyMs }]
+    llmProvider: varchar("llm_provider", { length: 20 }), // primary | fallback1 | fallback2
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("chat_messages_session_idx").on(table.sessionId, table.createdAt),
+  ]
+);
+
+export type ChatSession = typeof chatSessions.$inferSelect;
+export type NewChatSession = typeof chatSessions.$inferInsert;
+export type ChatMessage = typeof chatMessages.$inferSelect;
+export type NewChatMessage = typeof chatMessages.$inferInsert;
