@@ -1,5 +1,7 @@
 // CHAT-P4.5: Admin chat analytics — usage, tool stats, provider split,
-// recent sessions. GET /api/admin/chat/analytics?range=7D|30D|ALL
+// recent sessions, and per-session message detail (for Chat Report tab).
+// GET /api/admin/chat/analytics?range=7D|30D|ALL
+// GET /api/admin/chat/analytics?sessionId=<id>  → full conversation detail
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
@@ -16,6 +18,33 @@ function sinceDate(range: string): Date | null {
 
 export async function GET(request: NextRequest) {
   try {
+    const sessionId = request.nextUrl.searchParams.get("sessionId");
+
+    // ── Session detail: full conversation with per-message attribution ──
+    if (sessionId) {
+      const [session] = await db
+        .select()
+        .from(chatSessions)
+        .where(eq(chatSessions.id, sessionId.slice(0, 64)))
+        .limit(1);
+      if (!session) {
+        return NextResponse.json({ success: false, error: "Session not found" }, { status: 404 });
+      }
+      const messages = await db
+        .select({
+          id: chatMessages.id,
+          role: chatMessages.role,
+          content: chatMessages.content,
+          llmProvider: chatMessages.llmProvider,
+          toolCalls: chatMessages.toolCalls,
+          createdAt: chatMessages.createdAt,
+        })
+        .from(chatMessages)
+        .where(eq(chatMessages.sessionId, sessionId.slice(0, 64)))
+        .orderBy(chatMessages.createdAt);
+      return NextResponse.json({ success: true, data: { session, messages } });
+    }
+
     const range = request.nextUrl.searchParams.get("range") || "7D";
     const since = sinceDate(range);
 

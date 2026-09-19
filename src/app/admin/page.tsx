@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChatAnalyticsSection } from "@/components/admin/ChatAnalyticsSection";
+import { ChatReportSection } from "@/components/admin/ChatReportSection";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -22,6 +23,7 @@ import {
   Gavel,
   ToggleLeft,
   ToggleRight,
+  MessageSquare,
 } from "lucide-react";
 import type { AdminNarrative, AdminCoin, ConfigItem } from "@/types";
 import type { RecommendationRule, RuleCondition } from "@/lib/types/recommendation-rule";
@@ -369,7 +371,7 @@ async function fetchNarrativePerformance(): Promise<any[]> {
   return data.data;
 }
 
-type TabType = "narratives" | "coins" | "config" | "logs" | "rule-versions" | "rules" | "events" | "alerts" | "analytics";
+type TabType = "narratives" | "coins" | "config" | "logs" | "rule-versions" | "rules" | "events" | "alerts" | "analytics" | "chat-report";
 
 function RuleModal({
   isOpen,
@@ -1355,6 +1357,7 @@ export default function AdminPage() {
     { id: "events", label: "Events", icon: AlertCircle },
     { id: "alerts", label: "Alerts", icon: AlertCircle },
     { id: "analytics", label: "Analytics", icon: RefreshCw },
+    { id: "chat-report", label: "Chat Report", icon: MessageSquare },
   ];
 
   return (
@@ -2605,6 +2608,8 @@ export default function AdminPage() {
               </div>
             </div>
           )}
+
+          {activeTab === "chat-report" && <ChatReportSection />}
         </CardContent>
       </Card>
 
