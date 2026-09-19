@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { MessageCircle, X, Send, Loader2 } from "lucide-react";
+import { ChatMarkdown } from "@/components/chat/Markdown";
 
 interface ChatTurn {
   role: "user" | "assistant";
@@ -213,10 +214,14 @@ export function ChatWidget() {
               className={
                 t.role === "user"
                   ? "max-w-[85%] rounded-lg bg-cyan-600/90 text-white text-sm px-3 py-2 whitespace-pre-wrap"
-                  : "max-w-[90%] rounded-lg bg-slate-800 text-slate-100 text-sm px-3 py-2 whitespace-pre-wrap"
+                  : "max-w-[90%] rounded-lg bg-slate-800 text-slate-100 px-3 py-2"
               }
             >
-              {t.content || (streaming && i === turns.length - 1 ? "…" : "")}
+              {t.role === "assistant" ? (
+                <ChatMarkdown text={t.content || (streaming && i === turns.length - 1 ? "…" : "")} />
+              ) : (
+                t.content
+              )}
             </div>
           </div>
         ))}

@@ -115,7 +115,9 @@ Bot **không** đưa ra lệnh giao dịch — nhất quán với biên giới a
 | **P2.5 — Binance realtime tools** | 4 tool bọc collectors + symbol resolver + cache + geo-block handling | ~0.5 buổi |
 | **P3 — Widget UI** | Floating button, chat panel, markdown rendering, source badges (tool nào trả data gì) | ~1 buổi |
 | **P4 — Hardening** | Rate limit, guardrails, error handling khi provider fail (fallback message), logs | ~0.5 buổi |
-| **P5 — Python tools (tùy chọn)** | FastAPI `/api/compute` cho tính toán nặng (correlation, drawdown...) gọi từ tool TS | theo nhu cầu |
+| **P5 — Python tools** | ✅ DONE — FastAPI `/api/compute/coin-analysis` (pandas: returns, volatility, max drawdown, correlation vs BTC) + TS tool `get_coin_analysis` với fallback thuần TS khi FastAPI down | done 2026-09-19 |
+| **P3.5 — Markdown rendering** | ✅ DONE — renderer nhẹ không dependency (bold/code/bullets/heading) | done 2026-09-19 |
+| **P4.5 — Chat analytics** | ✅ DONE — `/api/admin/chat/analytics` (usage, tool stats + latency, provider split, sessions) | done 2026-09-19 |
 
 **Tổng: ~4 buổi làm việc.**
 

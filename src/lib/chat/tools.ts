@@ -408,6 +408,139 @@ async function getNarrativeLeaders(name: string) {
   return { narrative: nh.narrative, date: nh.date, leaders: nh.topCoins, breadth: nh.breadth };
 }
 
+// ─── Compute-heavy analysis (P5) ────────────────────────
+
+interface ComputeResult {
+  symbol: string;
+  window: { days: number; from: string; to: string };
+  price: { start: number; end: number; min: number; max: number };
+  periodReturnPct: number;
+  annualizedVolatilityPct: number;
+  maxDrawdownPct: number;
+  maxDrawdownDate: string;
+  benchmark?: { symbol: string; correlation: number; read: string };
+}
+
+/**
+ * P5: heavy numeric analysis. Tries the FastAPI compute endpoint (pandas)
+ * first; falls back to a lean pure-TS implementation when FastAPI is down
+ * (the lesson from the FastAPI self-lock incident: never hard-depend on it).
+ */
+async function getCoinAnalysis(symbol: string, days: number, benchmark: string) {
+  const capped = Math.min(Math.max(days || 60, 10), 180);
+  const base = process.env.FASTAPI_URL || "http://localhost:8000";
+
+  // 1) FastAPI (pandas) — preferred
+  try {
+    const res = await fetch(
+      `${base}/api/compute/coin-analysis?symbol=${encodeURIComponent(symbol)}&days=${capped}&benchmark=${encodeURIComponent(benchmark)}`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (!data.error) return { ...data, engine: "fastapi-pandas" };
+    }
+  } catch {
+    // FastAPI down → TS fallback below
+  }
+
+  // 2) Pure-TS fallback from DB price history
+  const coin = await lookupCoin(symbol);
+  if (!coin) return { error: `Không tìm thấy coin '${symbol}' trong hệ thống.` };
+
+  const benchCoin = await lookupCoin(benchmark);
+
+  const [rows, benchRows] = await Promise.all([
+    db
+      .select({ date: marketPriceDaily.date, close: marketPriceDaily.close })
+      .from(marketPriceDaily)
+      .where(eq(marketPriceDaily.coinId, coin.id))
+      .orderBy(desc(marketPriceDaily.date))
+      .limit(capped),
+    benchCoin
+      ? db
+          .select({ date: marketPriceDaily.date, close: marketPriceDaily.close })
+          .from(marketPriceDaily)
+          .where(eq(marketPriceDaily.coinId, benchCoin.id))
+          .orderBy(desc(marketPriceDaily.date))
+          .limit(capped)
+      : Promise.resolve([]),
+  ]);
+
+  if (rows.length < 10) return { error: `Chưa đủ lịch sử giá cho ${coin.symbol} (${rows.length} ngày).` };
+
+  const series = rows.slice().reverse().map((r) => ({ date: String(r.date), close: parseFloat(r.close) }));
+  const closes = series.map((s) => s.close);
+  const rets: number[] = [];
+  for (let i = 1; i < closes.length; i++) rets.push(closes[i] / closes[i - 1] - 1);
+
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const variance = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (rets.length - 1);
+  const volAnnual = Math.sqrt(variance) * Math.sqrt(365) * 100;
+
+  let peak = closes[0];
+  let maxDd = 0;
+  let maxDdDate = series[0].date;
+  for (let i = 0; i < closes.length; i++) {
+    if (closes[i] > peak) peak = closes[i];
+    const dd = (closes[i] - peak) / peak;
+    if (dd < maxDd) {
+      maxDd = dd;
+      maxDdDate = series[i].date;
+    }
+  }
+
+  const result: ComputeResult & { engine: string } = {
+    symbol: coin.symbol,
+    window: { days: series.length, from: series[0].date, to: series[series.length - 1].date },
+    price: {
+      start: closes[0],
+      end: closes[closes.length - 1],
+      min: Math.min(...closes),
+      max: Math.max(...closes),
+    },
+    periodReturnPct: +(((closes[closes.length - 1] / closes[0] - 1) * 100).toFixed(2)),
+    annualizedVolatilityPct: +(volAnnual.toFixed(1)),
+    maxDrawdownPct: +(maxDd * 100).toFixed(2),
+    maxDrawdownDate: maxDdDate,
+    engine: "ts-fallback",
+  };
+
+  // Correlation vs benchmark when overlapping dates exist
+  if (benchRows.length >= 10) {
+    const benchMap = new Map(benchRows.map((r) => [String(r.date), parseFloat(r.close)]));
+    const common = series.filter((s) => benchMap.has(s.date));
+    if (common.length >= 10) {
+      const ra: number[] = [];
+      const rb: number[] = [];
+      for (let i = 1; i < common.length; i++) {
+        ra.push(common[i].close / common[i - 1].close - 1);
+        rb.push(benchMap.get(common[i].date)! / benchMap.get(common[i - 1].date)! - 1);
+      }
+      const ma = ra.reduce((a, b) => a + b, 0) / ra.length;
+      const mb = rb.reduce((a, b) => a + b, 0) / rb.length;
+      const cov = ra.reduce((acc, v, i) => acc + (v - ma) * (rb[i] - mb), 0);
+      const sa = Math.sqrt(ra.reduce((acc, v) => acc + (v - ma) ** 2, 0));
+      const sb = Math.sqrt(rb.reduce((acc, v) => acc + (v - mb) ** 2, 0));
+      const corr = sa > 0 && sb > 0 ? +(cov / (sa * sb)).toFixed(3) : null;
+      if (corr !== null) {
+        result.benchmark = {
+          symbol: benchCoin?.symbol ?? benchmark.toUpperCase(),
+          correlation: corr,
+          read:
+            corr > 0.7 ? "di chuyển cùng chiều mạnh"
+            : corr > 0.3 ? "cùng chiều yếu"
+            : corr > -0.3 ? "độc lập tương đối"
+            : corr > -0.7 ? "ngược chiều"
+            : "ngược chiều mạnh",
+        };
+      }
+    }
+  }
+
+  return result;
+}
+
 // ─── Tool implementations (Binance realtime) ────────────
 
 function geoBlockMessage(): { error: string } {
@@ -580,6 +713,19 @@ export const CHAT_TOOLS: ChatToolDef[] = [
     description: "Các coin dẫn dắt (leaders) của 1 narrative.",
     parameters: { type: "object", properties: { name: str("Tên narrative") }, required: ["name"] },
     execute: (a) => getNarrativeLeaders(String(a.name)),
+  },
+  {
+    name: "get_coin_analysis",
+    description: "Phân tích định lượng sâu 1 coin trong hệ thống: lợi nhuận kỳ, biến động thường niên (volatility), rủi ro sụt giảm tối đa (max drawdown) và tương quan với BTC. Dùng khi user hỏi về rủi ro, biến động, hay so sánh với BTC.",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: str("Coin symbol"),
+        days: num("Số ngày phân tích 10-180, mặc định 60"),
+        benchmark: str("Benchmark so tương quan, mặc định BTC"),
+      },
+    },
+    execute: (a) => getCoinAnalysis(String(a.symbol), Number(a.days ?? 60), String(a.benchmark ?? "BTC")),
   },
   // Binance realtime tools
   {

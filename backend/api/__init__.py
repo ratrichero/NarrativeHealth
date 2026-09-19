@@ -5,13 +5,15 @@ from backend.api.watchlist import router as watchlist_router
 from backend.api.refresh import router as refresh_router
 from backend.api.admin import router as admin_router
 from backend.api.system import router as system_router
+from backend.api.chat_compute import router as chat_compute_router
 
 __all__ = [
     "dashboard_router",
-    "narratives_router", 
+    "narratives_router",
     "coins_router",
     "watchlist_router",
     "refresh_router",
     "admin_router",
     "system_router",
+    "chat_compute_router",
 ]

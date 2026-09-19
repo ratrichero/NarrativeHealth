@@ -22,6 +22,7 @@ from backend.api import (
     refresh_router,
     admin_router,
     system_router,
+    chat_compute_router,
 )
 
 # Static files support is OPTIONAL - Next.js is the primary server
@@ -80,6 +81,7 @@ app.include_router(coins_router, prefix="/api")
 app.include_router(watchlist_router, prefix="/api")
 app.include_router(refresh_router, prefix="/api")
 app.include_router(admin_router, prefix="/api/admin")
+app.include_router(chat_compute_router, prefix="/api/compute")
 
 # Production: Serve Next.js static files
 if IS_PRODUCTION:
