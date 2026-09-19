@@ -1,21 +1,11 @@
 "use client";
 
-// SQ-TOP-REC: Top Recommend section — 3 best-trend coins with actionable
-// setups (direction read, Entry/TP/SL, reason) rendered as dashboard cards.
+// SQ-TOP-REC v2: Top Recommend section — 2 bullish + 1 bearish-watch picks
+// with Vietnamese reasons and direction-aware setups (Entry/TP/SL).
 
 import { useQuery } from "@tanstack/react-query";
-import { TrendingUp, TrendingDown, Target, AlertTriangle, BarChart3 } from "lucide-react";
+import { TrendingUp, TrendingDown, Target, AlertTriangle, ArrowDownRight } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
-
-function Skeleton() {
-  return (
-    <div className="animate-pulse space-y-3">
-      <div className="h-4 bg-slate-800 rounded w-1/3" />
-      <div className="h-8 bg-slate-800 rounded w-1/2" />
-      <div className="h-3 bg-slate-800 rounded w-2/3" />
-    </div>
-  );
-}
 
 interface Setup {
   entryLow: number;
@@ -23,7 +13,7 @@ interface Setup {
   takeProfits: { level: number; label: string | null }[];
   stopLoss: number;
   riskRewardRatio: number | null;
-  tp1GainPct: number | null;
+  tp1MovePct: number | null;
   slRiskPct: number | null;
 }
 
@@ -36,12 +26,15 @@ interface Recommendation {
   scoreChange: number | null;
   status: string;
   signal: string;
+  direction: "BULLISH" | "BEARISH";
   reason: string;
   currentPrice: number;
   setup: Setup | null;
+  setupUnavailableReason: string | null;
   metrics: {
     trendScore: number | null;
     volumeScore: number | null;
+    momentumScore: number | null;
     rsi14: number | null;
     fundingRate: number | null;
     priceVsEma20Pct: number | null;
@@ -53,29 +46,39 @@ interface TopRecommendationsData {
   recommendations: Recommendation[];
 }
 
+function Skeleton() {
+  return (
+    <div className="animate-pulse space-y-3">
+      <div className="h-4 bg-slate-800 rounded w-1/3" />
+      <div className="h-8 bg-slate-800 rounded w-1/2" />
+      <div className="h-3 bg-slate-800 rounded w-2/3" />
+    </div>
+  );
+}
+
 function fmt(n: number): string {
   return n >= 100 ? n.toFixed(2) : n >= 1 ? n.toFixed(4) : n.toFixed(6);
 }
 
-function directionRead(rec: Recommendation): {
-  label: string;
-  cls: string;
-  Icon: typeof TrendingUp;
-} {
-  const bullishSignal = rec.signal === "STRONG_WATCH" || rec.signal === "WATCH";
-  const healthy = rec.healthScore >= 65;
-  if (bullishSignal && healthy) {
-    return { label: "Bullish bias", cls: "text-green-400", Icon: TrendingUp };
-  }
-  if (rec.signal === "WEAK" || rec.healthScore < 50) {
-    return { label: "Bearish bias", cls: "text-red-400", Icon: TrendingDown };
-  }
-  return { label: "Neutral / observe", cls: "text-slate-400", Icon: BarChart3 };
-}
+const DIRECTION_CONFIG = {
+  BULLISH: {
+    label: "Xu hướng tăng",
+    cls: "text-green-400",
+    bg: "bg-green-900/40 text-green-300",
+    Icon: TrendingUp,
+  },
+  BEARISH: {
+    label: "Xu hướng yếu · short-bias",
+    cls: "text-red-400",
+    bg: "bg-red-900/40 text-red-300",
+    Icon: TrendingDown,
+  },
+} as const;
 
 function RecCard({ rec }: { rec: Recommendation }) {
-  const dir = directionRead(rec);
+  const dir = DIRECTION_CONFIG[rec.direction];
   const price = rec.currentPrice;
+  const isBearish = rec.direction === "BEARISH";
 
   return (
     <Card hover className="h-full">
@@ -90,9 +93,11 @@ function RecCard({ rec }: { rec: Recommendation }) {
                   ? "bg-green-900/50 text-green-400"
                   : rec.signal === "WATCH"
                     ? "bg-emerald-900/50 text-emerald-400"
-                    : rec.signal === "WEAK"
-                      ? "bg-red-900/50 text-red-400"
-                      : "bg-slate-800 text-slate-400"
+                    : rec.signal === "OBSERVE"
+                      ? "bg-yellow-900/50 text-yellow-400"
+                      : rec.signal === "WEAK"
+                        ? "bg-red-900/50 text-red-400"
+                        : "bg-slate-800 text-slate-400"
               }`}>
                 {rec.signal.replace("_", " ")}
               </span>
@@ -110,7 +115,7 @@ function RecCard({ rec }: { rec: Recommendation }) {
         {/* Health + price line */}
         <div className="flex items-center gap-3 mb-3 text-sm">
           <span className="text-slate-400">
-            Health <span className="text-white font-mono">{rec.healthScore.toFixed(0)}</span>
+            Sức khoẻ <span className="text-white font-mono">{rec.healthScore.toFixed(0)}</span>
           </span>
           {rec.scoreChange != null && rec.scoreChange !== 0 && (
             <span className={rec.scoreChange > 0 ? "text-green-400" : "text-red-400"}>
@@ -119,7 +124,7 @@ function RecCard({ rec }: { rec: Recommendation }) {
           )}
           {price > 0 && (
             <span className="text-slate-400 ml-auto">
-              Price <span className="text-white font-mono">${fmt(price)}</span>
+              Giá <span className="text-white font-mono">${fmt(price)}</span>
             </span>
           )}
         </div>
@@ -128,7 +133,9 @@ function RecCard({ rec }: { rec: Recommendation }) {
         {rec.setup ? (
           <div className="rounded-lg bg-slate-800/40 border border-slate-700/50 p-3 space-y-1.5 text-sm">
             <div className="flex justify-between">
-              <span className="text-slate-500">Entry zone</span>
+              <span className="text-slate-500">
+                {isBearish ? "Vùng vào (breakdown)" : "Vùng vào (pullback)"}
+              </span>
               <span className="text-cyan-300 font-mono">
                 {fmt(rec.setup.entryLow)} – {fmt(rec.setup.entryHigh)}
               </span>
@@ -137,12 +144,12 @@ function RecCard({ rec }: { rec: Recommendation }) {
               <div key={i} className="flex justify-between">
                 <span className="text-slate-500 flex items-center gap-1">
                   <Target className="h-3 w-3" />
-                  {tp.label ?? `TP${i + 1}`}
+                  {tp.label ?? `Mục tiêu ${i + 1}`}
                 </span>
                 <span className="text-green-300 font-mono">
                   {fmt(tp.level)}
-                  {i === 0 && rec.setup!.tp1GainPct != null && (
-                    <span className="text-green-500"> (+{rec.setup!.tp1GainPct}%)</span>
+                  {i === 0 && rec.setup!.tp1MovePct != null && (
+                    <span className="text-green-500"> ({isBearish ? "-" : "+"}{rec.setup!.tp1MovePct}%)</span>
                   )}
                 </span>
               </div>
@@ -150,7 +157,7 @@ function RecCard({ rec }: { rec: Recommendation }) {
             <div className="flex justify-between">
               <span className="text-slate-500 flex items-center gap-1">
                 <AlertTriangle className="h-3 w-3" />
-                Stop loss
+                Cắt lỗ
               </span>
               <span className="text-red-300 font-mono">
                 {fmt(rec.setup.stopLoss)}
@@ -161,7 +168,7 @@ function RecCard({ rec }: { rec: Recommendation }) {
             </div>
             {rec.setup.riskRewardRatio != null && (
               <div className="flex justify-between pt-1 border-t border-slate-700/50">
-                <span className="text-slate-500">Risk / Reward</span>
+                <span className="text-slate-500">Lợi nhuận / Rủi ro</span>
                 <span className="text-amber-300 font-mono font-medium">
                   {rec.setup.riskRewardRatio.toFixed(1)} : 1
                 </span>
@@ -170,7 +177,7 @@ function RecCard({ rec }: { rec: Recommendation }) {
           </div>
         ) : (
           <div className="rounded-lg bg-slate-800/30 border border-slate-700/50 p-3 text-xs text-slate-500">
-            Setup unavailable — insufficient price/ATR data for this coin.
+            {rec.setupUnavailableReason ?? "Chưa đủ dữ liệu để tính setup."}
           </div>
         )}
 
@@ -199,14 +206,14 @@ function RecCard({ rec }: { rec: Recommendation }) {
           )}
         </div>
 
-        {/* Reason */}
-        <p className="text-xs text-slate-400 mt-3 leading-relaxed line-clamp-3" title={rec.reason}>
+        {/* Reason (Vietnamese) */}
+        <p className="text-xs text-slate-400 mt-3 leading-relaxed" title={rec.reason}>
           {rec.reason}
         </p>
 
         {/* Advisory note */}
         <p className="text-[10px] text-slate-600 mt-2">
-          Advisory levels from ATR data — not trade execution instructions.
+          Mức giá mang tính tham khảo từ dữ liệu ATR — không phải chỉ dẫn giao dịch.
         </p>
       </CardContent>
     </Card>
@@ -229,7 +236,7 @@ export function TopRecommendations() {
   if (isLoading) {
     return (
       <section>
-        <h2 className="text-lg font-semibold text-white mb-4">Top Recommend</h2>
+        <h2 className="text-lg font-semibold text-white mb-4">Đề xuất nổi bật</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {[1, 2, 3].map((i) => (
             <Card key={i}>
@@ -247,12 +254,15 @@ export function TopRecommendations() {
     return null; // silently hide section when no data — dashboard stays clean
   }
 
+  const bullishCount = data.recommendations.filter((r) => r.direction === "BULLISH").length;
+  const bearishCount = data.recommendations.length - bullishCount;
+
   return (
     <section>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-white">Top Recommend</h2>
+        <h2 className="text-lg font-semibold text-white">Đề xuất nổi bật</h2>
         <span className="text-xs text-slate-500">
-          Best-trend coins · data as of {data.date}
+          {bullishCount} tăng · {bearishCount} yếu · dữ liệu ngày {data.date}
         </span>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
