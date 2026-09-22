@@ -186,7 +186,10 @@ export function ChatWidget() {
   if (!open) {
     return (
       <button
-        onClick={() => setOpen(true)}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
         aria-label="Mở chat trợ lý"
         className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-900/40 flex items-center justify-center transition-transform hover:scale-105"
       >
