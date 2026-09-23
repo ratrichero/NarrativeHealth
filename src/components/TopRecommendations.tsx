@@ -4,6 +4,7 @@
 // with Vietnamese reasons and direction-aware setups (Entry/TP/SL).
 
 import { useQuery } from "@tanstack/react-query";
+import Link from "next/link";
 import { TrendingUp, TrendingDown, Target, AlertTriangle, ArrowDownRight } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 
@@ -81,6 +82,7 @@ function RecCard({ rec }: { rec: Recommendation }) {
   const isBearish = rec.direction === "BEARISH";
 
   return (
+    <Link href={`/coin/${rec.coinId}`} className="block h-full" aria-label={`Xem chi tiết ${rec.symbol}`}>
     <Card hover className="h-full">
       <CardContent className="p-5">
         {/* Header: symbol + direction */}
@@ -217,6 +219,7 @@ function RecCard({ rec }: { rec: Recommendation }) {
         </p>
       </CardContent>
     </Card>
+    </Link>
   );
 }
 

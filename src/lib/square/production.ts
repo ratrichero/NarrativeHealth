@@ -66,6 +66,20 @@ export interface PipelineDetail {
 let _lastSummary: PipelineExecutionSummary | null = null;
 
 /**
+ * Stagger delay between consecutive Binance Square publishes within one cycle.
+ * Publishing many posts back-to-back risks Binance rate limiting (429) and
+ * temporary account restrictions, so each post waits a configurable interval.
+ *
+ * Configurable via SQUARE_PUBLISH_STAGGER_MS (ms between posts, default 90_000).
+ * Set to 0 (or set SQ_TEST_MODE=1) to disable — used by tests and dry-runs.
+ */
+const PUBLISH_STAGGER_MS = process.env.SQ_TEST_MODE === "1"
+  ? 0
+  : Math.max(0, Number(process.env.SQUARE_PUBLISH_STAGGER_MS ?? 90_000));
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
  * Get the last pipeline execution summary.
  * Returns null if no pipeline has been executed yet.
  */
@@ -158,8 +172,13 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.min(softCap, quotaRemaining));
 
-    for (const opp of toPublish) {
+    for (const [idx, opp] of toPublish.entries()) {
       try {
+        // Stagger publishes: wait between consecutive posts (skip before first)
+        if (idx > 0 && PUBLISH_STAGGER_MS > 0) {
+          await sleep(PUBLISH_STAGGER_MS);
+        }
+
         // Check remaining quota before each publish
         if (quotaRemaining <= 0) {
           details.push({

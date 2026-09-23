@@ -12,6 +12,40 @@ import {
 } from "@/db/schema";
 import { eq, and, gte, desc, sql, count } from "drizzle-orm";
 
+/**
+ * Format the jsonb `error_summary` column ({ errors: string[], error_count })
+ * into a short human-readable string for UI display. Handles legacy shapes:
+ * plain string, { errors: [...] }, { error: "..." } or arbitrary objects.
+ */
+export function formatErrorSummary(raw: unknown, maxLen = 220): string | null {
+  if (raw == null) return null;
+
+  let parts: string[] = [];
+  if (typeof raw === "string") {
+    parts = [raw];
+  } else if (Array.isArray(raw)) {
+    parts = raw.map((e) => String(e));
+  } else if (typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    const errs = obj.errors ?? obj.error ?? obj.message;
+    if (Array.isArray(errs)) parts = errs.map((e) => String(e));
+    else if (typeof errs === "string") parts = [errs];
+    else {
+      try {
+        parts = [JSON.stringify(obj)];
+      } catch {
+        return null;
+      }
+    }
+  } else {
+    parts = [String(raw)];
+  }
+
+  const text = parts.filter(Boolean).join(" | ");
+  if (!text) return null;
+  return text.length > maxLen ? text.slice(0, maxLen - 1) + "\u2026" : text;
+}
+
 // ─── Types ─────────────────────────────────────────────
 
 export type TimeRange = "TODAY" | "7D" | "30D" | "ALL";
@@ -348,12 +382,42 @@ export async function getFailureAnalysis(range: TimeRange): Promise<FailureAnaly
     .where(and(gte(squarePublications.createdAt, new Date(dateStr)), eq(squarePublications.status, "FAILED")))
     .groupBy(squarePublications.failureCategory);
 
-  return results.map((r) => ({
-    category: r.category ?? "UNKNOWN",
-    count: r.count,
-    avgRetries: r.avgRetries,
-    topErrorCodes: [],
-  }));
+  // Top Binance error codes per category (drill-down for root-cause analysis)
+  const codeResults = await db
+    .select({
+      category: squarePublications.failureCategory,
+      code: squarePublications.errorCode,
+      codeCount: count(),
+    })
+    .from(squarePublications)
+    .where(
+      and(
+        gte(squarePublications.createdAt, new Date(dateStr)),
+        eq(squarePublications.status, "FAILED"),
+        sql`${squarePublications.errorCode} IS NOT NULL`
+      )
+    )
+    .groupBy(squarePublications.failureCategory, squarePublications.errorCode)
+    .orderBy(desc(count()));
+
+  const codesByCategory = new Map<string, { code: string; count: number }[]>();
+  for (const r of codeResults) {
+    if (!r.code) continue;
+    const key = r.category ?? "UNKNOWN";
+    const list = codesByCategory.get(key) ?? [];
+    list.push({ code: r.code, count: r.codeCount });
+    codesByCategory.set(key, list);
+  }
+
+  return results.map((r) => {
+    const category = r.category ?? "UNKNOWN";
+    return {
+      category,
+      count: r.count,
+      avgRetries: r.avgRetries,
+      topErrorCodes: (codesByCategory.get(category) ?? []).slice(0, 3),
+    };
+  });
 }
 
 export async function getRetryStats(range: TimeRange): Promise<RetryStats> {
@@ -503,7 +567,7 @@ export async function getExecutionHistory(range: TimeRange, limit = 20): Promise
     deduplicated: r.deduplicated,
     quotaBlocked: r.quotaBlocked,
     durationMs: r.durationMs,
-    errorSummary: r.errorSummary != null ? String(r.errorSummary) : null,
+    errorSummary: formatErrorSummary(r.errorSummary),
     status: r.failed > 0 ? (r.published > 0 ? "PARTIAL" : "FAILED") : r.published > 0 ? "SUCCESS" : "SUCCESS",
   }));
 }

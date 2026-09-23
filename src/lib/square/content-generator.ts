@@ -1,12 +1,18 @@
 // Square Content Generator
 // LLM + deterministic template fallback for Binance Square posts
 
-import type { SquareContentBrief } from "./opportunity-engine";
+import type { SquareContentBrief, SetupDirection } from "./opportunity-engine";
+import { buildChartCta as buildChartCtaFromEngine } from "./opportunity-engine";
 
 // ─── Template Version ──────────────────────────────────
 
 const TEMPLATE_VERSION = "1.0.0";
-const MAX_LLM_OUTPUT_TOKENS = 1200;
+// SQ-DIAG: Groq enforces an org-level OTPM (output tokens/minute) limit — for
+// qwen models it is 1000. Requesting max_tokens above that limit is rejected
+// instantly with HTTP 429 before generation even starts, which silently pushed
+// every Square post onto the template fallback. 800 tokens comfortably covers
+// the ≤800-char post target; keep this BELOW the smallest provider OTPM limit.
+const MAX_LLM_OUTPUT_TOKENS = 800;
 const MAX_TEXT_LENGTH = 1200;
 
 // ─── Types ─────────────────────────────────────────────
@@ -80,24 +86,51 @@ function resolveProviderChain(): LLMProviderConfig[] {
   return chain;
 }
 
+type ChatMessage = { role: "user" | "assistant"; content: string };
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 async function callOpenAICompatible(
   provider: LLMProviderConfig,
-  prompt: string
+  messages: ChatMessage[]
 ): Promise<string | null> {
-  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${provider.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: provider.model,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.3,
-      max_tokens: MAX_LLM_OUTPUT_TOKENS,
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
+  // SQ-DIAG: free/on-demand Groq tiers enforce small OTPM budgets — a 429
+  // here is usually "Please try again in N s", not a hard failure. Retry a
+  // couple of times with backoff before moving on to the next provider.
+  const maxHttpAttempts = 3;
+  let response: Response | null = null;
+
+  for (let attempt = 1; attempt <= maxHttpAttempts; attempt++) {
+    response = await fetch(`${provider.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${provider.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        messages,
+        temperature: 0.3,
+        max_tokens: MAX_LLM_OUTPUT_TOKENS,
+      }),
+      // SQ-DIAG: reasoning fallbacks (DeepSeek-V4, qwen3 via OpenRouter) can
+      // take 4-30s because reasoning tokens count before any output. 20s was
+      // too tight — healthy providers were being skipped as "timed out".
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (response.ok) break;
+    if (response.status !== 429 || attempt === maxHttpAttempts) break;
+
+    // Honor Retry-After header when present, else simple backoff.
+    const retryAfter = Number(response.headers.get("retry-after"));
+    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter * 1000, 10000)
+      : 2000 * attempt;
+    await sleep(waitMs);
+  }
+
+  if (!response) return null;
 
   if (!response.ok) {
     const errBody = await response.text().catch(() => "");
@@ -126,25 +159,92 @@ async function generateWithLLM(
 
   for (const provider of chain) {
     try {
-      const generatedText = await callOpenAICompatible(provider, prompt);
+      let conversation: { role: "user" | "assistant"; content: string }[] = [
+        { role: "user", content: prompt },
+      ];
+      let attempts = 0;
+      const maxAttempts = 3; // initial try + up to 2 repair rounds
 
-      if (!generatedText) {
-        console.warn(`[SQ-LLM] ${provider.name} returned empty content — trying next provider.`);
-        continue;
+      while (attempts < maxAttempts) {
+        attempts++;
+        const rawText = await callOpenAICompatible(provider, conversation);
+
+        if (!rawText) {
+          if (attempts === 1) {
+            console.warn(`[SQ-LLM] ${provider.name} returned empty content — trying next provider.`);
+            break;
+          }
+          break; // repair attempt produced nothing — give up on this provider
+        }
+
+        // SQ-DIAG: reasoning models (e.g. qwen3) emit <think>…</think> blocks
+        // before the answer. Strip them before validation — the post is the
+        // text after the think block, not the reasoning itself.
+        const generatedText = rawText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
+        const validated = validateLLMOutput(generatedText, brief);
+        if (validated) {
+          return {
+            text: validated,
+            llmUsed: true,
+            llmProvider: provider.name,
+            templateVersion: TEMPLATE_VERSION,
+          };
+        }
+
+        // Diagnose why validation failed and decide whether a repair round
+        // can plausibly fix it (banned word / missing cashtag / missing
+        // Direction line / missing WHY NOW or INVALIDATION keyword = all
+        // repairable by instruction).
+        const bannedMatch = generatedText.match(/\b(BUY|SELL|ORDER|EXECUTE)\b/i);
+        const missingTag = brief.cashtags.find((t) => !generatedText.includes(t));
+        const missingDirection =
+          brief.direction != null && !/Direction:\s*(LONG|SHORT)/i.test(generatedText);
+        const missingWhyNow =
+          brief.whyNowFacts != null && brief.whyNowFacts.length > 0 && !generatedText.includes("WHY NOW");
+        const missingInvalidation =
+          brief.invalidation && !generatedText.includes("INVALIDATION") && !generatedText.includes("invalidates");
+        const repairable =
+          bannedMatch != null || missingTag != null || missingDirection || missingWhyNow || missingInvalidation;
+
+        console.warn(
+          `[SQ-LLM] ${provider.name} output failed validation (attempt ${attempts}/${maxAttempts}) ` +
+          `(len=${generatedText.length}, ` +
+          `bannedWord=${bannedMatch ? `"${bannedMatch[0]}"` : "none"}, ` +
+          `missingCashtag=${missingTag ?? "none"}, missingDirection=${missingDirection}, ` +
+          `missingWhyNow=${missingWhyNow}, missingInvalidation=${missingInvalidation})` +
+          (repairable && attempts < maxAttempts ? " — requesting repair." : " — trying next provider.")
+        );
+
+        if (!repairable || attempts >= maxAttempts) break;
+
+        // Repair round: show the model its own output and the violation.
+        conversation = [
+          ...conversation,
+          { role: "assistant", content: generatedText },
+          {
+            role: "user",
+            content:
+              `Your post was rejected. Fix it and output ONLY the corrected post text:\n` +
+              (bannedMatch
+                ? `- The word "${bannedMatch[0]}" is forbidden (trading-command language). Replace it with neutral analysis wording (e.g. "buyers", "sellers" are fine, but never the standalone word).\n`
+                : "") +
+              (missingTag
+                ? `- The cashtag ${missingTag} is missing and must appear exactly.\n`
+                : "") +
+              (missingDirection
+                ? `- Add a line that starts with "Direction: " followed by ${brief.direction} and a one-clause reason. This line is mandatory.\n`
+                : "") +
+              (missingWhyNow
+                ? `- Add a line that starts with the exact phrase "WHY NOW:" followed by the key reason.\n`
+                : "") +
+              (missingInvalidation
+                ? `- Add one line starting with the exact word "INVALIDATION:" describing when the setup is dead.\n`
+                : "") +
+              `- Keep everything else identical. Output only the post text.`,
+          },
+        ];
       }
-
-      const validated = validateLLMOutput(generatedText, brief);
-      if (!validated) {
-        console.warn(`[SQ-LLM] ${provider.name} output failed validation — trying next provider.`);
-        continue;
-      }
-
-      return {
-        text: validated,
-        llmUsed: true,
-        llmProvider: provider.name,
-        templateVersion: TEMPLATE_VERSION,
-      };
     } catch (error) {
       console.warn(
         `[SQ-LLM] ${provider.name} request failed (${error instanceof Error ? error.message : String(error)}) — trying next provider.`
@@ -163,18 +263,28 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   lines.push("You write high-engagement crypto analysis posts for Binance Square.");
   lines.push("Your posts read like a sharp trader sharing real data — dense with numbers, no fluff, no hype words like 'MOON' or 'ROCKET'.");
   lines.push("");
+  lines.push("DIRECTION (state it unambiguously near the top):");
+  if (brief.direction === "SHORT") {
+    lines.push("- The direction is SHORT (futures): health/momentum is fading, targets are BELOW price. Frame levels for a short setup — do NOT frame it as buying the dip, do NOT imply a bounce is coming.");
+  } else {
+    lines.push("- The direction is LONG (futures): momentum + structure favor upside; frame levels for an accumulation zone.");
+  }
+  lines.push("- Open the setup section with the exact phrase 'Direction: ' followed by LONG or SHORT plus a one-clause reason.");
+  lines.push("");
   lines.push("STRUCTURE (follow exactly):");
   lines.push("1. HOOK (1-2 lines): an interesting data event. Open with the number, not a label.");
-  lines.push("2. PRICE & SETUP: current price, entry zone, targets (+% gain), stop (-% risk), risk/reward ratio.");
-  lines.push("3. DATA READS (bullets): one dense line per signal — trend score, RSI with interpretation, funding rate with interpretation, 24h volume, narrative breadth (X of Y coins up). Every line has a number.");
-  lines.push("4. LEADERS: leading coins with cashtags.");
-  lines.push("5. INVALIDATION: one clear line — when is this thesis dead.");
-  lines.push("6. QUESTION: end with 1 short question inviting readers to comment, then the disclaimer below.");
+  lines.push("2. DIRECTION: one line starting with 'Direction: ' — LONG or SHORT, then the why.");
+  lines.push("3. PRICE & SETUP: current price, entry zone, targets (+% gain), stop (-% risk), risk/reward ratio.");
+  lines.push("4. DATA READS (bullets): one dense line per signal — trend score, RSI with interpretation, funding rate with interpretation, 24h volume, narrative breadth (X of Y coins up). Every line has a number.");
+  lines.push("5. LEADERS: leading coins with cashtags.");
+  lines.push("6. INVALIDATION: one clear line — when is this thesis dead.");
+  lines.push("7. CHART: one line telling readers how to open the chart (use the exact chart pointer provided in FACTS below).");
+  lines.push("8. QUESTION: end with 1 short question inviting readers to comment, then the disclaimer below.");
   lines.push("");
   lines.push("RULES:");
   lines.push("- Use ONLY the facts provided below. Do NOT invent any price, volume, or data.");
   lines.push("- Do NOT change Entry/TP/SL levels. Do NOT add or remove cashtags.");
-  lines.push("- NEVER use the words BUY, SELL, ORDER, EXECUTE as commands, and never use LONG or SHORT to describe a trade direction (the words long-term/short-term are fine).");
+  lines.push("- NEVER use the words BUY, SELL, ORDER, EXECUTE as commands. The words LONG and SHORT (as in 'Direction: SHORT setup') are REQUIRED and allowed — just never use them as verbs describing your own past actions.");
   lines.push("- Keep the whole post under 800 characters.");
   lines.push("- End with exactly: ⚠️ Data-driven analysis, not financial advice. DYOR.");
   lines.push("");
@@ -265,6 +375,11 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
     lines.push(`INVALIDATION: ${brief.invalidation}`);
   }
 
+  if (brief.chartCta) {
+    lines.push("");
+    lines.push(`CHART POINTER (include verbatim on its own line): ${brief.chartCta}`);
+  }
+
   lines.push("");
   lines.push("Write the post now. Output only the post text, nothing else.");
 
@@ -276,10 +391,11 @@ function validateLLMOutput(text: string, brief: SquareContentBrief): string | nu
   if (text.length > MAX_TEXT_LENGTH) return null;
 
   const upper = text.toUpperCase();
-  // SQ-FIX: previous substring check (includes("LONG")) also matched words like
-  // "along", "longer", "prolonged" — rejecting valid posts. Use whole-word match,
-  // and allow the common analysis phrases "long-term" / "short-term".
-  const forbidden = /\b(BUY|SELL|ORDER|EXECUTE)\b|\b(LONG|SHORT)(?!-?TERM)\b/;
+  // SQ-DIR: only trading-command language is forbidden. LONG/SHORT are now
+  // REQUIRED vocabulary (the Direction line), so they must NOT be rejected —
+  // the old regex treated any standalone LONG/SHORT as a violation and pushed
+  // every direction-explicit post into the repair loop or the template.
+  const forbidden = /\b(BUY|SELL|ORDER|EXECUTE)\b/;
   if (forbidden.test(upper)) return null;
 
   if (brief.cashtags.length > 0) {
@@ -325,8 +441,21 @@ function buildViralTemplate(brief: SquareContentBrief): string {
 
   const lines: string[] = [];
 
+  // SQ-DIR: the direction line is the FIRST thing readers see — the single
+  // biggest fix for "unclear whether this is a buy or sell post". Composed
+  // from derived direction, momentum read, and actual level geometry so it
+  // can never contradict the setup that follows.
+  const direction = brief.direction ?? "LONG";
+  const dirLine =
+    direction === "LONG"
+      ? "📍 Direction: LONG setup (futures) — momentum + structure favor upside; levels below define the accumulation zone."
+      : "📍 Direction: SHORT setup (futures) — strength is fading; levels below define the fade zone, not a dip-buy."
+  ;
+
   // 1. Hook (rotating, metric-driven)
   lines.push(brief.hookLine ?? brief.text.split("\n")[0]);
+  lines.push("");
+  lines.push(dirLine);
   lines.push("");
 
   // 2. Price + setup with R:R
@@ -412,6 +541,17 @@ function buildViralTemplate(brief: SquareContentBrief): string {
   // 6. Invalidation
   if (brief.invalidation) {
     lines.push(`Invalidate if: ${brief.invalidation.replace(/^(Setup invalidates if|Narrative thesis weakens if) /i, "")}`);
+    lines.push("");
+  }
+
+  // SQ-CHART-CTA: every post tells readers where the chart lives (Binance
+  // does not auto-embed a chart from the OpenAPI text endpoint).
+  const primaryTag =
+    brief.leadingCoinSymbols?.[0] ??
+    (brief.cashtags[0]?.startsWith("$") ? brief.cashtags[0].slice(1) : brief.cashtags[0]);
+  const chartCta = brief.chartCta ?? (primaryTag ? buildChartCtaFromEngine(primaryTag) : null);
+  if (chartCta) {
+    lines.push(chartCta);
     lines.push("");
   }
 

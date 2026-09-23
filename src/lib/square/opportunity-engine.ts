@@ -847,7 +847,17 @@ function extractNarrativeOpportunities(
       );
 
       const leaderCoin = leadingCoinsData[0];
-      const leaderSetup = leaderCoin ? calculateSetupLevels(leaderCoin) : null;
+      // SQ-DIAG: when NO coin in the narrative passed quality gates,
+      // leaderCoin is undefined and metrics used to be dropped entirely — the
+      // post then fell back to the bare "WHY NOW + Key facts" template with
+      // no price, no levels, no data reads (the "poor data" posts). Fall back
+      // to the narrative's top coin, then any member, so every narrative post
+      // carries a rich metrics snapshot.
+      const metricsSource =
+        leaderCoin ??
+        coinsInNarrative.find((c) => c.coinId === narrative.topCoinId) ??
+        coinsInNarrative[0];
+      const metricsSetup = metricsSource ? calculateSetupLevels(metricsSource) : null;
 
       const dataQuality: DataQuality =
           avgConfidence >= 70 ? "HIGH" : avgConfidence >= 40 ? "MEDIUM" : "LOW";
@@ -856,8 +866,8 @@ function extractNarrativeOpportunities(
       const coinsUp = coinsInNarrative.filter(
         (c) => c.scoreChange !== null && c.scoreChange > 0
       ).length;
-      const metrics = leaderCoin
-        ? buildOpportunityMetrics(leaderCoin, leaderSetup, {
+      const metrics = metricsSource
+        ? buildOpportunityMetrics(metricsSource, metricsSetup, {
             coinsUp,
             coinsTotal: coinsInNarrative.length,
           })
@@ -876,9 +886,9 @@ function extractNarrativeOpportunities(
         leadingCoinSymbols,
         leadingCoinRationales,
         narrativeInvalidation,
-        leaderCoinEntry: leaderSetup?.entry,
-        leaderCoinTakeProfits: leaderSetup?.takeProfits,
-        leaderCoinStopLoss: leaderSetup?.stopLoss,
+        leaderCoinEntry: metricsSetup?.entry,
+        leaderCoinTakeProfits: metricsSetup?.takeProfits,
+        leaderCoinStopLoss: metricsSetup?.stopLoss,
         metrics,
         status: "CANDIDATE" as OpportunityStatus,
       };
@@ -946,6 +956,22 @@ export async function evaluateOpportunities(
 // ─── SQ-VIRAL: Visual + Hook Helpers ──────────────────
 
 /**
+ * SQ-DIR: derive the trade DIRECTION from setup geometry — not from the
+ * health-score momentum. Levels are built ATR-symmetric around the current
+ * price, so the geometry itself is always LONG-shaped; the real direction
+ * signal is the score momentum: rising health = accumulation thesis (LONG),
+ * falling health = fading strength (SHORT on futures) with mirrored framing.
+ * Never use the banned standalone words here — this feeds UI labels and the
+ * validator's allowed-vocabulary.
+ */
+export type SetupDirection = "LONG" | "SHORT";
+
+export function deriveDirection(opportunity: SquareOpportunity): SetupDirection {
+  const isDown = opportunity.rationale.some((r) => r.includes("declin"));
+  return isDown ? "SHORT" : "LONG";
+}
+
+/**
  * Deterministic ASCII price map for text-only posts. Monospace-rendered by
  * Binance Square; gives the visual anchor of a chart without image upload.
  */
@@ -972,9 +998,13 @@ const HOOK_TEMPLATES_UP = [
   "Most traders watch price. Our data watched $SYM gain +PTS points of narrative health first.",
 ];
 
+// SQ-DIR: weakening health is a fading-strength (SHORT) signal, not a "keep
+// buying the dip" one. Framing stays analytical — levels already mirror the
+// bearish read, so the hook must not promise a bounce the thesis doesn't hold.
 const HOOK_TEMPLATES_DOWN = [
-  "$SYM dropped PTS points on our health engine — a weakening signal worth understanding, not ignoring.",
-  "Warning signs: $SYM lost PTS points of narrative health. Here's what the data shows.",
+  "$SYM dropped PTS points on our health engine — strength is fading, and the setup levels below mirror that bearish read.",
+  "Warning signs: $SYM lost PTS points of narrative health. The structure favors the downside case — details below.",
+  "$SYM's health score slid PTS points — sellers are pressing the advantage. The data says what to watch next.",
 ];
 
 const HOOK_TEMPLATES_STABLE = [
@@ -1009,6 +1039,16 @@ function buildHookLine(opportunity: SquareOpportunity): string {
     .replace("PTS", ptsText.replace("+", ""));
 }
 
+/**
+ * SQ-CHART-CTA: Binance does NOT auto-generate a chart from cashtags via the
+ * OpenAPI text endpoint — readers only see a chart by tapping the cashtag
+ * into Binance's chart page. Every post ends with a one-line pointer so the
+ * reader knows where the visual lives. Deterministic per coin.
+ */
+export function buildChartCta(symbol: string): string {
+  return `📈 Chart: tap \`$${symbol}\` above or open binance.com/en/trade/${symbol}_USDT`;
+}
+
 // ─── Content Brief Builder ─────────────────────────────
 
 export interface SquareContentBrief {
@@ -1036,6 +1076,10 @@ export interface SquareContentBrief {
   priceMap?: string;
   /** Rotating hook line — varied per post to avoid repetitive openings. */
   hookLine?: string;
+  /** SQ-DIR: derived trade direction ("LONG" | "SHORT") for unambiguous setup framing. */
+  direction?: SetupDirection;
+  /** SQ-CHART-CTA: one-line pointer telling readers how to open the chart. */
+  chartCta?: string;
 }
 
 export function buildContentBrief(
@@ -1075,16 +1119,22 @@ export function buildContentBrief(
       volumeScore: opportunity.rationale.includes("Volume above average") ? 75 : opportunity.rationale.includes("Volume below average") ? 25 : 50,
     }));
   } else if (opportunity.type === "NARRATIVE_SETUP") {
-    const narrativeScoreChange = opportunity.rationale
-      .find(r => r.startsWith("Narrative health improving") || r.startsWith("Narrative health declining"))
-      ?.match(/([\d.]+)/)?.[1];
+    // SQ-DIAG: the old sign-dropping regex (/([\d.]+)/ on "declining (-3.4)")
+    // captured "3.4" without the minus and then labeled the fact "improved" —
+    // producing posts where WHY NOW contradicted Key facts. Derive the sign
+    // from the rationale word instead of the number.
+    const narrativeChangeEntry = opportunity.rationale.find(
+      (r) => r.startsWith("Narrative health improving") || r.startsWith("Narrative health declining")
+    );
+    const isDeclining = narrativeChangeEntry?.startsWith("Narrative health declining") ?? false;
+    const narrativeScoreChange = narrativeChangeEntry?.match(/([\d.]+)/)?.[1];
     
     if (narrativeScoreChange) {
       const change = parseFloat(narrativeScoreChange);
-      if (change > 0) {
-        whyNowFacts.push(`Narrative health improved by ${change.toFixed(1)} points in the latest refresh.`);
+      if (isDeclining) {
+        whyNowFacts.push(`Narrative health declined by ${change.toFixed(1)} points in the latest refresh.`);
       } else {
-        whyNowFacts.push(`Narrative health declined by ${Math.abs(change).toFixed(1)} points in the latest refresh.`);
+        whyNowFacts.push(`Narrative health improved by ${change.toFixed(1)} points in the latest refresh.`);
       }
     }
 
@@ -1206,5 +1256,7 @@ export function buildContentBrief(
     metrics: opportunity.metrics,
     priceMap: entryZone && sl ? buildAsciiPriceMap(entryZone, tps ?? [], sl) : undefined,
     hookLine: buildHookLine(opportunity),
+    direction: deriveDirection(opportunity),
+    chartCta: validatedChartCoin ? buildChartCta(validatedChartCoin) : undefined,
   };
 }

@@ -65,6 +65,7 @@ interface FailureItem {
   category: string;
   count: number;
   avgRetries: number;
+  topErrorCodes?: { code: string; count: number }[];
 }
 
 interface RetryData {
@@ -113,6 +114,7 @@ interface ExecItem {
   quotaBlocked: number;
   durationMs: number | null;
   status: string;
+  errorSummary?: string | null;
 }
 
 interface PubRecord {
@@ -776,12 +778,27 @@ export default function SquareAnalyticsPage() {
             {d.failures && d.failures.length > 0 ? (
               <div className="space-y-2">
                 {d.failures.map((fail) => (
-                  <div key={fail.category} className="flex items-center justify-between p-2 rounded bg-slate-800/30">
-                    <span className="text-sm text-slate-300">{fail.category}</span>
-                    <div className="flex items-center gap-3 text-sm">
-                      <span className="text-red-400 font-mono">{fail.count}</span>
-                      <span className="text-slate-500">avg retries: {fail.avgRetries}</span>
+                  <div key={fail.category} className="p-2 rounded bg-slate-800/30">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-slate-300">{fail.category}</span>
+                      <div className="flex items-center gap-3 text-sm">
+                        <span className="text-red-400 font-mono">{fail.count}</span>
+                        <span className="text-slate-500">avg retries: {fail.avgRetries}</span>
+                      </div>
                     </div>
+                    {fail.topErrorCodes && fail.topErrorCodes.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {fail.topErrorCodes.map((ec) => (
+                          <span
+                            key={ec.code}
+                            className="text-[11px] px-1.5 py-0.5 rounded bg-red-950/40 border border-red-900/50 text-red-300 font-mono"
+                            title={`${ec.count} lần lỗi với mã này`}
+                          >
+                            {ec.code} ×{ec.count}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -852,9 +869,14 @@ export default function SquareAnalyticsPage() {
                 </thead>
                 <tbody>
                   {d.executions.slice(0, 15).map((ex) => (
-                    <tr key={ex.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
-                      <td className="py-2 px-2 text-slate-300 font-mono text-xs">
+                    <tr key={ex.id} className="border-b border-slate-800/50 align-top hover:bg-slate-800/30">
+                      <td className="py-2 px-2 text-slate-300 font-mono text-xs whitespace-nowrap">
                         {new Date(ex.startedAt).toLocaleString()}
+                        {ex.errorSummary && (
+                          <div className="mt-1 max-w-md text-red-400/80 text-[11px] normal-case whitespace-normal break-words" title={ex.errorSummary}>
+                            {ex.errorSummary}
+                          </div>
+                        )}
                       </td>
                       <td className="py-2 px-2 text-slate-400 text-xs">{ex.triggerType}</td>
                       <td className="py-2 px-2 text-right font-mono text-white">{ex.evaluated}</td>
@@ -879,55 +901,6 @@ export default function SquareAnalyticsPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
-          )}
-        </SectionCard>
-
-        {/* Section L — Recent Publications */}
-        <SectionCard title="Recent Publications">
-          {!d.publications || d.publications.length === 0 ? (
-            <EmptyState message="No publications in this period." />
-          ) : (
-            <div className="space-y-2 max-h-[400px] overflow-y-auto">
-              {d.publications.slice(0, 15).map((pub) => (
-                <div
-                  key={pub.id}
-                  className="flex items-center justify-between p-3 rounded-lg bg-slate-800/30 hover:bg-slate-800/60 transition-colors"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                        pub.status === "PUBLISHED" ? "bg-green-900/50 text-green-400" :
-                        pub.status === "FAILED" ? "bg-red-900/50 text-red-400" :
-                        "bg-slate-800 text-slate-400"
-                      }`}>
-                        {pub.status}
-                      </span>
-                      <span className="text-sm text-white truncate">
-                        {pub.coinSymbol ? `$${pub.coinSymbol}` : pub.narrativeName ?? "Unknown"}
-                      </span>
-                      <span className="text-xs text-slate-500">{pub.type?.replace("_SETUP", "").toLowerCase()}</span>
-                    </div>
-                    <div className="flex items-center gap-3 mt-1 text-xs text-slate-500">
-                      <PublicationProviderBadge pub={pub} />
-                      {pub.score != null && <span>Score: {Number(pub.score).toFixed(1)}</span>}
-                      {pub.externalPostId && (
-                        <a
-                          href={`https://www.binance.com/en/square/post/${pub.externalPostId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-cyan-400 hover:text-cyan-300"
-                        >
-                          View on Binance ↗
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                  <div className="text-xs text-slate-500 ml-3 whitespace-nowrap">
-                    {new Date(pub.createdAt).toLocaleString()}
-                  </div>
-                </div>
-              ))}
             </div>
           )}
         </SectionCard>
