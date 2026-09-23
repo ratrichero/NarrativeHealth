@@ -93,11 +93,11 @@ export function CorrelationHeatmap({ data, isLoading }: CorrelationHeatmapProps)
             <p className="text-xs text-slate-500">Need at least 2 coins to calculate correlation</p>
           )}
 
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto -mx-4 px-4">
             <div className="inline-block min-w-full">
-              <div className="flex items-center gap-1 mb-1 ml-20">
+              <div className="flex items-center gap-1 mb-1 ml-12">
                 {coins.map((coin) => (
-                  <div key={coin.coinId} className="text-xs text-slate-400 text-center" style={{ width: 80 }}>
+                  <div key={coin.coinId} className="text-xs text-slate-400 text-center" style={{ width: 64 }}>
                     {coin.symbol}
                   </div>
                 ))}
@@ -105,7 +105,7 @@ export function CorrelationHeatmap({ data, isLoading }: CorrelationHeatmapProps)
 
               {coins.map((coin, i) => (
                 <div key={coin.coinId} className="flex items-center gap-1 mb-1">
-                  <div className="text-xs text-slate-400 text-right pr-2" style={{ width: 80 }}>
+                  <div className="text-xs text-slate-400 text-right pr-2" style={{ width: 64 }}>
                     {coin.symbol}
                   </div>
                   {coins.map((otherCoin, j) => {
@@ -113,8 +113,8 @@ export function CorrelationHeatmap({ data, isLoading }: CorrelationHeatmapProps)
                     return (
                       <div
                         key={otherCoin.coinId}
-                        className={`flex items-center justify-center rounded text-xs font-mono ${getCorrelationColor(correlation)}`}
-                        style={{ width: 80, height: 32 }}
+                        className={`flex items-center justify-center rounded text-[10px] font-mono ${getCorrelationColor(correlation)}`}
+                        style={{ width: 64, height: 28 }}
                         title={`${coin.symbol} vs ${otherCoin.symbol}: ${correlation.toFixed(3)}\n${getCorrelationDescription(correlation)}`}
                       >
                         {correlation.toFixed(2)}
@@ -126,12 +126,12 @@ export function CorrelationHeatmap({ data, isLoading }: CorrelationHeatmapProps)
             </div>
           </div>
 
-          <div className="flex items-center gap-4 text-xs text-slate-500 mt-4">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-4 -mx-4 px-4">
             <span>Legend:</span>
-            <div className="flex items-center gap-1"><div className="w-4 h-4 bg-red-500/80 rounded" /> ≥0.7 High</div>
-            <div className="flex items-center gap-1"><div className="w-4 h-4 bg-yellow-500/80 rounded" /> 0.4-0.7 Mod</div>
-            <div className="flex items-center gap-1"><div className="w-4 h-4 bg-green-500/80 rounded" /> 0.2-0.4 Low</div>
-            <div className="flex items-center gap-1"><div className="w-4 h-4 bg-slate-700 rounded" /> Near 0</div>
+            <div className="flex items-center gap-1"><div className="w-3 h-3 bg-red-500/80 rounded" /> ≥0.7 High</div>
+            <div className="flex items-center gap-1"><div className="w-3 h-3 bg-yellow-500/80 rounded" /> 0.4-0.7 Mod</div>
+            <div className="flex items-center gap-1"><div className="w-3 h-3 bg-green-500/80 rounded" /> 0.2-0.4 Low</div>
+            <div className="flex items-center gap-1"><div className="w-3 h-3 bg-slate-700 rounded" /> Near 0</div>
           </div>
         </div>
       </CardContent>

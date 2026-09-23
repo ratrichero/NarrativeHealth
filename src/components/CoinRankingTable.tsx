@@ -21,40 +21,20 @@ export function CoinRankingTable({ coins }: CoinRankingTableProps) {
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
-        <thead>
+    <div className="overflow-x-auto -mx-4 px-4">
+      <table className="w-full text-xs">
+        <thead className="text-xs text-slate-500 uppercase tracking-wider">
           <tr className="border-b border-slate-800">
-            <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              #
-            </th>
-            <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              Coin
-            </th>
-            <th className="text-center text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              Health
-            </th>
-            <th className="text-center text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              Change
-            </th>
-            <th className="text-center text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              Signal
-            </th>
-            <th className="text-center text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              Confidence
-            </th>
-            <th className="text-right text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              Trend
-            </th>
-            <th className="text-right text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              Deriv
-            </th>
-            <th className="text-right text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              Vol
-            </th>
-            <th className="text-right text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-              Mom
-            </th>
+            <th className="text-left pb-2 pr-2">#</th>
+            <th className="text-left pb-2 pr-2">Coin</th>
+            <th className="text-center pb-2 pr-2">Health</th>
+            <th className="text-center pb-2 pr-2">Change</th>
+            <th className="text-center pb-2 pr-2">Signal</th>
+            <th className="text-center pb-2 pr-2">Confidence</th>
+            <th className="text-right pb-2 pr-2">Trend</th>
+            <th className="text-right pb-2 pr-2">Deriv</th>
+            <th className="text-right pb-2 pr-2">Vol</th>
+            <th className="text-right pb-2">Mom</th>
           </tr>
         </thead>
         <tbody>
@@ -63,38 +43,38 @@ export function CoinRankingTable({ coins }: CoinRankingTableProps) {
               key={coin.id}
               className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors"
             >
-              <td className="py-3 px-4 text-slate-500 text-sm">{index + 1}</td>
-              <td className="py-3 px-4">
+              <td className="py-2.5 pr-2 text-slate-500">{index + 1}</td>
+              <td className="py-2.5 pr-2">
                 <Link
                   href={`/coin/${coin.id}`}
                   className="flex items-center gap-2 hover:text-cyan-400 transition-colors"
                 >
-                  <span className="font-medium text-white">{coin.symbol}</span>
+                  <span className="font-medium text-white text-sm">{coin.symbol}</span>
                   <span className="text-xs text-slate-500">{coin.name}</span>
                 </Link>
               </td>
-              <td className="py-3 px-4 text-center">
+              <td className="py-2.5 pr-2 text-center">
                 <HealthBadge status={coin.status} score={coin.healthScore} />
               </td>
-              <td className="py-3 px-4 text-center">
+              <td className="py-2.5 pr-2 text-center">
                 <ScoreChange change={coin.scoreChange} />
               </td>
-              <td className="py-3 px-4 text-center">
+              <td className="py-2.5 pr-2 text-center">
                 <SignalBadge signal={coin.signal} />
               </td>
-              <td className="py-3 px-4 text-center">
+              <td className="py-2.5 pr-2 text-center">
                 <ConfidenceBadge confidence={coin.confidenceScore} />
               </td>
-              <td className="py-3 px-4 text-right text-sm text-slate-300">
+              <td className="py-2.5 pr-2 text-right text-sm text-slate-300">
                 {coin.trendScore?.toFixed(0) || "-"}
               </td>
-              <td className="py-3 px-4 text-right text-sm text-slate-300">
+              <td className="py-2.5 pr-2 text-right text-sm text-slate-300">
                 {coin.derivativeScore?.toFixed(0) || "-"}
               </td>
-              <td className="py-3 px-4 text-right text-sm text-slate-300">
+              <td className="py-2.5 pr-2 text-right text-sm text-slate-300">
                 {coin.volumeScore?.toFixed(0) || "-"}
               </td>
-              <td className="py-3 px-4 text-right text-sm text-slate-300">
+              <td className="py-2.5 text-right text-sm text-slate-300">
                 {coin.momentumScore?.toFixed(0) || "-"}
               </td>
             </tr>

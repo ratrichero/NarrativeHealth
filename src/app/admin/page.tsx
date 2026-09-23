@@ -816,7 +816,7 @@ function EventModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <Card className="w-full max-w-lg bg-slate-900 border border-slate-800">
+      <Card className="w-full max-w-lg bg-slate-900 border border-slate-800 max-h-[90vh] overflow-y-auto">
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle>{mode === "add" ? "Add Event Risk" : "Edit Event Risk"}</CardTitle>
@@ -943,7 +943,7 @@ function AlertRuleModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <Card className="w-full max-w-lg bg-slate-900 border border-slate-800">
+      <Card className="w-full max-w-lg bg-slate-900 border border-slate-800 max-h-[90vh] overflow-y-auto">
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle>{mode === "add" ? "Add Alert Rule" : "Edit Alert Rule"}</CardTitle>
@@ -1362,25 +1362,27 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Settings className="h-6 w-6 text-slate-400" />
-          <h1 className="text-2xl font-bold text-white">Admin</h1>
+          <h1 className="text-xl font-bold text-white">Admin</h1>
         </div>
-        <div className="flex gap-3">
+        <div className="flex items-center gap-2">
           <Button
             variant="secondary"
             onClick={() => seedMutation.mutate()}
             loading={seedMutation.isPending}
+            className="text-xs"
           >
-            <Database className="h-4 w-4 mr-2" />
+            <Database className="h-3.5 w-3.5 mr-1" />
             Seed Data
           </Button>
           <Button
             onClick={() => refreshMutation.mutate()}
             loading={refreshMutation.isPending}
+            className="text-xs"
           >
-            <Play className="h-4 w-4 mr-2" />
+            <Play className="h-3.5 w-3.5 mr-1" />
             Run Refresh
           </Button>
         </div>
@@ -1425,8 +1427,8 @@ export default function AdminPage() {
 
       {/* Narrative Modal */}
       {narrativeModal.isOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-slate-900 rounded-lg p-6 w-full max-w-md border border-slate-800">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 rounded-lg p-4 sm:p-6 w-full max-w-md border border-slate-800 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-white">
                 {narrativeModal.mode === "add" ? "Add Narrative" : "Edit Narrative"}
@@ -1508,8 +1510,8 @@ export default function AdminPage() {
 
       {/* Coin Modal */}
       {coinModal.isOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-slate-900 rounded-lg p-6 w-full max-w-lg border border-slate-800 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 rounded-lg p-4 sm:p-6 w-full max-w-lg border border-slate-800 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-white">
                 {coinModal.mode === "add" ? "Add Coin" : "Edit Coin"}
@@ -1677,20 +1679,20 @@ export default function AdminPage() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-800">
+      <div className="flex gap-1 border-b border-slate-800 overflow-x-auto -mx-2 px-2">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           return (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              className={`flex items-center gap-1.5 px-2.5 py-2.5 text-xs font-medium transition-colors border-b-2 -mb-px whitespace-nowrap flex-shrink-0 md:gap-2 md:px-4 md:py-3 md:text-sm ${
                 activeTab === tab.id
                   ? "border-cyan-500 text-white"
                   : "border-transparent text-slate-400 hover:text-white"
               }`}
             >
-              <Icon className="h-4 w-4" />
+              <Icon className="h-4 w-4 flex-shrink-0" />
               {tab.label}
             </button>
           );
@@ -1722,10 +1724,11 @@ export default function AdminPage() {
                   No narratives found. Click &quot;Add Narrative&quot; to create one.
                 </div>
               ) : (
-                <table className="w-full">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px]">
                   <thead>
                     <tr className="border-b border-slate-800">
-                      <th className="text-left text-xs font-medium text-slate-500 uppercase py-3 px-6">
+                      <th className="text-left text-xs font-medium text-slate-500 uppercase py-3 px-6 whitespace-nowrap">
                         Name
                       </th>
                       <th className="text-left text-xs font-medium text-slate-500 uppercase py-3 px-4">
@@ -1795,6 +1798,7 @@ export default function AdminPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </div>
           )}
@@ -2148,10 +2152,11 @@ export default function AdminPage() {
                   No logs found. Run a refresh to see logs here.
                 </div>
               ) : (
-                <table className="w-full">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px]">
                   <thead>
                     <tr className="border-b border-slate-800">
-                      <th className="text-left text-xs font-medium text-slate-500 uppercase py-3 px-6">
+                      <th className="text-left text-xs font-medium text-slate-500 uppercase py-3 px-6 whitespace-nowrap">
                         Job
                       </th>
                       <th className="text-center text-xs font-medium text-slate-500 uppercase py-3 px-4">
@@ -2208,6 +2213,7 @@ export default function AdminPage() {
                     })}
                   </tbody>
                 </table>
+                </div>
               )}
             </div>
           )}
@@ -2241,10 +2247,11 @@ export default function AdminPage() {
                     </div>
                   </div>
 
-                  <table className="w-full text-sm">
+                  <div className="overflow-x-auto">
+                  <table className="w-full text-sm min-w-[700px]">
                     <thead>
                       <tr className="border-b border-gray-700 text-left text-gray-400">
-                        <th className="pb-2">Version</th>
+                        <th className="pb-2 whitespace-nowrap">Version</th>
                         <th className="pb-2">Description</th>
                         <th className="pb-2">Weights</th>
                         <th className="pb-2">Status</th>
@@ -2299,6 +2306,7 @@ export default function AdminPage() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               )}
             </div>

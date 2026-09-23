@@ -106,20 +106,20 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
     <Link href={`/narrative/${narrative.id}`}>
       <Card hover className="h-full">
         <CardContent>
-          <div className="flex items-start justify-between mb-4">
-            <div className="flex-1">
-              <h3 className="text-lg font-semibold text-white mb-1">
-                {narrative.name}
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div className="min-w-0 flex-1">
+              <h3 className="text-base font-semibold text-white mb-1">
+                <span className="truncate block">{narrative.name}</span>
               </h3>
-              <div className="flex items-center gap-2 text-sm text-slate-400">
-                <Users className="h-4 w-4" />
-                <span>{narrative.coinCount} coins</span>
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <Users className="h-3.5 w-3.5" />
+                <span className="truncate">{narrative.coinCount} coins</span>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 flex-shrink-0">
               <HealthBadge status={narrative.status} score={narrative.healthScore ?? undefined} />
               {correlation && correlation.avgCorrelation >= 0.4 && (
-                <span className={`text-xs flex items-center gap-1 px-2 py-0.5 rounded ${
+                <span className={`text-[10px] flex items-center gap-1 px-2 py-0.5 rounded ${
                   correlation.avgCorrelation >= 0.7 ? 'bg-red-900/50 text-red-400' :
                   correlation.avgCorrelation >= 0.4 ? 'bg-yellow-900/50 text-yellow-400' :
                   'bg-green-900/50 text-green-400'
@@ -129,8 +129,8 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
                 </span>
               )}
               {narrative.weightingMethod && (
-                <span className="text-xs text-blue-400 flex items-center gap-1">
-                  <span>⚖️</span> {narrative.weightingMethod === 'market_cap' ? 'Market Cap Weighted' : 'Equal Weighted'}
+                <span className="text-[10px] text-blue-400 flex items-center gap-1">
+                  <span>⚖️</span> {narrative.weightingMethod === 'market_cap' ? 'MC' : 'Equal'}
                 </span>
               )}
               <Button
@@ -139,20 +139,20 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
                 onClick={handleRefresh}
                 disabled={isRefreshing || refreshMutation.isPending}
                 title="Refresh data for this narrative"
-                className="hover:bg-slate-700"
+                className="hover:bg-slate-700 h-8 w-8 p-0"
               >
                 <RefreshCw className={`h-4 w-4 text-cyan-400 ${isRefreshing || refreshMutation.isPending ? 'animate-spin' : ''}`} />
               </Button>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="grid grid-cols-2 gap-3 mb-3">
             <div>
-              <span className="text-xs text-slate-500 block mb-1">Change</span>
+              <span className="text-[10px] text-slate-500 uppercase tracking-wider block mb-0.5">Change</span>
               <ScoreChange change={narrative.scoreChange} />
             </div>
             <div>
-              <span className="text-xs text-slate-500 block mb-1">Confidence</span>
+              <span className="text-[10px] text-slate-500 uppercase tracking-wider block mb-0.5">Confidence</span>
               <ConfidenceBadge confidence={narrative.avgConfidence} />
             </div>
           </div>

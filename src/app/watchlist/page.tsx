@@ -77,31 +77,17 @@ export default function WatchlistPage() {
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
+            <div className="overflow-x-auto -mx-4 px-4">
+              <table className="w-full text-xs">
+                <thead className="text-xs text-slate-500 uppercase tracking-wider">
                   <tr className="border-b border-slate-800">
-                    <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-6">
-                      Coin
-                    </th>
-                    <th className="text-center text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-                      Health
-                    </th>
-                    <th className="text-center text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-                      Change
-                    </th>
-                    <th className="text-center text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-                      Signal
-                    </th>
-                    <th className="text-center text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-                      Confidence
-                    </th>
-                    <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-4">
-                      Note
-                    </th>
-                    <th className="text-right text-xs font-medium text-slate-500 uppercase tracking-wider py-3 px-6">
-                      Actions
-                    </th>
+                    <th className="text-left pb-2 pr-3">Coin</th>
+                    <th className="text-center pb-2 pr-2">Health</th>
+                    <th className="text-center pb-2 pr-2">Change</th>
+                    <th className="text-center pb-2 pr-2">Signal</th>
+                    <th className="text-center pb-2 pr-2">Confidence</th>
+                    <th className="text-left pb-2 pr-2">Note</th>
+                    <th className="text-right pb-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -110,36 +96,37 @@ export default function WatchlistPage() {
                       key={item.id}
                       className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors"
                     >
-                      <td className="py-4 px-6">
+                      <td className="py-2.5 pr-3">
                         <Link
                           href={`/coin/${item.coinId}`}
                           className="flex items-center gap-2 hover:text-cyan-400 transition-colors"
                         >
-                          <span className="font-medium text-white">{item.symbol}</span>
-                          <span className="text-xs text-slate-500">{item.name}</span>
+                          <span className="font-medium text-white text-sm">{item.symbol}</span>
+                          <span className="text-[10px] text-slate-500 truncate ml-1">{item.name}</span>
                         </Link>
                       </td>
-                      <td className="py-4 px-4 text-center">
+                      <td className="py-2.5 pr-2 text-center">
                         <HealthBadge status={item.status} score={item.healthScore || undefined} />
                       </td>
-                      <td className="py-4 px-4 text-center">
+                      <td className="py-2.5 pr-2 text-center">
                         <ScoreChange change={item.scoreChange} />
                       </td>
-                      <td className="py-4 px-4 text-center">
+                      <td className="py-2.5 pr-2 text-center">
                         <SignalBadge signal={item.signal} />
                       </td>
-                      <td className="py-4 px-4 text-center">
+                      <td className="py-2.5 pr-2 text-center">
                         <ConfidenceBadge confidence={item.confidenceScore} />
                       </td>
-                      <td className="py-4 px-4">
-                        <span className="text-sm text-slate-400">{item.note || "-"}</span>
+                      <td className="py-2.5 pr-2">
+                        <span className="text-xs text-slate-400 truncate block">{item.note || "-"}</span>
                       </td>
-                      <td className="py-4 px-6 text-right">
+                      <td className="py-2.5 text-right">
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => removeMutation.mutate(item.id)}
                           disabled={removeMutation.isPending}
+                          className="h-8 w-8 p-0"
                         >
                           <Trash2 className="h-4 w-4 text-red-500" />
                         </Button>
