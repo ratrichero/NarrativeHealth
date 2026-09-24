@@ -29,8 +29,12 @@ import {
 } from "recharts";
 import { formatLargeNumber, formatPercent, formatIndicatorValue, getBusinessDate } from "@/lib/utils";
 import { indicatorService } from "@/lib/services/indicator.service";
+import { analyzeIndicator } from "@/lib/technical-analysis/tooltips";
 import type { CoinDetail } from "@/types";
 
+// SQ-TT: base legends + per-indicator analysis now live in
+// @/lib/technical-analysis/tooltips (unit-tested against the real description
+// formats from scoring.ts). The 1D reader below keeps its meta-based logic.
 const INDICATOR_TOOLTIPS: Record<string, string> = {
   "Price vs EMA9": "EMA9 phản ánh xu hướng siêu ngắn hạn. Nếu giá cắt lên trên EMA9, xu hướng tăng ngắn hạn có tăng cường.",
   "Price vs EMA21": "EMA21 là trung bình động trung hạn. Giá trên EMA21 cho thấy xu hướng tăng trung hạn.",
@@ -41,225 +45,21 @@ const INDICATOR_TOOLTIPS: Record<string, string> = {
   "MA Fan Order": "Mô hình quạt MA: các đường MA xếp theo thứ tự tăng → xu hướng tăng mạnh, giảm → xu hướng giảm mạnh.",
   "ADX(14)": "ADX đo độ mạnh của xu hướng: ADX > 25 là xu hướng rõ ràng, ADX < 20 là thị trường đi ngang.",
   "Ichimoku Cloud": "Mây Ichimoku đánh giá xu hướng, hỗ trợ/kháng cự và động lượng. Giá trên mây → xu hướng tăng.",
-  "SuperTrend": "SuperTrend theo xu hướng: nằm trên giá → xu hướng tăng; nằm dưới giá → xu hướng giảm.",
-  "Heikin-Ashi": "Nến Heikin-Ashi làm mượt biểu động giá để xác định xu hướng: nến xanh kéo dài → tăng, nến đỏ → giảm.",
+  "SuperTrend": "SuperTrend theo xu hướng: đường SuperTrend nằm DƯỚI giá → xu hướng tăng (Bullish); nằm TRÊN giá → xu hướng giảm (Bearish).",
+  "Heikin-Ashi": "Nến Heikin-Ashi làm mượt biến động giá để xác định xu hướng: chuỗi nến xanh → tăng, chuỗi nến đỏ → giảm.",
   "RSI(14)": "RSI(14) đo tốc độ và mức thay đổi giá. RSI > 70: quá mua; RSI < 30: quá bán; 50 là ranh giới.",
   "MACD": "MACD đo động lượng xu hướng. Đường MACD cắt lên trên signal → tín hiệu mua; cắt xuống → tín hiệu bán.",
   "Stochastic(14,3)": "Stochastic so sánh giá đóng cửa với biên độ giá gần đây. %K cắt lên %D → tín hiệu tăng.",
   "OBV": "OBV xác nhận xu hướng bằng khối lượng. OBV tăng khi khối lượng mua chiếm ưu thế, giảm khi khối lượng bán chiếm ưu thế.",
   "VWAP Rolling(20)": "VWAP là giá trung bình có trọng số khối lượng. Giá trên VWAP → áp lực mua; giá dưới VWAP → áp lực bán.",
-  "Volume Pressure": "Áp lực khối lượng: mua áp đảo khi dương, bán áp đảo khi âm.",
+  "Volume Pressure": "Áp lực khối lượng 10 nến gần nhất: mua chiếm đa số → nghiêng tăng; bán chiếm đa số → nghiêng giảm.",
   "CCI(20)": "CCI đo độ lệch giá so với giá trung bình thống kê. CCI > +100: quá mua; CCI < -100: quá bán.",
   "Williams %R(14)": "Williams %R dao động từ 0 đến -100. Giá trị gần 0: quá mua; gần -100: quá bán.",
   "MFI(14)": "MFI là RSI có trọng số khối lượng. MFI > 80: quá mua; MFI < 20: quá bán.",
-  "Bollinger Bands(20)": "Dải Bollinger đo biến động giá. Giá chạm/pha vỡ dải trên → tăng; chạm dải dưới → giảm; thu hẹp dải → biến động sắp tăng.",
+  "Bollinger Bands(20)": "Dải Bollinger đo biến động giá. Giá chạm/vượt dải trên thường hồi về trung bình (mean reversion); chạm dải dưới có thể báo hiệu hồi phục; thu hẹp dải → biến động sắp tăng.",
   "Candlestick Patterns": "Mô hình nến Nhật phát hiện đảo chiều/tiếp diễn. Mô hình xanh đuôi dài ở đáy → tín hiệu tăng; mô hình đỏ đầu dài ở đỉnh → tín hiệu giảm.",
   "Support/Resistance": "Hỗ trợ là vùng giá dừng giảm; kháng cự là vùng giá dừng tăng. Phá vỡ → xác nhận xu hướng mới.",
 };
-
-function analyzeIndicator(indicator: any): string {
-  const name = indicator.name || "";
-  const desc = indicator.description || "";
-  const signal = indicator.signal;
-  const sentiment = signal > 0.3 ? "tích cực 📈" : signal < -0.3 ? "tiêu cực 📉" : "trung lập ➡️";
-
-  let analysis = `Đánh giá hiện tại: ${sentiment}`;
-
-  if (name.includes("Price vs EMA")) {
-    if (desc.includes("Above")) {
-      analysis += ". Giá đang nằm trên đường EMA, cho thấy lực cầu đang chiếm ưu thế và xu hướng tăng được hỗ trợ.";
-    } else if (desc.includes("Below")) {
-      analysis += ". Giá đang nằm dưới đường EMA, cho thấy lực cầu yếu và áp lực giảm chiếm ưu thế.";
-    }
-  } else if (name.includes("EMA 9/21 Cross")) {
-    if (desc.includes("Bullish Cross") || desc.includes("Golden Cross")) {
-      analysis += ". EMA ngắn hạn cắt lên EMA dài hạn, đây là tín hiệu mua mạnh cho xu hướng tăng.";
-    } else if (desc.includes("Bearish Cross") || desc.includes("Death Cross")) {
-      analysis += ". EMA ngắn hạn cắt xuống EMA dài hạn, đây là tín hiệu bán cho xu hướng giảm.";
-    } else {
-      analysis += ". Chưa có tín hiệu cắt EMA rõ ràng, xu hướng đang đi ngang hoặc chờ xác nhận.";
-    }
-  } else if (name.includes("MA Fan Order")) {
-    if (desc.includes("Bullish")) {
-      analysis += ". Các đường MA xếp theo thứ tự tăng (quạt tăng), xác nhận xu hướng tăng mạnh và bền vững.";
-    } else if (desc.includes("Bearish")) {
-      analysis += ". Các đường MA xếp theo thứ tự giảm (quạt giảm), xác nhận xu hướng giảm mạnh.";
-    } else {
-      analysis += ". Các đường MA đang bị xáo trộn, xu hướng chưa rõ ràng.";
-    }
-  } else if (name.includes("ADX")) {
-    const adxMatch = desc.match(/ADX=([\d.]+)/);
-    const adx = adxMatch ? parseFloat(adxMatch[1]) : null;
-    if (adx && adx > 25) {
-      analysis += `. ADX=${adx.toFixed(1)} cho thấy xu hướng rất rõ ràng và mạnh mẽ. `;
-      if (desc.includes("+DI") && desc.includes("-DI")) {
-        const plusDi = parseFloat(desc.match(/\+DI=([\d.]+)/)?.[1] || "0");
-        const minusDi = parseFloat(desc.match(/-DI=([\d.]+)/)?.[1] || "0");
-        if (plusDi > minusDi) {
-          analysis += "Lực mua (+DI) đang áp đảo lực bán (-DI).";
-        } else {
-          analysis += "Lực bán (-DI) đang áp đảo lực mua (+DI).";
-        }
-      }
-    } else if (adx && adx < 20) {
-      analysis += `. ADX=${adx?.toFixed(1)} cho thấy thị trường đang đi ngang, không có xu hướng rõ ràng. Nên thận trọng khi giao dịch.`;
-    } else {
-      analysis += ". ADX ở mức trung bình, xu hướng đang hình thành nhưng chưa hoàn toàn rõ ràng.";
-    }
-  } else if (name.includes("Ichimoku")) {
-    if (desc.includes("Price above cloud")) {
-      analysis += ". Giá nằm trên mây Ichimoku, xu hướng tăng mạnh. Mây xanh hỗ trợ giá đi lên.";
-    } else if (desc.includes("Price below cloud")) {
-      analysis += ". Giá nằm dưới mây Ichimoku, xu hướng giảm mạnh. Mây đỏ tạo áp lực giảm.";
-    } else {
-      analysis += ". Giá đang nằm trong mây, thị trường đi ngang và chờ xác nhận xu hướng.";
-    }
-  } else if (name.includes("SuperTrend")) {
-    if (desc.includes("Bullish")) {
-      analysis += ". SuperTrend đang nằm dưới giá, xác nhận xu hướng tăng. Nên duy trì vị thế mua.";
-    } else if (desc.includes("Bearish")) {
-      analysis += ". SuperTrend đang nằm trên giá, xác nhận xu hướng giảm. Nên thận trọng hoặc cắt lỗ.";
-    } else {
-      analysis += ". SuperTrend đang ở trạng thái trung lập, chờ xác nhận xu hướng rõ hơn.";
-    }
-  } else if (name.includes("Heikin-Ashi")) {
-    if (desc.includes("Bullish")) {
-      analysis += ". Nến Heikin-Ashi liên tiếp màu xanh, xác nhận xu hướng tăng mạnh và bền vững.";
-    } else if (desc.includes("Bearish")) {
-      analysis += ". Nến Heikin-Ashi liên tiếp màu đỏ, xác nhận xu hướng giảm mạnh.";
-    } else {
-      analysis += ". Nến Heikin-Ashi đang chuyển màu, có thể báo hiệu đảo chiều hoặc đi ngang.";
-    }
-  } else if (name.includes("RSI")) {
-    const rsiMatch = desc.match(/RSI=([\d.]+)/);
-    const rsi = rsiMatch ? parseFloat(rsiMatch[1]) : null;
-    if (rsi && rsi > 70) {
-      analysis += `. RSI=${rsi.toFixed(1)} nằm trong vùng quá mua, giá có thể điều chỉnh giảm. Nên cân nhắc chốt lời hoặc cắt giảm vị thế mua.`;
-    } else if (rsi && rsi < 30) {
-      analysis += `. RSI=${rsi.toFixed(1)} nằm trong vùng quá bán, giá có thể hồi phục. Đây có thể là cơ hội mua ở vùng đáy.`;
-    } else if (rsi && rsi > 60) {
-      analysis += `. RSI=${rsi.toFixed(1)} ở vùng trung tính-dương, lực cầu đang chiếm ưu thế.`;
-    } else if (rsi && rsi < 40) {
-      analysis += `. RSI=${rsi.toFixed(1)} ở vùng trung tính-âm, lực cầu đang yếu đi.`;
-    } else {
-      analysis += ". RSI ở vùng trung lập, thị trường không có dấu hiệu quá mua/quá bán.";
-    }
-  } else if (name.includes("MACD")) {
-    if (desc.includes("Bullish Cross") || desc.includes("MACD > Signal")) {
-      analysis += ". Đường MACD đang nằm trên đường signal, động lượng tăng đang chiếm ưu thế. Tín hiệu mua.";
-    } else if (desc.includes("Bearish Cross") || desc.includes("MACD < Signal")) {
-      analysis += ". Đường MACD đang nằm dưới đường signal, động lượng giảm chiếm ưu thế. Tín hiệu bán.";
-    } else if (desc.includes("Histogram > 0")) {
-      analysis += ". Histogram dương, động lượng tăng đang gia tăng.";
-    } else if (desc.includes("Histogram < 0")) {
-      analysis += ". Histogram âm, động lượng giảm đang gia tăng.";
-    } else {
-      analysis += ". MACD đang ở trạng thái trung lập, chờ xác nhận xu hướng.";
-    }
-  } else if (name.includes("Stochastic")) {
-    const kMatch = desc.match(/%K=([\d.]+)/);
-    const k = kMatch ? parseFloat(kMatch[1]) : null;
-    if (k && k > 80) {
-      analysis += `. %K=${k.toFixed(1)} nằm trong vùng quá mua, có thể xảy ra điều chỉnh giảm.`;
-    } else if (k && k < 20) {
-      analysis += `. %K=${k.toFixed(1)} nằm trong vùng quá bán, có thể hồi phục tăng.`;
-    } else if (k && k > 50) {
-      analysis += `. %K=${k.toFixed(1)} ở vùng dương, lực tăng đang chiếm ưu thế.`;
-    } else {
-      analysis += `. %K=${k?.toFixed(1) ?? "N/A"} ở vùng âm, lực giảm đang chiếm ưu thế.`;
-    }
-  } else if (name.includes("OBV")) {
-    if (desc.includes("Rising") || desc.includes("OBV Increasing")) {
-      analysis += ". OBV đang tăng, khối lượng mua chiếm ưu thế, xác nhận xu hướng tăng là bền vững.";
-    } else if (desc.includes("Falling") || desc.includes("OBV Decreasing")) {
-      analysis += ". OBV đang giảm, khối lượng bán chiếm ưu thế, xu hướng giảm có thể tiếp diễn.";
-    } else {
-      analysis += ". OBV đi ngang, khối lượng không phân hóa rõ, xu hướng chưa được xác nhận.";
-    }
-  } else if (name.includes("VWAP")) {
-    if (desc.includes("Price above VWAP")) {
-      analysis += ". Giá đang giao dịch trên VWAP, áp lực mua chiếm ưu thế. Xu hướng tăng có xác nhận từ khối lượng.";
-    } else if (desc.includes("Price below VWAP")) {
-      analysis += ". Giá đang giao dịch dưới VWAP, áp lực bán chiếm ưu thế. Xu hướng giảm có xác nhận từ khối lượng.";
-    } else {
-      analysis += ". Giá đang dao động quanh VWAP, thị trường cân bằng, chờ xác nhận xu hướng.";
-    }
-  } else if (name.includes("Volume Pressure")) {
-    if (desc.includes("Buy%") || desc.includes("Buy dominant")) {
-      analysis += ". Khối lượng mua đang áp đảo, áp lực tăng mạnh, giá có khả năng tiếp tục tăng.";
-    } else if (desc.includes("Sell%") || desc.includes("Sell dominant")) {
-      analysis += ". Khối lượng bán đang áp đảo, áp lực giảm mạnh, giá có khả năng tiếp tục giảm.";
-    } else {
-      analysis += ". Khối lượng mua và bán cân bằng, thị trường đang tích lũy.";
-    }
-  } else if (name.includes("CCI")) {
-    const cciMatch = desc.match(/CCI=([\d.]+)/);
-    const cci = cciMatch ? parseFloat(cciMatch[1]) : null;
-    if (cci && cci > 100) {
-      analysis += `. CCI=${cci.toFixed(1)} nằm trong vùng quá mua, giá có thể điều chỉnh giảm.`;
-    } else if (cci && cci < -100) {
-      analysis += `. CCI=${cci.toFixed(1)} nằm trong vùng quá bán, giá có thể hồi phục.`;
-    } else {
-      analysis += ". CCI ở vùng trung lập, thị trường không có dấu hiệu cực đoan.";
-    }
-  } else if (name.includes("Williams %R")) {
-    const wrMatch = desc.match(/%R=([-\d.]+)/);
-    const wr = wrMatch ? parseFloat(wrMatch[1]) : null;
-    if (wr && wr > -20) {
-      analysis += `. Williams %R=${wr.toFixed(1)} gần vùng quá mua, giá có thể điều chỉnh giảm.`;
-    } else if (wr && wr < -80) {
-      analysis += `. Williams %R=${wr.toFixed(1)} gần vùng quá bán, giá có thể hồi phục tăng.`;
-    } else {
-      analysis += ". Williams %R ở vùng trung lập, thị trường cân bằng.";
-    }
-  } else if (name.includes("MFI")) {
-    const mfiMatch = desc.match(/MFI=([\d.]+)/);
-    const mfi = mfiMatch ? parseFloat(mfiMatch[1]) : null;
-    if (mfi && mfi > 80) {
-      analysis += `. MFI=${mfi.toFixed(1)} nằm trong vùng quá mua, khối lượng bán có thể tăng.`;
-    } else if (mfi && mfi < 20) {
-      analysis += `. MFI=${mfi.toFixed(1)} nằm trong vùng quá bán, khối lượng mua có thể tăng.`;
-    } else {
-      analysis += ". MFI ở vùng trung lập, khối lượng không có dấu hiệu cực đoan.";
-    }
-  } else if (name.includes("Bollinger Bands")) {
-    if (desc.includes("%B=1") || desc.includes("Upper")) {
-      analysis += ". Giá đang chạm/pha vỡ dải trên Bollinger, có thể quá mua và điều chỉnh giảm.";
-    } else if (desc.includes("%B=0") || desc.includes("Lower")) {
-      analysis += ". Giá đang chạm dải dưới Bollinger, có thể quá bán và hồi phục.";
-    } else if (desc.includes("%B>0.8")) {
-      analysis += ". Giá gần dải trên, biến động tăng nhưng cần thận trọng với đảo chiều.";
-    } else if (desc.includes("%B<0.2")) {
-      analysis += ". Giá gần dải dưới, có thể sắp hồi phục nhưng cần xác nhận thêm.";
-    } else {
-      analysis += ". Giá đang di chuyển giữa hai dải, biến động bình thường.";
-    }
-  } else if (name.includes("Candlestick Patterns")) {
-    if (desc.includes("Bullish") || desc.includes("Hammer") || desc.includes("Engulfing")) {
-      analysis += ". Mô hình nến tăng được phát hiện, xác nhận lực cầu chiếm ưu thế. Xu hướng tăng có thể tiếp diễn.";
-    } else if (desc.includes("Bearish") || desc.includes("Shooting Star") || desc.includes("Dark Cloud")) {
-      analysis += ". Mô hình nến giảm được phát hiện, xác nhận lực bán chiếm ưu thế. Xu hướng giảm có thể tiếp diễn.";
-    } else if (desc.includes("Doji") || desc.includes("Spinning Top")) {
-      analysis += ". Mô hình nến trung lập, thị trường đang do dự và chờ xác nhận xu hướng.";
-    } else {
-      analysis += ". Mô hình nến đang được theo dõi, chờ xác nhận rõ hơn.";
-    }
-  } else if (name.includes("Support/Resistance")) {
-    if (desc.includes("Resistance") && desc.includes("(-")) {
-      analysis += ". Giá đang xa hỗ trợ gần nhất, nhưng kháng cự ở rất gần (+0.04%). Áp lực bán có thể xuất hiện sớm.";
-    } else if (desc.includes("Support") && desc.includes("(+")) {
-      analysis += ". Giá đang xa kháng cự gần nhất, hỗ trợ ở rất gần. Lực cầu có thể bảo vệ giá.";
-    } else if (desc.includes("Resistance")) {
-      analysis += ". Kháng cự đang ở gần, giá có thể gặp áp lực bán nếu không vượt qua.";
-    } else if (desc.includes("Support")) {
-      analysis += ". Hỗ trợ đang ở gần, nếu giá giữ trên mức này, xu hướng tăng có thể tiếp diễn.";
-    } else {
-      analysis += ". Vùng hỗ trợ/kháng cự đang được xác định, chờ xác nhận phá vỡ.";
-    }
-  }
-
-  return analysis;
-}
 
 function getIndicatorTooltip(indicator: any): string {
   const baseTooltip = INDICATOR_TOOLTIPS[indicator.name] || "Chỉ số kỹ thuật phân tích xu hướng và động lượng của giá.";
@@ -327,18 +127,20 @@ function get1DIndicatorTooltip(indicator: any, currentPrice?: number | null): st
       analysis += "ADX ở mức trung bình, xu hướng đang hình thành.";
     }
   } else if (name.includes("BB")) {
+    // engine.ts saves meta.pctB on a 0–100 scale ((price-lower)/(upper-lower)*100);
+    // the old 0–1 bounds misclassified every reading (e.g. 85 → "pha vỡ dải trên").
     const pctB = meta?.pctB != null ? parseFloat(meta.pctB) : null;
-    if (pctB !== null) {
-      if (pctB >= 1) {
-        analysis += `%B=${pctB.toFixed(1)}%, giá đang chạm/pha vỡ dải trên, có thể quá mua và điều chỉnh giảm.`;
+    if (pctB !== null && isFinite(pctB)) {
+      if (pctB >= 100) {
+        analysis += `%B=${pctB.toFixed(1)} — giá vươn ra ngoài dải trên (quá mua kỹ thuật), có thể hồi về trung bình.`;
       } else if (pctB <= 0) {
-        analysis += `%B=${pctB.toFixed(1)}%, giá đang chạm dải dưới, có thể quá bán và hồi phục.`;
-      } else if (pctB > 0.8) {
-        analysis += `%B=${pctB.toFixed(1)}%, giá gần dải trên, biến động tăng nhưng cần thận trọng.`;
-      } else if (pctB < 0.2) {
-        analysis += `%B=${pctB.toFixed(1)}%, giá gần dải dưới, có thể sắp hồi phục.`;
+        analysis += `%B=${pctB.toFixed(1)} — giá vươn ra ngoài dải dưới (quá bán kỹ thuật), có thể hồi phục.`;
+      } else if (pctB > 80) {
+        analysis += `%B=${pctB.toFixed(1)} — giá sát dải trên, động lượng mạnh nhưng cần thận trọng với mean reversion.`;
+      } else if (pctB < 20) {
+        analysis += `%B=${pctB.toFixed(1)} — giá sát dải dưới, vùng có tiềm năng hồi phục.`;
       } else {
-        analysis += `%B=${pctB.toFixed(1)}%, giá di chuyển giữa hai dải, biến động bình thường.`;
+        analysis += `%B=${pctB.toFixed(1)} — giá di chuyển giữa hai dải, biến động bình thường.`;
       }
     }
   } else if (name.includes("ATR")) {
@@ -354,6 +156,14 @@ function get1DIndicatorTooltip(indicator: any, currentPrice?: number | null): st
     } else {
       analysis += "Đây là mức biến động trung bình thực tế của giá.";
     }
+  } else if (name.includes("VWAP")) {
+    if (currentPrice && currentPrice > value) {
+      analysis += "Giá đang giao dịch trên VWAP, áp lực mua chiếm ưu thế.";
+    } else if (currentPrice && currentPrice < value) {
+      analysis += "Giá đang giao dịch dưới VWAP, áp lực bán chiếm ưu thế.";
+    } else {
+      analysis += "Giá đang dao động quanh VWAP, thị trường cân bằng.";
+    }
   } else if (name.includes("VOLUME_RATIO")) {
     if (value > 1.5) {
       analysis += `Khối lượng giao dịch gấp ${value.toFixed(2)} lần trung bình, áp lực mua/bán rất mạnh.`;
@@ -365,7 +175,7 @@ function get1DIndicatorTooltip(indicator: any, currentPrice?: number | null): st
       analysis += `Khối lượng giao dịch thấp hơn trung bình (${value.toFixed(2)}x), thị trường yếu.`;
     }
   } else if (name.includes("OBV")) {
-    analysis += "OBV phản ánh dòng tiền vào/ra. Giá trị cao cho thấy dòng tiền đang chảy vào.";
+    analysis += "OBV tích lũy dòng tiền theo thời gian — giá trị tuyệt đối ít nghĩa trực tiếp, hãy so sánh HƯỚNG thay đổi qua các ngày gần nhất: tăng đều = dòng tiền vào, giảm đều = dòng tiền ra.";
   }
 
   return `${base}\n\n${analysis}`;
