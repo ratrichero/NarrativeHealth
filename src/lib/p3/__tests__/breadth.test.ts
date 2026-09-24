@@ -44,14 +44,26 @@ describe("P3 breadth", () => {
     expect(result).toMatchObject({ totalCoins: 1, bullishCoins: 0, neutralCoins: 0, weakCoins: 1, bullishRatio: 0, strongBreadth: 0, availabilityState: "VALID" });
   });
 
-  test("keeps unavailable health in the active-coin denominator and degrades availability", () => {
+  // P3-10E.16 persistence gate: any non-VALID constituent input collapses the
+  // metric to null (documented pre-existing divergence — code is authoritative;
+  // see docs/P3_Upgrade/P3_10E_16_PERSISTENCE_SAFETY_REMEDIATION.md §5).
+  test("unavailable health collapses metrics to null with MISSING availability", () => {
     const result = calculateBreadth([
       { coinId: 1, health: 70, availabilityState: "VALID" },
       { coinId: 2, health: null, availabilityState: "MISSING", availabilityReason: "No health row" },
       { coinId: 3, health: 40, availabilityState: "VALID" },
     ]);
-    expect(result).toMatchObject({ totalCoins: 3, bullishCoins: 1, neutralCoins: 0, weakCoins: 1, bullishRatio: 1 / 3, strongBreadth: 0, availabilityState: "MISSING" });
-    expect(result).not.toMatchObject({ bullishRatio: 0 });
+    // Per-VALID-coin counts remain observable for diagnostics, but no ratio is
+    // derivable from a partial denominator and availability is degraded.
+    expect(result).toMatchObject({ totalCoins: 3, bullishCoins: 1, neutralCoins: 0, weakCoins: 1, bullishRatio: null, strongBreadth: null, availabilityState: "MISSING" });
+  });
+
+  test("all-VALID constituents yield numeric ratios in the active-coin denominator", () => {
+    const result = calculateBreadth([
+      { coinId: 1, health: 70, availabilityState: "VALID" },
+      { coinId: 3, health: 40, availabilityState: "VALID" },
+    ]);
+    expect(result).toMatchObject({ totalCoins: 2, bullishCoins: 1, neutralCoins: 0, weakCoins: 1, bullishRatio: 0.5, strongBreadth: 0, availabilityState: "VALID" });
   });
 
   test("invalid and insufficient inputs do not become negative or zero signals", () => {

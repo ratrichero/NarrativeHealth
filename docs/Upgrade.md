@@ -4,6 +4,57 @@
 
 ---
 
+## P3-P6-OPS-09-2026 — P3 chạy tự động trong refresh, P5 freshness gate, chuẩn hóa test breadth (2026-09-24)
+
+> Audit kiến trúc P3→P6 phát hiện 3 vấn đề theo mức độ ưu tiên; cả 3 đã xử lý trong batch này.
+
+### 1. P3 không có trigger tự động (nghiêm trọng nhất) 🔴
+
+- **Vấn đề**: Refresh route là nhịp định kỳ duy nhất của hệ thống (chạy P6 snapshot/regime/warning + P5 decision pipeline) nhưng **không bao giờ chạy P3** — artifact P3 chỉ được tạo khi admin gọi tay `POST /api/admin/p3/execute`. Hệ quả dây chuyền: P3 stale dần → P4 derive trên artifact cũ → P5 persist decision trên đó → panel P3 hiển thị dữ liệu cũ mà không có gì báo stale.
+- **Fix** (`src/app/api/refresh/route.ts`): thêm khối **P3-15 Post-Refresh Execution Loop** chạy TRƯỚC khối P5, theo đúng pattern non-blocking của P5:
+  - Gọi `runP3ExecutionLoop()` (window 7D/observed) — **idempotent tuyệt đối**: window đã persist sẽ bị skip theo identity `(narrative_id, window_end, algorithm, mode)`, không bao giờ ghi đè.
+  - Per-narrative error-isolated; toàn khối bọc try/catch — P3 chết không bao giờ phá refresh.
+  - Log tổng kết `executed/skipped/notEligible/failed` để theo dõi qua console/pm2 logs.
+- Lưu ý vận hành: trên VPS, refresh vẫn nên chạy bằng cron/curl định kỳ như cũ — giờ mỗi lần refresh sẽ tự động sản xuất artifact P3 của ngày nếu chưa có.
+
+### 2. P5 persist decision từ P4 degraded (thiếu freshness gate) 🟡
+
+- **Vấn đề**: vòng lặp P5 trong refresh chỉ skip khi `!p4Snapshot` (P4 null). Khi P4 trả view **DEGRADED / NO_EVIDENCE / ERROR** (P3 stale, thiếu history, evidence unavailable), P5 vẫn evaluate và **persist decision** — đóng băng quyết định làm trên dữ liệu không hợp lệ.
+- **Fix** (`src/app/api/refresh/route.ts`): thêm gate ở tầng caller (không đụng frozen P5 semantics): `p4Snapshot.status !== "OK"` → skip, đếm riêng `degradedSkip`, log rõ status + asOf. Read model ABSENT (`NO_DECISION_RECORD`) tiếp tục là kết quả hiển thị đúng — không bao giờ lẫn với `NO_ACTION`.
+- Đếm tổng kết mở rộng: `success/failed/skipped/degradedSkip`.
+
+### 3. Test breadth kỳ vọng mâu thuẫn code (pre-existing, đã được docs xác nhận) 🟡
+
+- **Vấn đề**: `breadth.test.ts` kỳ vọng `bullishRatio: 1/3` khi có 1/3 constituents unavailable — nhưng `breadth.ts` cố ý trả `null` cho mọi metric khi bất kỳ input nào non-VALID (persistence gate P3-10E.16 chỉ nhận VALID). Test này là **1 trong 9 pre-existing failures** được ghi nhận chính thức trong `docs/P3_Upgrade/P3_10E_16_PERSISTENCE_SAFETY_REMEDIATION.md` §5 ("Pre-dates P3-10E.16") và P3_10E_22 — tức **code là side đúng theo spec**, test là side cũ.
+- **Fix** (`src/lib/p3/__tests__/breadth.test.ts`): đổi tên + kỳ vọng test theo behavior authoritative (`bullishRatio: null, strongBreadth: null, availabilityState: "MISSING"`, count per-coin vẫn giữ để debug), kèm comment trỏ về doc E.16. Thêm 1 test mới chứng minh tất cả-VALID vẫn ra ratio số (`0.5`) — bảo vệ correctness chiều còn lại. **P3 suite giờ sạch 0 fail ở phần breadth.**
+- Các test OOM khi chạy full-suite là vấn đề RAM sandbox (đã biết), không phải code.
+
+### Files changed (P3-P6-OPS-09-2026)
+
+```
+src/app/api/refresh/route.ts             — P3 execution loop (non-blocking, chạy trước P5) + P5 freshness gate
+src/lib/p3/__tests__/breadth.test.ts     — align theo E.16 (null metrics khi MISSING) + test all-VALID ratio
+docs/Upgrade.md                          — entry này
+```
+
+### Verification (P3-P6-OPS-09-2026)
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `bun run typecheck` (tsc --noEmit) | ✅ Sạch |
+| Jest breadth + execution-loop | ✅ 17/17 PASS |
+| Jest P4 full | ✅ 129/129 PASS (7 suites) |
+| Jest P5 full (kể cả adapter) | ✅ 273/273 PASS (13 suites) |
+| Idempotency P3 | ✅ Loop skip window đã persist (identity gate trong `execution-loop.ts`, có test riêng) |
+
+### Không đổi (cố ý)
+
+- **P5 frozen semantics**: gate nằm ở tầng caller (refresh route), adapter/producer/policy/safety nguyên vẹn — vocabulary SELECTED/NO_ACTION/NOT_DETERMINED không đổi.
+- **P3 orchestrator/persistence**: không đụng — chỉ thêm trigger.
+- **Thứ tự hiển thị narrative page** (P6→P5→P4→P3): giữ nguyên theo thiết kế action-first.
+
+---
+
 ## SQ-DIR-09-2026 — Fix hướng lệnh & level SHORT, giải thích lỗi tiếng Việt, deploy VPS domain (2026-09-24)
 
 ### 1. Fix mâu thuẫn Direction vs Level geometry (lỗi PENDLE trên Square) ⚠️ quan trọng nhất

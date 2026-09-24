@@ -408,12 +408,32 @@ export async function POST(request: NextRequest) {
     }
 
     // -----------------------------------------------------------------------
+    // P3-15: Post-Refresh P3 Execution Loop (additive — non-blocking)
+    // -----------------------------------------------------------------------
+    // Refresh was previously the only recurring trigger for downstream layers
+    // (P6 snapshots, P5 decisions) but never ran P3 itself — P3 artifacts were
+    // only produced by the manual admin route, so P4/P5 progressively consumed
+    // stale intelligence. The execution loop is idempotent (a persisted window
+    // identity is skipped, never re-executed), 7D/observed, per-narrative
+    // error-isolated, and its failure never breaks the refresh.
+    try {
+      const { runP3ExecutionLoop } = await import("@/lib/p3/execution-loop");
+      const p3Result = await runP3ExecutionLoop();
+      console.log(
+        `[P3] Post-refresh execution loop: executed=${p3Result.executed} skipped=${p3Result.skipped} notEligible=${p3Result.notEligible} failed=${p3Result.failed} window=${p3Result.window}`
+      );
+    } catch (error) {
+      // P3 execution failure must never break refresh
+      console.error("[P3] Post-refresh execution loop failed (non-blocking):", error);
+    }
+
+    // -----------------------------------------------------------------------
     // P5-11: Post-Refresh Decision Pipeline (additive — non-blocking)
     // -----------------------------------------------------------------------
-    // After P3/P4 data is computed for all narratives, run the frozen P5
-    // pipeline for each narrative. P5 consumes P4 → produces decision artifacts
-    // persisted to p5_decision_records. Each narrative is independently error-
-    // isolated; a failure in one narrative never prevents others from processing.
+    // After P3 artifacts were refreshed above, run the frozen P5 pipeline for
+    // each narrative. P5 consumes P4 → produces decision artifacts persisted to
+    // p5_decision_records. Each narrative is independently error-isolated; a
+    // failure in one narrative never prevents others from processing.
     try {
       const { P5RuntimeAdapter } = await import("@/lib/p5/integration");
       const { pgDecisionProducer } = await import("@/lib/p5/producer/production");
@@ -423,6 +443,7 @@ export async function POST(request: NextRequest) {
       let p5SuccessCount = 0;
       let p5FailCount = 0;
       let p5SkippedCount = 0;
+      let p5DegradedSkipCount = 0;
 
       for (const narrative of activeNarratives) {
         try {
@@ -431,6 +452,21 @@ export async function POST(request: NextRequest) {
           if (!p4Snapshot) {
             p5SkippedCount++;
             continue; // No P4 data available — P5 cannot evaluate
+          }
+
+          // P5-11 freshness gate (operational, caller-level): a NO_EVIDENCE /
+          // ERROR / DEGRADED P4 view means the narrative state could not be
+          // established from valid P3 evidence (stale artifact, insufficient
+          // history, unavailable inputs). Persisting a decision on top of it
+          // would freeze a decision made without current data. Skipping is
+          // explicit and counted — the ABSENT read model (NO_DECISION_RECORD)
+          // remains the visible outcome, which never conflates with NO_ACTION.
+          if (p4Snapshot.status !== "OK") {
+            p5DegradedSkipCount++;
+            console.log(
+              `[P5] Skipping narrative ${narrative.id}: P4 status=${p4Snapshot.status} (asOf ${p4Snapshot.asOf})`
+            );
+            continue;
           }
 
           const result = await p5Adapter.evaluate(narrative.id, p4Snapshot);
@@ -446,7 +482,7 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      console.log(`[P5] Post-refresh pipeline: success=${p5SuccessCount} failed=${p5FailCount} skipped=${p5SkippedCount}`);
+      console.log(`[P5] Post-refresh pipeline: success=${p5SuccessCount} failed=${p5FailCount} skipped=${p5SkippedCount} degradedSkip=${p5DegradedSkipCount}`);
     } catch (error) {
       // P5 pipeline failure must never break refresh
       console.error("[P5] Post-refresh pipeline initialization failed (non-blocking):", error);
