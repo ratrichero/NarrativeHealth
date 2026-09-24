@@ -1,7 +1,7 @@
 // Square Content Generator
 // LLM + deterministic template fallback for Binance Square posts
 
-import type { SquareContentBrief, SetupDirection } from "./opportunity-engine";
+import type { SquareContentBrief } from "./opportunity-engine";
 import { buildChartCta as buildChartCtaFromEngine } from "./opportunity-engine";
 
 // ─── Template Version ──────────────────────────────────
@@ -265,7 +265,7 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   lines.push("");
   lines.push("DIRECTION (state it unambiguously near the top):");
   if (brief.direction === "SHORT") {
-    lines.push("- The direction is SHORT (futures): health/momentum is fading, targets are BELOW price. Frame levels for a short setup — do NOT frame it as buying the dip, do NOT imply a bounce is coming.");
+    lines.push("- The direction is SHORT (futures): health/momentum is fading. The provided levels are MIRRORED for a short: the entry zone sits ABOVE the current price (sell rallies into it), targets are BELOW price, and the stop sits ABOVE the entry zone. Present them exactly like that — do NOT frame it as buying the dip, do NOT call targets 'gains' or imply a bounce is coming.");
   } else {
     lines.push("- The direction is LONG (futures): momentum + structure favor upside; frame levels for an accumulation zone.");
   }
@@ -333,7 +333,16 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
     if (m.openInterest != null) lines.push(`Open interest: ${m.openInterest.toExponential(2)}`);
     lines.push(`Score breakdown: trend ${m.trendScore}/100, derivative ${m.derivativeScore}/100, volume ${m.volumeScore}/100, momentum ${m.momentumScore}/100`);
     if (m.coinsTotal > 0) lines.push(`Narrative breadth: ${m.coinsUp} of ${m.coinsTotal} coins improving`);
-    if (m.riskRewardRatio != null) lines.push(`Risk/reward: ${m.riskRewardRatio.toFixed(1)}:1, TP1 gain +${m.tp1GainPct?.toFixed(0)}%, SL risk -${m.slRiskPct?.toFixed(0)}%`);
+    // SQ-DIR: signs follow the PRICE move, not P&L — for a short, price falls
+    // to TP (-%) and rises into the stop (+%). Keeps the LLM from framing a
+    // short's targets as upside.
+    if (m.riskRewardRatio != null) {
+      lines.push(
+        brief.direction === "SHORT"
+          ? `Risk/reward: ${m.riskRewardRatio.toFixed(1)}:1, TP1 move -${m.tp1GainPct?.toFixed(0)}% (short target), stop move +${m.slRiskPct?.toFixed(0)}%`
+          : `Risk/reward: ${m.riskRewardRatio.toFixed(1)}:1, TP1 gain +${m.tp1GainPct?.toFixed(0)}%, SL risk -${m.slRiskPct?.toFixed(0)}%`
+      );
+    }
   }
 
   const setupEntry = brief.leaderCoinEntry ?? brief.entry;
@@ -348,6 +357,11 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   }
   if (setupSl) {
     lines.push(`Stop loss: ${setupSl.level}`);
+  }
+
+  // SQ-DIR: geometry note so the model describes the mirrored levels correctly.
+  if (brief.direction === "SHORT" && setupEntry) {
+    lines.push("(SHORT geometry: the entry zone sits ABOVE the current price — rallies into it get sold; targets are BELOW price, stop above the zone. Present every level exactly as given, never as a dip-buy.)");
   }
 
   if (brief.priceMap) {
@@ -446,11 +460,10 @@ function buildViralTemplate(brief: SquareContentBrief): string {
   // from derived direction, momentum read, and actual level geometry so it
   // can never contradict the setup that follows.
   const direction = brief.direction ?? "LONG";
-  const dirLine =
-    direction === "LONG"
-      ? "📍 Direction: LONG setup (futures) — momentum + structure favor upside; levels below define the accumulation zone."
-      : "📍 Direction: SHORT setup (futures) — strength is fading; levels below define the fade zone, not a dip-buy."
-  ;
+  const isShort = direction === "SHORT";
+  const dirLine = isShort
+    ? "📍 Direction: SHORT setup (futures) — strength is fading; short into the entry zone above, targets below."
+    : "📍 Direction: LONG setup (futures) — momentum + structure favor upside; levels below define the accumulation zone.";
 
   // 1. Hook (rotating, metric-driven)
   lines.push(brief.hookLine ?? brief.text.split("\n")[0]);
@@ -465,11 +478,16 @@ function buildViralTemplate(brief: SquareContentBrief): string {
     if (leaderTps && leaderTps.length > 0) {
       const tpStr = leaderTps
         .slice(0, 2)
-        .map((tp) => `${fmtPrice(tp.level)}${m.tp1GainPct && tp === leaderTps[0] ? ` (+${m.tp1GainPct.toFixed(0)}%)` : ""}`)
+        .map((tp) => {
+          // SQ-DIR: % is the price move to the level — down for a short's targets.
+          const sign = isShort ? "-" : "+";
+          const pct = m.tp1GainPct != null && tp === leaderTps[0] ? ` (${sign}${m.tp1GainPct.toFixed(0)}%)` : "";
+          return `${fmtPrice(tp.level)}${pct}`;
+        })
         .join(" → ");
       lines.push(`Targets: ${tpStr}`);
     }
-    lines.push(`Stop: ${fmtPrice(leaderSl.level)}${m.slRiskPct != null ? ` (-${m.slRiskPct.toFixed(0)}%)` : ""}`);
+    lines.push(`Stop: ${fmtPrice(leaderSl.level)}${m.slRiskPct != null ? ` (${isShort ? "+" : "-"}${m.slRiskPct.toFixed(0)}%)` : ""}`);
     if (m.riskRewardRatio != null) {
       lines.push(`Risk/reward: ${m.riskRewardRatio.toFixed(1)} : 1`);
     }
@@ -480,17 +498,21 @@ function buildViralTemplate(brief: SquareContentBrief): string {
     lines.push("");
   }
 
-  // 3. Data reads — each metric gets one dense line with a number
+  // 3. Data reads — each metric gets one dense line with a number.
+  // SQ-DIR: interpretations flip with the direction — a 100/100 trend under a
+  // SHORT call reads as fading extension, not "structural uptrend intact".
   if (m) {
     lines.push("What the data says:");
     if (m.trendScore >= 65) {
       const emaNote =
-        m.priceVsEma20Pct != null && m.priceVsEma20Pct >= 0
-          ? " — above EMA20"
-          : m.priceVsEma20Pct != null
-            ? " — below EMA20"
-            : "";
-      lines.push(`• Trend ${m.trendScore}/100${emaNote}`);
+        m.priceVsEma20Pct == null
+          ? ""
+          : m.priceVsEma20Pct >= 0
+            ? " — above EMA20"
+            : " — below EMA20";
+      lines.push(
+        `• Trend ${m.trendScore}/100${emaNote}${isShort ? " — extended, strength fading" : emaNote ? " — structure intact" : ""}`
+      );
     }
     if (m.rsi14 != null) {
       const rsiRead =
@@ -498,17 +520,25 @@ function buildViralTemplate(brief: SquareContentBrief): string {
           ? "overbought territory"
           : m.rsi14 <= 30
             ? "oversold territory"
-            : "momentum building, not extreme";
+            : isShort
+              ? "no washout yet — room to fade"
+              : "momentum building, not extreme";
       lines.push(`• RSI ${m.rsi14.toFixed(0)} — ${rsiRead}`);
     }
     if (m.fundingRate != null) {
       const fr = m.fundingRate;
       const frRead =
         fr > 0.01
-          ? "longs crowded"
+          ? isShort
+            ? "longs crowded — fuel for the fade"
+            : "longs crowded"
           : fr > 0
-            ? "longs confident, not crowded"
-            : "shorts paying — contrarian long signal";
+            ? isShort
+              ? "longs confident — crowded side"
+              : "longs confident, not crowded"
+            : isShort
+              ? "shorts paying — thin, late shorting"
+              : "shorts paying — contrarian long signal";
       lines.push(`• Funding ${fr >= 0 ? "+" : ""}${(fr * 100).toFixed(3)}% — ${frRead}`);
     }
     if (m.volume24h != null && m.volume24h > 0) {
@@ -522,9 +552,13 @@ function buildViralTemplate(brief: SquareContentBrief): string {
     }
 
     // 4. Breadth (narrative rotation story)
-    if (m.coinsTotal > 0 && m.coinsUp > 0) {
+    if (m.coinsTotal > 0) {
       lines.push(
-        `• Breadth: ${m.coinsUp} of ${m.coinsTotal} coins moving up together — rotation, not a single-coin pump`
+        isShort
+          ? `• Breadth: only ${m.coinsUp} of ${m.coinsTotal} coins improving — rotation stalling`
+          : m.coinsUp > 0
+            ? `• Breadth: ${m.coinsUp} of ${m.coinsTotal} coins moving up together — rotation, not a single-coin pump`
+            : `• Breadth: 0 of ${m.coinsTotal} coins improving`
       );
     }
     lines.push("");

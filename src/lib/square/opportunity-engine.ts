@@ -20,6 +20,9 @@ import { eq, and, desc, sql, gte } from "drizzle-orm";
 // ─── Types ─────────────────────────────────────────────
 
 export type OpportunityType = "COIN_SETUP" | "NARRATIVE_SETUP" | "WATCH";
+
+/** SQ-DIR: derived trade direction for setup framing ("LONG" | "SHORT"). */
+export type SetupDirection = "LONG" | "SHORT";
 export type DataQuality = "HIGH" | "MEDIUM" | "LOW";
 export type OpportunityStatus =
   | "CANDIDATE"
@@ -59,6 +62,8 @@ export interface SquareOpportunity {
   leaderCoinEntry?: PriceZone;
   leaderCoinTakeProfits?: PriceTarget[];
   leaderCoinStopLoss?: PriceTarget;
+  /** SQ-DIR: direction the leader-coin setup geometry was built for. */
+  setupDirection?: SetupDirection;
   // SQ-VIRAL: rich market metrics for content generation (all optional —
   // absent when source data is missing; the content layer must null-check).
   metrics?: OpportunityMetrics;
@@ -465,16 +470,42 @@ function calculateNarrativeCoinSelectionScore(coin: CoinData): number {
 
 // ─── Entry/TP/SL Calculation ───────────────────────────
 
+/**
+ * SQ-DIR: setup geometry must match the trade direction. Health momentum is
+ * the direction signal (same one deriveDirection uses): rising health =
+ * accumulation thesis (LONG, levels above price), falling health = fading
+ * strength (SHORT on futures — entry band above price, targets BELOW it, stop
+ * above the band). Mirroring the ATR geometry keeps risk distances identical
+ * between the two directions, so R:R math stays apples-to-apples.
+ */
 function calculateSetupLevels(
   coin: CoinData
-): { entry: PriceZone; takeProfits: PriceTarget[]; stopLoss: PriceTarget } | null {
+): { entry: PriceZone; takeProfits: PriceTarget[]; stopLoss: PriceTarget; direction: SetupDirection } | null {
   if (coin.currentPrice <= 0 || coin.atr14 === null) return null;
 
   const price = coin.currentPrice;
   const atr = coin.atr14;
+  const direction: SetupDirection = coin.scoreChange !== null && coin.scoreChange < 0 ? "SHORT" : "LONG";
 
   const entryLow = Math.round((price - atr * 0.5) * 10000) / 10000;
   const entryHigh = Math.round((price + atr * 0.5) * 10000) / 10000;
+
+  if (direction === "SHORT") {
+    // Fade rally: short into the band above price, targets below it.
+    const tp1 = Math.round((entryLow - atr * 1.5) * 10000) / 10000;
+    const tp2 = Math.round((entryLow - atr * 3) * 10000) / 10000;
+    const sl = Math.round((entryHigh + atr * 1) * 10000) / 10000;
+    return {
+      entry: { low: entryLow, high: entryHigh },
+      takeProfits: [
+        { level: tp2, label: "TP1 (1.5 ATR)" },
+        { level: tp1, label: "TP2 (3 ATR)" },
+      ],
+      stopLoss: { level: sl, label: "SL (1 ATR)" },
+      direction,
+    };
+  }
+
   const tp1 = Math.round((entryHigh + atr * 1.5) * 10000) / 10000;
   const tp2 = Math.round((entryHigh + atr * 3) * 10000) / 10000;
   const sl = Math.round((entryLow - atr * 1) * 10000) / 10000;
@@ -495,6 +526,7 @@ function calculateSetupLevels(
       ...emaTargets,
     ].sort((a, b) => a.level - b.level),
     stopLoss: { level: sl, label: "SL (1 ATR)" },
+    direction,
   };
 }
 
@@ -621,10 +653,18 @@ function generateWhyNowForNarrative(
 function generateCoinInvalidation(params: {
   currentPrice: number;
   atr14: number | null;
+  direction: SetupDirection;
 }): string | null {
   if (params.atr14 === null || params.currentPrice <= 0) return null;
-  const sl = Math.round((params.currentPrice - params.atr14 * 0.5 - params.atr14 * 1) * 10000) / 10000;
-  return `Setup invalidates if price breaks below ${sl.toFixed(4)} with sustained weakness.`;
+  const offset = params.atr14 * 1.5;
+  const level = Math.round(
+    (params.direction === "SHORT"
+      ? params.currentPrice + offset
+      : params.currentPrice - offset) * 10000
+  ) / 10000;
+  return params.direction === "SHORT"
+    ? `Setup invalidates if price breaks above ${level.toFixed(4)} with sustained strength.`
+    : `Setup invalidates if price breaks below ${level.toFixed(4)} with sustained weakness.`;
 }
 
 function generateNarrativeCoinRationale(coin: CoinData): string {
@@ -711,9 +751,9 @@ function buildOpportunityMetrics(
     const entryMid = (setup.entry.low + setup.entry.high) / 2;
     const tp1 = setup.takeProfits[0]?.level;
     const sl = setup.stopLoss.level;
-    if (tp1 && sl && entryMid > 0 && entryMid > sl) {
-      const reward = tp1 - entryMid;
-      const risk = entryMid - sl;
+    if (tp1 && sl && entryMid > 0) {
+      const reward = setup.direction === "SHORT" ? entryMid - tp1 : tp1 - entryMid;
+      const risk = setup.direction === "SHORT" ? sl - entryMid : entryMid - sl;
       if (risk > 0) {
         riskRewardRatio = Math.round((reward / risk) * 10) / 10;
         tp1GainPct = Math.round((reward / entryMid) * 1000) / 10;
@@ -772,6 +812,7 @@ function extractCoinOpportunities(
         entry: setup?.entry,
         takeProfits: setup?.takeProfits,
         stopLoss: setup?.stopLoss,
+        setupDirection: setup?.direction,
         metrics,
         status: "CANDIDATE" as OpportunityStatus,
       };
@@ -889,6 +930,7 @@ function extractNarrativeOpportunities(
         leaderCoinEntry: metricsSetup?.entry,
         leaderCoinTakeProfits: metricsSetup?.takeProfits,
         leaderCoinStopLoss: metricsSetup?.stopLoss,
+        setupDirection: metricsSetup?.direction,
         metrics,
         status: "CANDIDATE" as OpportunityStatus,
       };
@@ -956,17 +998,13 @@ export async function evaluateOpportunities(
 // ─── SQ-VIRAL: Visual + Hook Helpers ──────────────────
 
 /**
- * SQ-DIR: derive the trade DIRECTION from setup geometry — not from the
- * health-score momentum. Levels are built ATR-symmetric around the current
- * price, so the geometry itself is always LONG-shaped; the real direction
- * signal is the score momentum: rising health = accumulation thesis (LONG),
- * falling health = fading strength (SHORT on futures) with mirrored framing.
- * Never use the banned standalone words here — this feeds UI labels and the
- * validator's allowed-vocabulary.
+ * SQ-DIR: derive the trade DIRECTION for an opportunity. Levels are now built
+ * direction-aware (calculateSetupLevels mirrors the geometry for SHORT), so
+ * this must agree with the geometry: falling health momentum = SHORT, else
+ * LONG. Used for content framing, the Direction line, and validator repair.
  */
-export type SetupDirection = "LONG" | "SHORT";
-
 export function deriveDirection(opportunity: SquareOpportunity): SetupDirection {
+  if (opportunity.setupDirection) return opportunity.setupDirection;
   const isDown = opportunity.rationale.some((r) => r.includes("declin"));
   return isDown ? "SHORT" : "LONG";
 }
@@ -974,19 +1012,30 @@ export function deriveDirection(opportunity: SquareOpportunity): SetupDirection 
 /**
  * Deterministic ASCII price map for text-only posts. Monospace-rendered by
  * Binance Square; gives the visual anchor of a chart without image upload.
+ * SQ-DIR: rendered in true top-to-bottom price order — LONG puts SL on top and
+ * targets below; SHORT puts SL above the entry band with targets underneath.
  */
 function buildAsciiPriceMap(
   entry: PriceZone,
   takeProfits: PriceTarget[],
-  stopLoss: PriceTarget
+  stopLoss: PriceTarget,
+  direction: SetupDirection = "LONG"
 ): string {
   const fmt = (n: number) => (n >= 100 ? n.toFixed(0) : n >= 1 ? n.toFixed(4) : n.toFixed(6));
+  const tpLabel = (tp: PriceTarget) => tp.label ? tp.label.split(" ")[0] : "TP";
+  if (direction === "SHORT") {
+    const [nearest, next] = [...takeProfits].sort((a, b) => b.level - a.level);
+    const parts = [`SL ${fmt(stopLoss.level)}`];
+    parts.push(`▓ SHORT ${fmt(entry.low)}–${fmt(entry.high)} ▓`);
+    if (next) parts.push(`→ ${tpLabel(next)} ${fmt(next.level)}`);
+    if (nearest) parts.push(`→ ${tpLabel(nearest)} ${fmt(nearest.level)}`);
+    return parts.join("  ━  ");
+  }
   const parts: string[] = [];
   parts.push(`SL ${fmt(stopLoss.level)}`);
   parts.push(`▓ ENTRY ${fmt(entry.low)}–${fmt(entry.high)} ▓`);
   for (const tp of takeProfits.slice(0, 2)) {
-    const label = tp.label ? tp.label.split(" ")[0] : "TP";
-    parts.push(`→ ${label} ${fmt(tp.level)}`);
+    parts.push(`→ ${tpLabel(tp)} ${fmt(tp.level)}`);
   }
   return parts.join("  ━  ");
 }
@@ -1210,6 +1259,7 @@ export function buildContentBrief(
       ? generateCoinInvalidation({
           currentPrice: opportunity.entry ? (opportunity.entry.low + opportunity.entry.high) / 2 : 0,
           atr14: opportunity.stopLoss ? Math.abs((opportunity.entry!.low + opportunity.entry!.high) / 2 - opportunity.stopLoss.level) / 1.5 : null,
+          direction: deriveDirection(opportunity),
         })
       : null);
 
@@ -1230,6 +1280,8 @@ export function buildContentBrief(
     : validatedChartCoin
       ? [`$${validatedChartCoin}`]
       : [];
+
+  const direction = deriveDirection(opportunity);
 
   const entryZone = opportunity.entry ?? opportunity.leaderCoinEntry;
   const tps = opportunity.takeProfits ?? opportunity.leaderCoinTakeProfits;
@@ -1254,9 +1306,9 @@ export function buildContentBrief(
     leaderCoinTakeProfits: opportunity.leaderCoinTakeProfits,
     leaderCoinStopLoss: opportunity.leaderCoinStopLoss,
     metrics: opportunity.metrics,
-    priceMap: entryZone && sl ? buildAsciiPriceMap(entryZone, tps ?? [], sl) : undefined,
+    priceMap: entryZone && sl ? buildAsciiPriceMap(entryZone, tps ?? [], sl, direction) : undefined,
     hookLine: buildHookLine(opportunity),
-    direction: deriveDirection(opportunity),
+    direction,
     chartCta: validatedChartCoin ? buildChartCta(validatedChartCoin) : undefined,
   };
 }

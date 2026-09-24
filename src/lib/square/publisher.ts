@@ -269,12 +269,18 @@ export async function recordFingerprint(
   const now = new Date();
   const expiresAt = new Date(now.getTime() + FINGERPRINT_TTL_HOURS * 60 * 60 * 1000);
 
+  // SQ-DIAG: fingerprint has a DB-level UNIQUE constraint but TTL-based dedup
+  // checks expiry separately. An EXPIRED row still occupies the unique slot,
+  // so re-inserting the same (deterministic) fingerprint after expiry threw a
+  // unique violation AFTER the post had already been published — surfacing as
+  // "Content generation failed" in pipeline logs. Conflict = fingerprint
+  // already known: exactly what we want, so ignore instead of throwing.
   await db.insert(squareFingerprints).values({
     fingerprint,
     opportunityId,
     publishedAt: now,
     expiresAt,
-  });
+  }).onConflictDoNothing({ target: squareFingerprints.fingerprint });
 }
 
 export async function recordThesisFingerprint(
@@ -284,12 +290,15 @@ export async function recordThesisFingerprint(
   const now = new Date();
   const expiresAt = new Date(now.getTime() + THESIS_FINGERPRINT_TTL_HOURS * 60 * 60 * 1000);
 
+  // SQ-DIAG: same unique-vs-TTL mismatch as recordFingerprint — identical
+  // thesis (same coin/signal/levels) hashes identically and hits the UNIQUE
+  // constraint once the previous row has expired. Ignore conflicts.
   await db.insert(squareFingerprints).values({
     fingerprint,
     opportunityId,
     publishedAt: now,
     expiresAt,
-  });
+  }).onConflictDoNothing({ target: squareFingerprints.fingerprint });
 }
 
 // ─── Content Posting ───────────────────────────────────
@@ -616,26 +625,34 @@ export async function publishContent(
     externalPostId = result.id;
   }
 
-  // 10. If successful, record deduplication and quota
+  // 10. If successful, record deduplication and quota. Housekeeping is
+  // non-fatal: the post IS live on Binance at this point — a fingerprint/quota
+  // hiccup must never turn this into a pipeline failure (SQ-DIAG regression).
   if (result.success || (result.isTimeout && result.id)) {
-    const fingerprint = generateFingerprint(
-      "TEXT",
-      opportunityId,
-      null,
-      null,
-      null,
-      new Date().toISOString().split("T")[0]
-    );
-    await recordFingerprint(fingerprint, opportunityId);
-    if (thesisFingerprint) {
-      await recordThesisFingerprint(thesisFingerprint, opportunityId);
-    }
-    await incrementQuota();
+    try {
+      const fingerprint = generateFingerprint(
+        "TEXT",
+        opportunityId,
+        null,
+        null,
+        null,
+        new Date().toISOString().split("T")[0]
+      );
+      await recordFingerprint(fingerprint, opportunityId);
+      if (thesisFingerprint) {
+        await recordThesisFingerprint(thesisFingerprint, opportunityId);
+      }
+      await incrementQuota();
 
-    await db
-      .update(squareOpportunities)
-      .set({ status: "PUBLISHED" })
-      .where(eq(squareOpportunities.id, opportunityId));
+      await db
+        .update(squareOpportunities)
+        .set({ status: "PUBLISHED" })
+        .where(eq(squareOpportunities.id, opportunityId));
+    } catch (err) {
+      console.warn(
+        `[SQ-PUBLISHER] Post-published housekeeping failed (post is still live): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   // 11. Log publication result for observability

@@ -1,5 +1,82 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
+## Ngày cập nhật: 2026-09-24
+
+---
+
+## SQ-DIR-09-2026 — Fix hướng lệnh & level SHORT, giải thích lỗi tiếng Việt, deploy VPS domain (2026-09-24)
+
+### 1. Fix mâu thuẫn Direction vs Level geometry (lỗi PENDLE trên Square) ⚠️ quan trọng nhất
+
+- **Hiện tượng**: Bài PENDLE đăng trên Square ghi `Direction: SHORT (futures)` nhưng level lại dạng LONG — Entry 2.3846–2.6064 quanh giá 2.4955, Targets 2.9392/3.2721 **phía trên giá** (+18%), Stop 2.1627 phía dưới; kèm dữ liệu đọc sai hướng ("Trend 100/100 — structural uptrend intact" dưới lệnh SHORT).
+- **Nguyên nhân gốc**: `calculateSetupLevels()` trong `src/lib/square/opportunity-engine.ts` luôn xây level ATR-symmetric **dạng LONG vô điều kiện** (entry quanh giá ± 0.5·ATR, TP trên entryHigh, SL dưới entryLow). `deriveDirection()` chỉ đổi *nhãn* SHORT, không đổi *hình học*. LLM nhận FACTS dạng LONG rồi copy vào bài. Template data-reads cũng "mù hướng".
+- **Fix — soi gương hình học theo hướng (direction-aware mirroring)**:
+  - `calculateSetupLevels()`: suy hướng từ `coin.scoreChange < 0` (cùng tín hiệu với `deriveDirection`). Khi **SHORT**: entry band giữ nguyên (vùng bán rally phía trên giá), **TP1 = entryLow − 1.5·ATR, TP2 = entryLow − 3·ATR (dưới giá), SL = entryHigh + 1·ATR (trên band)**. Trả thêm `direction` trong kết quả.
+  - `SquareOpportunity` thêm `setupDirection`; `deriveDirection()` ưu tiên giá trị này → nhãn và hình học luôn khớp nhau.
+  - `buildOpportunityMetrics()`: R:R tính đúng chiều với SHORT (reward = entryMid − TP1, risk = SL − entryMid) → `riskRewardRatio`, `tp1GainPct`, `slRiskPct` đúng dấu.
+  - `generateCoinInvalidation()`: nhận `direction` — SHORT → "breaks **above**", LONG → "breaks **below**".
+  - `buildAsciiPriceMap()`: vẽ đúng thứ tự giá thật khi SHORT — SL trên cùng → `▓ SHORT entry ▓` → TP2 → TP1 (gần nhất cuối cùng).
+- **Content layer** (`src/lib/square/content-generator.ts`):
+  - LLM prompt (DIRECTION + FACTS): giải thích rõ level đã mirror — entry nằm **trên** giá, target **dưới** giá, stop trên band; cấm gọi target là "gains"/"bounce".
+  - FACTS R:R theo hướng: SHORT → "TP1 move -X% (short target), stop move +Y%" (dấu theo **di chuyển giá**, không phải P&L).
+  - Template viral: `Targets: 2.0519 (-18%) → 1.7192`, `Stop: 2.8282 (+13%)` với SHORT; dirLine SHORT → "short into the entry zone above, targets below".
+  - Data reads đảo diễn giải khi SHORT: Trend cao → "extended, strength fading" (không còn "structural uptrend intact"); RSI trung tính → "no washout yet — room to fade"; funding âm → "shorts paying — thin, late shorting"; breadth → "only X of Y coins improving — rotation stalling".
+- **Kết quả verify** (script tái lập đúng case PENDLE — giá 2.4955, ATR 0.2218, scoreChange −4.1):
+  - Template: `Targets: 2.0519 (-18%) → 1.7192`, `Stop: 2.8282 (+13%)`, price map `SL 2.8282 ━ ▓ SHORT 2.3846–2.6064 ▓ ━ → TP2 1.7192 ━ → TP1 2.0519` ✅
+  - LLM thật (Groq): Direction SHORT nhất quán, `Invalidate if: price closes above 2.8282`, 5/5 consistency checks pass (không còn "structural uptrend intact", target không còn "+18%" hướng lên).
+
+### 2. Fix lỗi "Content generation failed … square_fingerprints" (duplicate key) — publisher
+
+- **Nguyên nhân**: fingerprint có UNIQUE constraint nhưng TTL dedup kiểm tra riêng → dòng fingerprint **đã hết hạn** vẫn chiếm slot UNIQUE. Luận điểm giống cũ tái xuất hiện (ví dụ ETHFI) → insert bị từ chối **sau khi bài đã đăng thành công**.
+- **Fix** (`src/lib/square/publisher.ts`): `recordFingerprint()` + `recordThesisFingerprint()` dùng `.onConflictDoNothing({ target: squareFingerprints.fingerprint })` — xung đột = đã biết, bỏ qua thay vì throw. Post-publish housekeeping (fingerprints/quota/opportunity status) bọc try/catch non-fatal.
+- *(Đã sửa từ phiên bản trước, chính thức commit trong batch này.)*
+
+### 3. Dashboard Square Analytics — giải thích lỗi bằng tiếng Việt (SQ-UX)
+
+- **Vấn đề**: Pipeline log lỗi thô ("Failed query: insert into "square_fingerprints" … duplicate key …") — không thể hành động.
+- **Module mới** `src/lib/square/error-explainer.ts`:
+  - `explainPipelineError(raw)` → `{ summary, action }` tiếng Việt cho ~15 loại lỗi: mã Binance (220003/220004/220009/220014/20002/20022/20013/20020/220011/30008/2000001/2000002), `QUOTA_EXCEEDED`, `ALREADY_PUBLISHED`, duplicate key (fingerprint/publications), network (ECONNREFUSED/ETIMEDOUT…), 429 rate limit, timeout, generic Failed query, thiếu LLM key, fail validation.
+  - Fallback "lỗi chưa phân loại" — không bỏ sót; bỏ label "Content generation failed for opportunity N:" trước khi phân loại.
+  - `describeFailureCategory()` → nhãn tiếng Việt cho PERMANENT/TRANSIENT/TIMEOUT/UNKNOWN.
+- **Tích hợp** (`analytics.ts` + `square-analytics/page.tsx`):
+  - **Pipeline Execution History**: mỗi dòng lỗi hiển thị bản dịch tiếng Việt (cam) — summary + hành động — đứng trên text kỹ thuật gốc (thu nhỏ, giữ nguyên tooltip).
+  - **Publication History**: bài FAILED hiện nhãn tiếng Việt thay vì `PERMANENT · 220009` (gốc nằm trong tooltip).
+  - Ví dụ lỗi 767 của user giờ hiển thị: *"Xung đột 'dấu vân tay' chống trùng lặp: bài đăng thành công nhưng không ghi được dấu vân tay vào database vì một bài cũ (đã hết hạn) vẫn chiếm chỗ." → "Không ảnh hưởng việc chống trùng bài — đã được sửa trong code hiện tại."*
+
+### 4. Deploy VPS với domain coins.run.place (runbook + script)
+
+- **Bối cảnh**: domain đã trỏ A record `coins.run.place` → `168.138.179.192` (Oracle Cloud), www CNAME; app chạy pm2 cổng 3000. Cần Nginx + HTTPS.
+- **Script mới** `scripts/deploy/setup-vps-domain.sh` (idempotent, chạy 1 lần trên VPS): cài nginx/certbot/iptables-persistent → tạo site reverse-proxy 80/443 → 127.0.0.1:3000 (đủ WebSocket/forward headers) → mở cổng 80/443 trong iptables máy → cấp Let's Encrypt + redirect HTTPS. Syntax-checked.
+- **Runbook mới** `docs/deploy-vps-domain.md`: kiến trúc, hướng dẫn từng bước, cảnh báo **2 lớp firewall Oracle** (bắt buộc mở Ingress Rule 80/443 trên Security List — script không làm thay được), checklist pm2 production (fork mode — **cấm cluster mode** vì scheduler Square chạy trong tiến trình app, sẽ đăng bài trùng; `pm2 save` + `pm2 startup` cho reboot), bảng troubleshooting (timeout ngoài = thiếu Ingress Rule; 502 = app chết; certbot fail = DNS TTL 8h).
+
+### Files changed (SQ-DIR-09-2026)
+
+```
+src/lib/square/opportunity-engine.ts          — mirror level SHORT, setupDirection, R:R/invalidation/priceMap theo hướng
+src/lib/square/content-generator.ts           — prompt/template/data-reads theo hướng (SHORT-aware)
+src/lib/square/publisher.ts                   — fingerprint onConflictDoNothing + housekeeping non-fatal
+src/lib/square/analytics.ts                   — errorExplanation + failureCategoryLabel
+src/lib/square/error-explainer.ts             — MỚI: lớp giải thích lỗi tiếng Việt
+src/app/square-analytics/page.tsx             — UI hiển thị giải thích tiếng Việt
+scripts/deploy/setup-vps-domain.sh            — MỚI: nginx + TLS + iptables 1 lần
+scripts/test-short-mirror.ts                  — MỚI: verify mirror đúng case PENDLE
+scripts/test-error-explainer.ts               — MỚI: 10 case giải thích lỗi
+docs/deploy-vps-domain.md                     — MỚI: runbook VPS/domain/pm2
+```
+
+### Verification (SQ-DIR-09-2026)
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `bun run typecheck` (tsc --noEmit) | ✅ Sạch |
+| Jest `src/lib/square` | ✅ 134/134 PASS (6 suites) |
+| `scripts/test-short-mirror.ts` (case PENDLE, LLM thật) | ✅ 5/5 consistency checks, R:R 1.3:1 giữ nguyên |
+| `scripts/test-error-explainer.ts` | ✅ 10/10 case đúng |
+| `bash -n setup-vps-domain.sh` | ✅ Syntax OK |
+| LLM chain | ✅ primary (Groq) hoạt động, repair loop 1 lần ra bài hợp lệ |
+
+---
+
 ## Ngày cập nhật: 2026-09-19
 
 ---

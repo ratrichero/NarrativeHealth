@@ -11,6 +11,7 @@ import {
   narratives,
 } from "@/db/schema";
 import { eq, and, gte, desc, sql, count } from "drizzle-orm";
+import { explainPipelineError, describeFailureCategory } from "./error-explainer";
 
 /**
  * Format the jsonb `error_summary` column ({ errors: string[], error_count })
@@ -156,6 +157,8 @@ export interface ExecutionRecord {
   quotaBlocked: number;
   durationMs: number | null;
   errorSummary: string | null;
+  /** SQ-UX: plain-Vietnamese explanation of the first error in the summary. */
+  errorExplanation?: { summary: string; action: string } | null;
   status: string;
 }
 
@@ -173,6 +176,8 @@ export interface PublicationRecord {
   externalPostId: string | null;
   chartSymbol: string | null;
   failureCategory: string | null;
+  /** SQ-UX: Vietnamese label for failureCategory, when translatable. */
+  failureCategoryLabel?: string | null;
   errorCode: string | null;
   retryCount: number;
   publishedAt: string | null;
@@ -568,6 +573,8 @@ export async function getExecutionHistory(range: TimeRange, limit = 20): Promise
     quotaBlocked: r.quotaBlocked,
     durationMs: r.durationMs,
     errorSummary: formatErrorSummary(r.errorSummary),
+    // SQ-UX: plain-Vietnamese explanation rendered alongside the raw text.
+    errorExplanation: explainPipelineError(formatErrorSummary(r.errorSummary)),
     status: r.failed > 0 ? (r.published > 0 ? "PARTIAL" : "FAILED") : r.published > 0 ? "SUCCESS" : "SUCCESS",
   }));
 }
@@ -619,6 +626,8 @@ export async function getRecentPublications(range: TimeRange, limit = 20): Promi
     chartSymbol: r.chartSymbol,
     failureCategory: r.failureCategory,
     errorCode: r.errorCode ?? null,
+    // SQ-UX: Vietnamese label for the failure category.
+    failureCategoryLabel: describeFailureCategory(r.failureCategory),
     retryCount: r.retryCount ?? 0,
     publishedAt: r.publishedAt instanceof Date ? r.publishedAt.toISOString() : r.publishedAt ? String(r.publishedAt) : null,
     textPreview: r.textPreview ?? null,

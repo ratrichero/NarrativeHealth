@@ -115,6 +115,7 @@ interface ExecItem {
   durationMs: number | null;
   status: string;
   errorSummary?: string | null;
+  errorExplanation?: { summary: string; action: string } | null;
 }
 
 interface PubRecord {
@@ -129,6 +130,7 @@ interface PubRecord {
   llmProvider?: string | null;
   externalPostId: string | null;
   failureCategory?: string | null;
+  failureCategoryLabel?: string | null;
   errorCode?: string | null;
   retryCount?: number;
   publishedAt?: string | null;
@@ -408,8 +410,8 @@ function PublicationHistory({
                         </div>
                       )}
                       {pub.status === "FAILED" && pub.failureCategory && (
-                        <div className="text-xs text-red-500/80 mt-0.5">
-                          {pub.failureCategory}{pub.errorCode ? ` · ${pub.errorCode}` : ""}
+                        <div className="text-xs text-red-500/80 mt-0.5" title={`${pub.failureCategory}${pub.errorCode ? ` · ${pub.errorCode}` : ""}`}>
+                          {pub.failureCategoryLabel ?? pub.failureCategory}{pub.errorCode ? ` · mã ${pub.errorCode}` : ""}
                         </div>
                       )}
                     </td>
@@ -874,7 +876,15 @@ export default function SquareAnalyticsPage() {
                         {new Date(ex.startedAt).toLocaleString()}
                         {ex.errorSummary && (
                           <div className="mt-1 max-w-md text-red-400/80 text-[11px] normal-case whitespace-normal break-words" title={ex.errorSummary}>
-                            {ex.errorSummary}
+                            {ex.errorExplanation && (
+                              <div className="mb-0.5 text-[11px] text-orange-300/90">
+                                {ex.errorExplanation.summary}
+                                {ex.errorExplanation.action && (
+                                  <div className="text-slate-400/80">→ {ex.errorExplanation.action}</div>
+                                )}
+                              </div>
+                            )}
+                            <span className="font-mono text-[10px] text-red-400/60">{ex.errorSummary}</span>
                           </div>
                         )}
                       </td>
