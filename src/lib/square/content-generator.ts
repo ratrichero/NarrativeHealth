@@ -261,7 +261,13 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   const m = brief.metrics;
 
   lines.push("You write high-engagement crypto analysis posts for Binance Square.");
-  lines.push("Your posts read like a sharp trader sharing real data — dense with numbers, no fluff, no hype words like 'MOON' or 'ROCKET'.");
+  lines.push("Your voice: a friendly, experienced financial analyst sharing a data-backed read with the community — confident and conversational, never robotic, never hype-y. Dense with numbers, no fluff, no hype words like 'MOON' or 'ROCKET'.");
+  lines.push("");
+  lines.push("AUDIENCE & LANGUAGE RULES:");
+  lines.push("- Readers know markets and charts, but they do NOT know our internal scoring system.");
+  lines.push("- NEVER mention 'points', 'scores', 'health engine', 'narrative health', 'our engine', 'our system', or any internal metric names. Readers have no idea how we calculate anything — those numbers are meaningless to them.");
+  lines.push("- Instead, translate the underlying data into market terms everyone understands: trend vs moving averages, momentum (RSI), funding rates, volume vs average, breadth (how many coins move together).");
+  lines.push("- Every claim must still trace to the FACTS below — translation of wording, never invention of data.");
   lines.push("");
   lines.push("DIRECTION (state it unambiguously near the top):");
   if (brief.direction === "SHORT") {
@@ -272,7 +278,7 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   lines.push("- Open the setup section with the exact phrase 'Direction: ' followed by LONG or SHORT plus a one-clause reason.");
   lines.push("");
   lines.push("STRUCTURE (follow exactly):");
-  lines.push("1. HOOK (1-2 lines): an interesting data event. Open with the number, not a label.");
+  lines.push("1. HOOK (1-2 lines): an interesting market observation in plain trader language — what trend, momentum, volume or breadth is doing. No internal scores or points.");
   lines.push("2. DIRECTION: one line starting with 'Direction: ' — LONG or SHORT, then the why.");
   lines.push("3. PRICE & SETUP: current price, entry zone, targets (+% gain), stop (-% risk), risk/reward ratio.");
   lines.push("4. DATA READS (bullets): one dense line per signal — trend score, RSI with interpretation, funding rate with interpretation, 24h volume, narrative breadth (X of Y coins up). Every line has a number.");
@@ -290,7 +296,7 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   lines.push("");
   lines.push("EXAMPLE (style reference — do not copy content):");
   lines.push("---");
-  lines.push("$PENDLE just jumped +13.5 points on our narrative health engine — one of the biggest moves across 8 tracked narratives today.");
+  lines.push("$PENDLE is catching attention today — trend, momentum and volume are lining up in its favor, and breadth confirms it: 6 of 8 coins in the group moving together.");
   lines.push("");
   lines.push("Price: $2.28");
   lines.push("Entry: 2.1962 – 2.3736");
@@ -299,7 +305,7 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   lines.push("Risk/reward: 2.4 : 1");
   lines.push("");
   lines.push("What the data says:");
-  lines.push("• Trend 72/100 — price above EMA20");
+  lines.push("• Trend: price holding above EMA20");
   lines.push("• RSI 58 — momentum building, not extreme");
   lines.push("• Funding +0.008% — longs confident, not crowded");
   lines.push("• Breadth: 6 of 8 coins moving up together — rotation, not a single-coin pump");
@@ -331,7 +337,10 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
     if (m.rsi14 != null) lines.push(`RSI14: ${m.rsi14.toFixed(1)}`);
     if (m.fundingRate != null) lines.push(`Funding rate: ${m.fundingRate >= 0 ? "+" : ""}${(m.fundingRate * 100).toFixed(3)}%`);
     if (m.openInterest != null) lines.push(`Open interest: ${m.openInterest.toExponential(2)}`);
-    lines.push(`Score breakdown: trend ${m.trendScore}/100, derivative ${m.derivativeScore}/100, volume ${m.volumeScore}/100, momentum ${m.momentumScore}/100`);
+    // SQ-FRIENDLY: no internal score breakdown in FACTS — the LLM copies what
+    // it is given, and readers cannot interpret our 0-100 component scores.
+    // Market-facing inputs (EMA distance, RSI, funding, OI, breadth) already
+    // cover the same information in universally understood terms.
     if (m.coinsTotal > 0) lines.push(`Narrative breadth: ${m.coinsUp} of ${m.coinsTotal} coins improving`);
     // SQ-DIR: signs follow the PRICE move, not P&L — for a short, price falls
     // to TP (-%) and rises into the stop (+%). Keeps the LLM from framing a
@@ -411,6 +420,13 @@ function validateLLMOutput(text: string, brief: SquareContentBrief): string | nu
   // every direction-explicit post into the repair loop or the template.
   const forbidden = /\b(BUY|SELL|ORDER|EXECUTE)\b/;
   if (forbidden.test(upper)) return null;
+
+  // SQ-FRIENDLY: the post must never expose internal scoring jargon — readers
+  // have no idea how our engine scores anything, so "points"/"health engine"
+  // language reads as meaningless system-speak. Reject and let the template
+  // (which never uses it) take over.
+  const internalJargon = /\b(HEALTH ENGINE|NARRATIVE HEALTH ENGINE|POINTS)\b|\b\d+(\.\d+)?\s+POINTS\b/i;
+  if (internalJargon.test(text)) return null;
 
   if (brief.cashtags.length > 0) {
     for (const tag of brief.cashtags) {
@@ -506,12 +522,12 @@ function buildViralTemplate(brief: SquareContentBrief): string {
     if (m.trendScore >= 65) {
       const emaNote =
         m.priceVsEma20Pct == null
-          ? ""
+          ? " — trend reading unavailable"
           : m.priceVsEma20Pct >= 0
-            ? " — above EMA20"
-            : " — below EMA20";
+            ? " — price holding above EMA20"
+            : " — price below EMA20";
       lines.push(
-        `• Trend ${m.trendScore}/100${emaNote}${isShort ? " — extended, strength fading" : emaNote ? " — structure intact" : ""}`
+        `• Trend${emaNote}${isShort ? " — extended, strength fading" : ""}`
       );
     }
     if (m.rsi14 != null) {

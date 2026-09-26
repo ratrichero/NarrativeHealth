@@ -603,9 +603,9 @@ function generateWhyNowForCoin(coin: {
 
   if (coin.scoreChange !== null && Math.abs(coin.scoreChange) >= 3) {
     if (coin.scoreChange > 0) {
-      facts.push(`Health improved by ${coin.scoreChange.toFixed(1)} points in the latest refresh.`);
+      facts.push(`Health improved in the latest refresh — buyers stepping in across trend and volume.`);
     } else {
-      facts.push(`Health declined by ${Math.abs(coin.scoreChange).toFixed(1)} points in the latest refresh.`);
+      facts.push(`Health declined in the latest refresh — trend and volume softening together.`);
     }
   }
 
@@ -630,9 +630,9 @@ function generateWhyNowForNarrative(
 
   if (narrative.scoreChange !== null && Math.abs(narrative.scoreChange) >= 3) {
     if (narrative.scoreChange > 0) {
-      facts.push(`Narrative health improved by ${narrative.scoreChange.toFixed(1)} points in the latest refresh.`);
+      facts.push(`Narrative strength is building — multiple coins in the group improving together in the latest refresh.`);
     } else {
-      facts.push(`Narrative health declined by ${Math.abs(narrative.scoreChange).toFixed(1)} points in the latest refresh.`);
+      facts.push(`Narrative strength is fading — coins in the group losing ground together in the latest refresh.`);
     }
   }
 
@@ -1040,25 +1040,32 @@ function buildAsciiPriceMap(
   return parts.join("  ━  ");
 }
 
+// SQ-FRIENDLY: hooks speak plain trader language, never system-internal jargon.
+// Readers on Binance Square have no idea what a "narrative health engine" is
+// or how it scores things — "+4.8 points" of an opaque score means nothing to
+// them. Hooks now translate the same data events into market terms (trend,
+// momentum, volume, breadth building in the coin's favor) and keep a friendly
+// expert tone: confident, analytical, conversational — like a sharp trader
+// friend sharing a read, not a dashboard reading out its own numbers.
 const HOOK_TEMPLATES_UP = [
-  "$SYM just jumped +PTS points on our narrative health engine — one of the strongest signals across tracked narratives today.",
-  "Momentum shift: $SYM moved +PTS points as market data stacks up in its favor.",
-  "$SYM is quietly building strength — health engine shows +PTS points of improvement.",
-  "Most traders watch price. Our data watched $SYM gain +PTS points of narrative health first.",
+  "$SYM is catching attention today — trend, momentum and volume are lining up in its favor. Here's the data-backed read.",
+  "Momentum shift: $SYM strength is building across the board — trend, volume and derivatives data all pointing the same way.",
+  "$SYM is quietly building strength — multiple data signals improving together, not just a one-off price pop.",
+  "Most traders watch price. The smarter tell: $SYM's underlying trend, volume and sentiment all improving at once.",
 ];
 
 // SQ-DIR: weakening health is a fading-strength (SHORT) signal, not a "keep
 // buying the dip" one. Framing stays analytical — levels already mirror the
 // bearish read, so the hook must not promise a bounce the thesis doesn't hold.
 const HOOK_TEMPLATES_DOWN = [
-  "$SYM dropped PTS points on our health engine — strength is fading, and the setup levels below mirror that bearish read.",
-  "Warning signs: $SYM lost PTS points of narrative health. The structure favors the downside case — details below.",
-  "$SYM's health score slid PTS points — sellers are pressing the advantage. The data says what to watch next.",
+  "$SYM strength is fading — trend and momentum data are losing ground, and the setup below reflects that bearish read.",
+  "Warning signs: $SYM's trend and momentum are cooling together. The structure favors the downside case — details below.",
+  "$SYM momentum is slipping — sellers pressing the advantage while breadth weakens. Here's what the data says to watch next.",
 ];
 
 const HOOK_TEMPLATES_STABLE = [
-  "$SYM is holding steady — but the underlying data tells a more interesting story.",
-  "Quiet on the surface: $SYM health engine update.",
+  "$SYM is holding steady — but the underlying trend and volume data tell a more interesting story.",
+  "Quiet on the surface: $SYM's trend and momentum are coiling — here's what the data suggests may come next.",
 ];
 
 /** Rotate hook deterministically per opportunity so posts never open alike. */
@@ -1179,11 +1186,10 @@ export function buildContentBrief(
     const narrativeScoreChange = narrativeChangeEntry?.match(/([\d.]+)/)?.[1];
     
     if (narrativeScoreChange) {
-      const change = parseFloat(narrativeScoreChange);
       if (isDeclining) {
-        whyNowFacts.push(`Narrative health declined by ${change.toFixed(1)} points in the latest refresh.`);
+        whyNowFacts.push(`Narrative strength is fading — coins in the group losing ground together in the latest refresh.`);
       } else {
-        whyNowFacts.push(`Narrative health improved by ${change.toFixed(1)} points in the latest refresh.`);
+        whyNowFacts.push(`Narrative strength is building — multiple coins in the group improving together in the latest refresh.`);
       }
     }
 

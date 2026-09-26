@@ -181,7 +181,8 @@ describe("SQ-VALUE-02 Enhancements", () => {
 
       expect(brief.whyNowFacts).toBeDefined();
       expect(brief.whyNowFacts!.length).toBeGreaterThan(0);
-      expect(brief.whyNowFacts!.some((f) => f.includes("Narrative health improved"))).toBe(true);
+      // SQ-FRIENDLY: reader-facing wording — no internal "health/points" jargon.
+      expect(brief.whyNowFacts!.some((f) => f.includes("strength is building"))).toBe(true);
       expect(brief.whyNowFacts!.some((f) => f.includes("3 leading coins"))).toBe(true);
     });
 
