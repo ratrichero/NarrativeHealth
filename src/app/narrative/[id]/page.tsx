@@ -8,10 +8,7 @@ import { HealthBadge } from "@/components/HealthBadge";
 import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { CoinRankingTable } from "@/components/CoinRankingTable";
-import { P6IntelligencePanel } from "@/components/P6IntelligencePanel";
-import { P3IntelligencePanel } from "@/components/P3IntelligencePanel";
-import { P4DecisionSupportPanel } from "@/components/P4DecisionSupportPanel";
-import { P5ActionDecisionPanel } from "@/components/P5ActionDecisionPanel";
+import { PhaseWorkflow } from "@/components/narrative/PhaseWorkflow";
 import { ArrowLeft, AlertCircle } from "lucide-react";
 import {
   LineChart,
@@ -93,7 +90,24 @@ export default function NarrativeDetailPage() {
           <ScoreChange change={narrative.scoreChange} />
           <ConfidenceBadge confidence={narrative.avgConfidence} />
         </div>
-      </div>
+      </div>      {/* Coins in narrative — khối đầu tiên sau header theo yêu cầu */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Coins in {narrative.name}</CardTitle>
+        </CardHeader>
+        <CardContent className="px-0">
+          <CoinRankingTable coins={narrative.coins} />
+        </CardContent>
+      </Card>
+
+      {/* P3→P4→P5→P6 workflow — kết luận ngắn gọn từng tầng, nhấn để mở chi tiết */}
+      <PhaseWorkflow
+        narrativeId={narrative.id}
+        narrativeName={narrative.name}
+        p3Intelligence={narrative.p3Intelligence}
+        p3History={narrative.p3IntelligenceHistory}
+        p4ViewModel={narrative.p4DecisionSupport}
+      />
 
       {/* Health History Chart */}
       <Card>
@@ -141,38 +155,8 @@ export default function NarrativeDetailPage() {
         </CardContent>
       </Card>
 
-      {/* P6 Intelligence — PD-09A-02: P6-native intelligence + P6-08 historical comparison */}
-      <P6IntelligencePanel
-        entityType="narrative"
-        entityId={narrative.id}
-        entityName={narrative.name}
-      />
-
-      {/* P5 Action Decision — self-fetching from /api/narratives/[id]/action-decision */}
-      <P5ActionDecisionPanel narrativeId={narrative.id} />
-
-      {/* P4 Decision Support — narrative interpretation layer (P4-02 §10: additive field) */}
-      <P4DecisionSupportPanel viewModel={narrative.p4DecisionSupport} />
-
-      {/* P3 Intelligence — narrative current-state intelligence (frozen P3 read model) */}
-      <P3IntelligencePanel
-        narrativeName={narrative.name}
-        viewModel={narrative.p3Intelligence}
-        history={narrative.p3IntelligenceHistory}
-      />
-
       {/* Correlation Matrix */}
       <CorrelationHeatmap data={correlation ?? null} isLoading={correlationLoading} />
-
-      {/* Coin Ranking Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Coins in {narrative.name}</CardTitle>
-        </CardHeader>
-        <CardContent className="px-0">
-          <CoinRankingTable coins={narrative.coins} />
-        </CardContent>
-      </Card>
     </div>
   );
 }
