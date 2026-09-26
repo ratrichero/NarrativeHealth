@@ -9,6 +9,7 @@ import { TopRecommendations } from "@/components/TopRecommendations";
 import { HealthBadge } from "@/components/HealthBadge";
 import { ScoreChange } from "@/components/ScoreChange";
 import { formatDateTime, getHealthStatus } from "@/lib/utils";
+import { coinUrl } from "@/lib/seo-urls";
 import { TrendingUp, TrendingDown, AlertCircle } from "lucide-react";
 import Link from "next/link";
 import type { DashboardData } from "@/types";
@@ -118,7 +119,7 @@ export default function DashboardPage() {
                 {dashboard.topMovers.map((coin) => (
                   <Link
                     key={coin.id}
-                    href={`/coin/${coin.id}`}
+                    href={coinUrl(coin.id, coin.symbol)}
                     className="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors"
                   >
                     <div className="flex items-center gap-3">
@@ -152,7 +153,7 @@ export default function DashboardPage() {
                 {dashboard.weakestCoins.map((coin) => (
                   <Link
                     key={coin.id}
-                    href={`/coin/${coin.id}`}
+                    href={coinUrl(coin.id, coin.symbol)}
                     className="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors"
                   >
                     <div className="flex items-center gap-3">

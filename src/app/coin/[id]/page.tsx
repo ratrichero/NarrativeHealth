@@ -13,6 +13,7 @@ import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { ScoreBreakdown } from "@/components/ScoreBreakdown";
 import { WatchlistDialog } from "@/components/WatchlistDialog";
+import { narrativeUrl } from "@/lib/seo-urls";
 import { HealthTimeline } from "@/components/health-timeline";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { P6IntelligencePanel } from "@/components/P6IntelligencePanel";
@@ -369,7 +370,7 @@ export default function CoinDetailPage() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {coin.narratives.map((n) => (
-              <Link key={n.id} href={`/narrative/${n.id}`}>
+              <Link key={n.id} href={narrativeUrl(n.id, n.name)}>
                 <Badge variant={n.isPrimary ? "success" : "neutral"}>{n.name}</Badge>
               </Link>
             ))}

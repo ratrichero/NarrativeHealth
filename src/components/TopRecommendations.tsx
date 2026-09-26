@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { TrendingUp, TrendingDown, Target, AlertTriangle, ArrowDownRight } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
+import { coinUrl } from "@/lib/seo-urls";
 
 interface Setup {
   entryLow: number;
@@ -82,7 +83,7 @@ function RecCard({ rec }: { rec: Recommendation }) {
   const isBearish = rec.direction === "BEARISH";
 
   return (
-    <Link href={`/coin/${rec.coinId}`} className="block h-full" aria-label={`Xem chi tiết ${rec.symbol}`}>
+    <Link href={coinUrl(rec.coinId, rec.symbol)} className="block h-full" aria-label={`Xem chi tiết ${rec.symbol}`}>
     <Card hover className="h-full">
       <CardContent className="p-5">
         {/* Header: symbol + direction */}

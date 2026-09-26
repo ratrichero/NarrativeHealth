@@ -8,6 +8,7 @@ import { BrainCircuit, ChevronDown, ChevronRight } from "lucide-react";
 import type { P3AvailabilityState, P3IntelligenceViewModel } from "@/lib/types/p3-intelligence";
 import type { P3IntelligenceHistoryViewModel } from "@/lib/types/p3-intelligence-history";
 import { P3HistoricalTrend } from "./P3HistoricalTrend";
+import { coinUrl } from "@/lib/seo-urls";
 
 // ---------------------------------------------------------------------------
 // Availability-state semantics (Part F)
@@ -200,7 +201,7 @@ export function P3IntelligencePanel({
               {viewModel.leadership.coinId != null && viewModel.leadership.symbol != null ? (
                 <div className="flex items-center gap-3">
                   <Link
-                    href={`/coin/${viewModel.leadership.coinId}`}
+                    href={coinUrl(viewModel.leadership.coinId, viewModel.leadership.symbol)}
                     className="text-sm font-semibold text-cyan-400 hover:text-cyan-300 transition-colors"
                   >
                     {viewModel.leadership.symbol}

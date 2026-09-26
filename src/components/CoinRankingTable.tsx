@@ -6,6 +6,7 @@ import { SignalBadge } from "./SignalBadge";
 import { ScoreChange } from "./ScoreChange";
 import { ConfidenceBadge } from "./ConfidenceBadge";
 import type { CoinInNarrative } from "@/types";
+import { coinUrl } from "@/lib/seo-urls";
 
 interface CoinRankingTableProps {
   coins: CoinInNarrative[];
@@ -46,7 +47,7 @@ export function CoinRankingTable({ coins }: CoinRankingTableProps) {
               <td className="py-2.5 pr-2 text-slate-500">{index + 1}</td>
               <td className="py-2.5 pr-2">
                 <Link
-                  href={`/coin/${coin.id}`}
+                  href={coinUrl(coin.id, coin.symbol)}
                   className="flex items-center gap-2 hover:text-cyan-400 transition-colors"
                 >
                   <span className="font-medium text-white text-sm">{coin.symbol}</span>

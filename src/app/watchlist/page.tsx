@@ -10,6 +10,7 @@ import { ScoreChange } from "@/components/ScoreChange";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { Star, Trash2, AlertCircle } from "lucide-react";
 import type { WatchlistItem } from "@/types";
+import { coinUrl } from "@/lib/seo-urls";
 
 async function fetchWatchlist(): Promise<WatchlistItem[]> {
   const response = await fetch("/api/watchlist");
@@ -98,7 +99,7 @@ export default function WatchlistPage() {
                     >
                       <td className="py-2.5 pr-3">
                         <Link
-                          href={`/coin/${item.coinId}`}
+                          href={coinUrl(item.coinId, item.symbol)}
                           className="flex items-center gap-2 hover:text-cyan-400 transition-colors"
                         >
                           <span className="font-medium text-white text-sm">{item.symbol}</span>

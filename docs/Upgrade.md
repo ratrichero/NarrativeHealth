@@ -4,6 +4,104 @@
 
 ---
 
+## SEO-URL-09-2026 — URL thân thiện SEO dạng id-slug cho coin/narrative (2026-09-24)
+
+### Vấn đề
+
+URL hiện tại `/coin/36`, `/narrative/8` chỉ chứa id số — không thân thiện SEO lẫn người dùng (không đọc được `/coin/36` là Arbitrum). Yêu cầu: cải thiện **mà không thay đổi gốc** (route/page/API hiện có giữ nguyên trạng).
+
+### Giải pháp — lớp alias additive, không đụng gốc
+
+Khám phá then chốt: `parseInt("36-arb") === 36` → **page + toàn bộ API đã "hiểu sẵn" dạng id-slug mà không cần sửa dòng nào** (mọi route đều có isNaN guard sẵn).
+
+- **URL đẹp là canonical**: `/coin/36-arb`, `/narrative/8-defi-dex` phục vụ trực tiếp.
+- **Middleware mới `src/middleware.ts`** (chỉ match `/coin/*`, `/narrative/*`):
+  - `/coin/36` → **308** `/coin/36-arb` (canonical hóa URL cũ, chống duplicate content — Google tự chuyển index)
+  - `/coin/arb` → resolve symbol/name thật → **308** `/coin/36-arb`
+  - `/coin/36-arb` → phục vụ trực tiếp, không redirect
+  - Slug lạ → đi tiếp như hành vi gốc (không nuốt 404, không đoán mò)
+  - **Fail-open**: resolve lỗi/timeout → URL cũ đi tiếp như cũ, không bao giờ vỡ link
+- **2 API resolver nội bộ** (`/api/seo/coin/[key]`, `/api/seo/narrative/[key]`): id hoặc slug → `{ id, slug }` (coin match symbol case-insensitive hoặc name slug hóa; narrative match name slug hóa). Middleware (edge runtime) gọi qua HTTP vì không mang driver DB.
+- **Helper `src/lib/seo-urls.ts`**: `coinUrl(id, symbol)`, `narrativeUrl(id, name)` — sinh URL đẹp cho mọi link nội bộ (dashboard top movers/weakest, TopRecommendations, NarrativeCard, CoinRankingTable, watchlist, P3 leadership link, narrative badges trên coin page).
+
+### Files changed (SEO-URL-09-2026)
+
+```
+src/middleware.ts                                  — MỚI: canonical 308 + slug resolve (fail-open)
+src/app/api/seo/coin/[key]/route.ts                — MỚI: coin id/slug resolver
+src/app/api/seo/narrative/[key]/route.ts           — MỚI: narrative id/slug resolver
+src/lib/seo-urls.ts                                — MỚI: helper sinh URL id-slug
+src/app/page.tsx, src/components/* (4 file),       — link nội bộ chuyển sang URL đẹp
+src/app/watchlist/page.tsx, src/app/coin/[id]/page.tsx
+```
+
+### Verification (SEO-URL-09-2026)
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `bun run typecheck` | ✅ Sạch |
+| `/coin/36` → 308 `/coin/36-arb` | ✅ (preview thật) |
+| `/coin/arb` → 308 `/coin/36-arb` | ✅ |
+| `/narrative/8` → 308 `/narrative/8-defi-dex`; `/narrative/ai` → 308 `/narrative/1-ai` | ✅ |
+| `/coin/36-arb` phục vụ trực tiếp 200 | ✅ |
+| API ăn id-slug: `/api/coins/36-arb`, `/api/narratives/8-defi-dex` trả data chuẩn | ✅ |
+| Slug lạ → hành vi gốc (không redirect sai) | ✅ |
+
+---
+
+## SQ-FRIENDLY-09-2026 — Giọng văn thân thiện chuyên gia tài chính, bỏ jargon nội bộ khỏi bài Square (2026-09-24)
+
+### Vấn đề
+
+Bài đăng mở đầu bằng kiểu: *"$AAVE just jumped +4.2 points on our narrative health engine — one of the strongest signals across tracked narratives today."* — **không thân thiện với người đọc**: độc giả Binance Square không hề biết hệ thống của chúng ta tính điểm thế nào, nên "+4.2 points" của một thang điểm nội bộ vô nghĩa với họ. Cả hook template, WHY NOW facts, EXAMPLE trong LLM prompt và template fallback đều rơi vào lỗi này ("points", "health engine", "Trend 72/100", "Score breakdown").
+
+### Triết lý giọng văn mới
+
+- **Persona**: chuyên gia tài chính giàu kinh nghiệm, thân thiện — chia sẻ một read dựa trên dữ liệu với cộng đồng như một trader giỏi đang trò chuyện; tự tin, phân tích, không máy móc, không hype.
+- **Nguyên tắc dịch dữ liệu**: cùng một dữ liệu event, nhưng diễn đạt bằng **thuật ngữ thị trường ai cũng hiểu** — trend vs EMA, RSI, funding rate, volume vs trung bình, breadth (bao nhiêu coin đi cùng nhau) — thay vì điểm số nội bộ.
+- **Không bịa dữ liệu**: chỉ đổi cách diễn đạt, mọi claim vẫn trace được về FACTS.
+
+### Thay đổi
+
+**`src/lib/square/opportunity-engine.ts`**:
+- `HOOK_TEMPLATES_UP/DOWN/STABLE`: viết lại hoàn toàn bằng ngôn ngữ trader ("trend, momentum and volume are lining up in its favor") — không còn "jumped +X points on our narrative health engine". Vẫn giữ rotation per-opportunity và direction-aware (DOWN không hứa bounce).
+- WHY NOW facts: "Health improved by 4.2 points in the latest refresh" → "Health improved in the latest refresh — buyers stepping in across trend and volume"; "Narrative health improved/declined by X points" → "Narrative strength is building/fading — multiple coins improving/losing ground together".
+
+**`src/lib/square/content-generator.ts`**:
+- **Persona mới** trong LLM prompt: friendly experienced financial analyst.
+- **Khối AUDIENCE & LANGUAGE RULES mới**: cấm tuyệt đối "points", "scores", "health engine", "narrative health", "our engine/system"; yêu cầu dịch dữ liệu sang thuật ngữ thị trường phổ thông.
+- FACTS: bỏ dòng `Score breakdown: trend 72/100...` (LLM copy cái nó được cho; các input thị trường như EMA/RSI/funding/OI/breadth đã đủ thông tin tương đương).
+- EXAMPLE: hook + data-reads viết lại theo giọng mới ("• Trend: price holding above EMA20").
+- **`validateLLMOutput` thêm 1 lớp chặn**: output LLM chứa "HEALTH ENGINE" / "NARRATIVE HEALTH ENGINE" / "X POINTS" → reject, tự động rơi về template (template không bao giờ dùng jargon).
+- Template fallback: "• Trend 72/100 — price above EMA20" → "• Trend — price holding above EMA20" (giữ biến thể short-aware).
+
+**Test**: `value-enhancements.test.ts` assertion "Narrative health improved" → "strength is building" (đúng wording mới).
+
+### Files changed (SQ-FRIENDLY-09-2026)
+
+```
+src/lib/square/opportunity-engine.ts            — hooks + WHY NOW facts không còn points/health-engine
+src/lib/square/content-generator.ts             — persona + audience rules + FACTS/EXAMPLE/template + validator chặn jargon
+src/lib/square/__tests__/value-enhancements.test.ts — assertion theo wording mới
+```
+
+### Verification (SQ-FRIENDLY-09-2026)
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `bun run typecheck` (tsc --noEmit) | ✅ Sạch |
+| Jest square suite (6 suites, chia 2 nhóm) | ✅ 134/134 PASS |
+| Jargon check trong code output | ✅ Không còn points/health-engine trong hooks/facts/template; chỉ còn trong RULES (cấm) và comment |
+
+### Ví dụ trước/sau (hook)
+
+| Trước | Sau |
+|---|---|
+| "$AAVE just jumped +4.2 points on our narrative health engine — one of the strongest signals across tracked narratives today." | "$AAVE is catching attention today — trend, momentum and volume are lining up in its favor. Here's the data-backed read." |
+| "Narrative health improved by 4.5 points in the latest refresh." (WHY NOW) | "Narrative strength is building — multiple coins in the group improving together in the latest refresh." (WHY NOW) |
+
+---
+
 ## P3-P6-OPS-09-2026 — P3 chạy tự động trong refresh, P5 freshness gate, chuẩn hóa test breadth (2026-09-24)
 
 > Audit kiến trúc P3→P6 phát hiện 3 vấn đề theo mức độ ưu tiên; cả 3 đã xử lý trong batch này.

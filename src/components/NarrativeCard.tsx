@@ -10,6 +10,7 @@ import { ScoreChange } from "./ScoreChange";
 import { ConfidenceBadge } from "./ConfidenceBadge";
 import { WatchlistDialog } from "./WatchlistDialog";
 import { HealthSparkline } from "./ui/health-sparkline";
+import { narrativeUrl } from "@/lib/seo-urls";
 import { TrendingUp, Users, RefreshCw, Star, AlertTriangle } from "lucide-react";
 import type { NarrativeSummary } from "@/types";
 import type { HealthTimeline } from "@/lib/types/health-timeline";
@@ -103,7 +104,7 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
   };
 
   return (
-    <Link href={`/narrative/${narrative.id}`}>
+    <Link href={narrativeUrl(narrative.id, narrative.name)}>
       <Card hover className="h-full">
         <CardContent>
           <div className="flex items-start justify-between gap-3 mb-3">
