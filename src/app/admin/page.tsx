@@ -334,6 +334,28 @@ async function fetchAlertHistory(): Promise<any[]> {
   return data.data;
 }
 
+async function evaluateAlerts(ruleId?: number) {
+  const url = ruleId ? `/api/admin/alerts/evaluate?ruleId=${ruleId}` : "/api/admin/alerts/evaluate";
+  const response = await fetch(url, { method: "POST" });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+async function dryRunRuleVersion(versionId: number) {
+  const response = await fetch(`/api/admin/rule-versions/${versionId}/dry-run`, { method: "POST" });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
+async function syncTokenUnlocks() {
+  const response = await fetch("/api/admin/events/sync-unlocks", { method: "POST" });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
 async function createAlertRule(data: any) {
   const response = await fetch("/api/admin/alerts/rules", {
     method: "POST",
@@ -1905,6 +1927,29 @@ export default function AdminPage() {
     },
   });
 
+  // ALERT-01: manual evaluation of all active alert rules.
+  const evaluateAlertsMutation = useMutation({
+    mutationFn: () => evaluateAlerts(),
+    onSuccess: () => {
+      refetchAlertHistory();
+      refetchAlertRules();
+    },
+  });
+
+  // ALERT-05: rule version dry-run.
+  const dryRunMutation = useMutation({
+    mutationFn: dryRunRuleVersion,
+    onSuccess: () => {},
+  });
+
+  // ALERT-06: token unlock sync.
+  const syncUnlocksMutation = useMutation({
+    mutationFn: syncTokenUnlocks,
+    onSuccess: () => {
+      refetchEvents();
+    },
+  });
+
   const seedMutation = useMutation({
     mutationFn: seedData,
     onSuccess: () => {
@@ -3010,6 +3055,65 @@ export default function AdminPage() {
               đang chọn (mặc định active). */}
           {activeTab === "rule-engine" && (
             <div className="p-4 md:p-6 space-y-6">
+              {dryRunMutation.data && (
+                <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-white">
+                      Dry run v{dryRunMutation.data.version} — mô phỏng trên {dryRunMutation.data.sampleSize} coin (ngày {dryRunMutation.data.dateUsed})
+                    </h3>
+                    <button
+                      onClick={() => dryRunMutation.reset()}
+                      className="text-xs text-slate-400 hover:text-white"
+                    >
+                      ✕ Đóng
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    <span className="text-amber-400 font-medium">{dryRunMutation.data.changedCount}</span>/{dryRunMutation.data.sampleSize} coin sẽ đổi signal nếu activate version này. Chưa ghi gì vào DB.
+                  </p>
+                  <div className="flex flex-wrap gap-2 text-[11px]">
+                    {Object.entries(dryRunMutation.data.distribution?.current ?? {}).map(([sig, n]) => (
+                      <span key={`c-${sig}`} className="rounded bg-slate-900 px-2 py-0.5 text-slate-400">
+                        hiện tại {sig}: <span className="text-slate-200">{n as number}</span>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-[11px]">
+                    {Object.entries(dryRunMutation.data.distribution?.dryRun ?? {}).map(([sig, n]) => (
+                      <span key={`d-${sig}`} className="rounded bg-slate-900 px-2 py-0.5 text-slate-400">
+                        dry run {sig}: <span className="text-cyan-400">{n as number}</span>
+                      </span>
+                    ))}
+                  </div>
+                  {dryRunMutation.data.changedCount > 0 && (
+                    <div className="overflow-x-auto max-h-48">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-700 text-left text-slate-500">
+                            <th className="py-1.5 pr-3">Coin</th>
+                            <th className="py-1.5 pr-3">Hiện tại</th>
+                            <th className="py-1.5 pr-3">Dry run</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dryRunMutation.data.changed.map((c: { coinId: number; symbol: string; currentSignal: string | null; dryRunSignal: string }) => (
+                            <tr key={c.coinId} className="border-b border-slate-800/50">
+                              <td className="py-1.5 pr-3 font-medium text-white">{c.symbol}</td>
+                              <td className="py-1.5 pr-3 text-slate-400">{c.currentSignal ?? "—"}</td>
+                              <td className="py-1.5 pr-3 text-cyan-400">{c.dryRunSignal}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+              {dryRunMutation.isError && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-sm text-red-400">
+                  Dry run lỗi: {dryRunMutation.error instanceof Error ? dryRunMutation.error.message : "Unknown"}
+                </div>
+              )}
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold text-white">Rule Engine</h2>
                 <span className="text-xs text-gray-400 hidden lg:inline">
@@ -3062,16 +3166,29 @@ export default function AdminPage() {
                                 ● Active
                               </span>
                             ) : (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  activateRuleVersionMutation.mutate(v.id);
-                                }}
-                                disabled={activateRuleVersionMutation.isPending}
-                                className="text-[10px] text-blue-400 hover:text-blue-300 underline underline-offset-2 disabled:opacity-50"
-                              >
-                                Activate
-                              </button>
+                              <span className="flex items-center gap-2">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    dryRunMutation.mutate(v.id);
+                                  }}
+                                  disabled={dryRunMutation.isPending}
+                                  title="Mô phỏng signal version này trên dữ liệu mới nhất (không ghi DB)"
+                                  className="text-[10px] text-amber-400 hover:text-amber-300 underline underline-offset-2 disabled:opacity-50"
+                                >
+                                  Dry run
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    activateRuleVersionMutation.mutate(v.id);
+                                  }}
+                                  disabled={activateRuleVersionMutation.isPending}
+                                  className="text-[10px] text-blue-400 hover:text-blue-300 underline underline-offset-2 disabled:opacity-50"
+                                >
+                                  Activate
+                                </button>
+                              </span>
                             )}
                           </div>
                           <p className="mt-1 text-xs text-gray-300 line-clamp-2">
@@ -3221,6 +3338,23 @@ export default function AdminPage() {
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                     <h2 className="text-lg font-semibold text-white">Event Risks</h2>
                     <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        loading={syncUnlocksMutation.isPending}
+                        onClick={() => syncUnlocksMutation.mutate()}
+                        title="Kéo lịch unlock token từ UNLOCK_DATA_URL (nếu cấu hình) vào event_risks"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                        Sync unlocks
+                      </Button>
+                      {syncUnlocksMutation.isSuccess && (
+                        <span className="text-xs text-green-400">
+                          {syncUnlocksMutation.data.configured
+                            ? `Sync: ${syncUnlocksMutation.data.upserted}/${syncUnlocksMutation.data.fetched} events`
+                            : "UNLOCK_DATA_URL chưa cấu hình"}
+                        </span>
+                      )}
                       <select
                         value={eventStatusFilter}
                         onChange={(e) => setEventStatusFilter(e.target.value as "all" | "active" | "expired")}
@@ -3355,14 +3489,38 @@ export default function AdminPage() {
                <div>
                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
                    <h2 className="text-lg font-semibold text-white">Alert Rules</h2>
-                   <Button
-                     variant="secondary"
-                     onClick={() => setAlertRuleModal({ isOpen: true, mode: "add" })}
-                   >
-                     <Plus className="h-4 w-4 mr-2" />
-                     Add Rule
-                   </Button>
+                   <div className="flex items-center gap-2">
+                     <Button
+                       variant="secondary"
+                       loading={evaluateAlertsMutation.isPending}
+                       onClick={() => evaluateAlertsMutation.mutate()}
+                       title="Quét toàn bộ rule active so với điểm mới nhất (cũng tự chạy sau mỗi lần refresh)"
+                     >
+                       <Play className="h-4 w-4 mr-2" />
+                       Evaluate now
+                     </Button>
+                     <Button
+                       variant="secondary"
+                       onClick={() => setAlertRuleModal({ isOpen: true, mode: "add" })}
+                     >
+                       <Plus className="h-4 w-4 mr-2" />
+                       Add Rule
+                     </Button>
+                   </div>
                  </div>
+                 {evaluateAlertsMutation.data && (
+                   <div className="bg-slate-800/50 border border-slate-700 rounded p-3 text-xs text-slate-300 mb-3">
+                     Kết quả quét: {evaluateAlertsMutation.data.rulesEvaluated} rules · {evaluateAlertsMutation.data.coinsChecked} coins ·{" "}
+                     <span className="text-cyan-400 font-medium">{evaluateAlertsMutation.data.alertsFired} alert fire</span> ·{" "}
+                     {evaluateAlertsMutation.data.alertsDispatched} đã gửi kênh ngoài
+                     {(evaluateAlertsMutation.data.errors ?? []).length > 0 && (
+                       <span className="text-red-400"> · {evaluateAlertsMutation.data.errors.length} lỗi</span>
+                     )}
+                     <span className="block mt-1 text-slate-500">
+                       Rules cũng được tự động quét sau mỗi lần refresh dữ liệu. Alert fire mỗi coin/rule tối đa 1 lần/ngày.
+                     </span>
+                   </div>
+                 )}
                  {alertRulesLoading ? (
                    <div className="py-8 text-center">
                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
@@ -3433,6 +3591,14 @@ export default function AdminPage() {
                         </div>
                         <div className="mt-1 text-xs text-gray-400">
                           {new Date(alert.triggeredAt).toLocaleString()}
+                          {alert.triggerDetail?.coinSymbol && (
+                            <span className="ml-2 text-cyan-400">
+                              {String(alert.triggerDetail.coinSymbol)}
+                              {typeof alert.triggerDetail.value === "number" && typeof alert.triggerDetail.threshold === "number"
+                                ? ` · ${alert.triggerDetail.value.toFixed(1)} (ngưỡng ${alert.triggerDetail.threshold})`
+                                : ""}
+                            </span>
+                          )}
                         </div>
                       </div>
                     ))}

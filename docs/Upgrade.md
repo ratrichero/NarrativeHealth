@@ -4,6 +4,47 @@
 
 ---
 
+## ALERT-01..06-09-2026 — Hoàn thiện hệ thống cảnh báo: evaluator tự động, delivery đa kênh, dry-run, unlock collector (2026-09-27)
+
+### Bối cảnh
+
+Khảo sát phát hiện alert rules chỉ tồn tại trong DB — không có gì tự động so ngưỡng nên alert không bao giờ fire. Cùng các khoảng trống: không có kênh gửi cảnh báo ngoài, UI Alerts thiếu khả năng evaluate thủ công, lý do khuyến nghị không nhắc rủi ro sự kiện, không có cách đánh giá version mới trước khi activate, và lịch unlock token chỉ nhập tay.
+
+### Hướng xử lý (6 hạng mục)
+
+1. **Alert evaluator** (`alert-evaluator.service.ts`): quét rules active, so ngưỡng với điểm mới nhất (health/trend/derivative từ health_scores + features), scope global/coin/narrative, ghi alert_history. Idempotent theo ngày (mỗi rule+coin tối đa 1 alert/ngày). Hook vào `/api/refresh` post-refresh (non-blocking) + endpoint `POST /api/admin/alerts/evaluate` (`?ruleId=N` cho 1 rule). Dùng ngày mới nhất có điểm — không phụ thuộc business date chưa có dữ liệu.
+2. **Delivery đa kênh** (`alert-delivery.service.ts`): Telegram (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`), webhook (`ALERT_WEBHOOK_URL`/`ALERT_WEBHOOK_SECRET`), email Resend REST (`RESEND_API_KEY`/`ALERT_EMAIL_FROM`/`ALERT_EMAIL_TO`). Env-driven, fail-soft, không cấu hình = no-op.
+3. **UI Alerts**: nút "Evaluate now" + bảng kết quả quét; history hiển thị chi tiết trigger (coin, value vs ngưỡng) và nút ACK đã có sẵn giờ có dữ liệu thật.
+4. **Event risk vào lý do khuyến nghị** (`coin-processor.ts`): recommendation reason nối câu cảnh báo ⚠ khi eventRiskScore ≥ 40 (kèm tên event), reasonBreakdown có thêm trường `eventRisk`.
+5. **Rule dry-run** (`POST /api/admin/rule-versions/[id]/dry-run`): mô phỏng signal version bất kỳ trên dữ liệu mới nhất, so với signal hiện tại (changed + distribution), không ghi DB. UI: nút "Dry run" trên version card trong Rule Engine + bảng kết quả.
+6. **Token unlock collector** (`collectors/unlocks.ts` + `POST /api/admin/events/sync-unlocks`): qua `UNLOCK_DATA_URL` (tùy chọn; DefiLlama emissions giờ là API Pro nên collector là provider-agnostic), upsert event_risks idempotent (coin+date+TOKEN_UNLOCK), skip coin không track. Nút "Sync unlocks" trong tab Events.
+
+### Biến môi trường (tùy chọn)
+
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_SECRET`, `RESEND_API_KEY`, `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`, `UNLOCK_DATA_URL`, `UNLOCK_DATA_API_KEY` — không bắt buộc, thiếu key nào thì kênh đó off.
+
+### Files changed
+
+```
+src/lib/services/alert-evaluator.service.ts — NEW evaluator
+src/lib/services/alert-delivery.service.ts — NEW delivery (telegram/webhook/resend)
+src/lib/collectors/unlocks.ts — NEW unlock collector
+src/app/api/admin/alerts/evaluate/route.ts — NEW
+src/app/api/admin/rule-versions/[id]/dry-run/route.ts — NEW
+src/app/api/admin/events/sync-unlocks/route.ts — NEW
+src/app/api/refresh/route.ts — post-refresh alert evaluation hook
+src/lib/p6/refresh/coin-processor.ts — event risk vào recommendation reason
+src/app/admin/page.tsx — Evaluate now, dry-run panel, Sync unlocks, history detail
+```
+
+### Verification
+
+- Typecheck PASS; square suites 134/134 PASS (test LLM flaky đã biết rerun pass).
+- Live E2E: tạo rule probe → evaluate fires 98/98 với triggerDetail đúng (XAG 26.1 > ngưỡng 0) → re-evaluate 0 (idempotent) → ACK OK → cleanup rules.
+- Dry-run v1 trên 49 coin: phát hiện 10 coin sẽ đổi signal (39 OBSERVE → 9 CAUTION + 1 WATCH) — đúng mục đích đánh giá trước activate.
+
+---
+
 ## ACC-MGMT-09-2026 — Quản trị tài khoản: admin accounts, user accounts, đăng ký tự do (2026-09-27)
 
 ### Mục tiêu

@@ -732,6 +732,22 @@ export async function POST(request: NextRequest) {
       console.error("Square pipeline error (non-blocking):", squareError);
     }
 
+    // -----------------------------------------------------------------------
+    // ALERT-01: Post-refresh alert evaluation (additive — non-blocking)
+    // -----------------------------------------------------------------------
+    // Scores for today are fresh at this point — evaluate all active alert
+    // rules against them, record fires to alert_history, and dispatch to any
+    // configured delivery channels. Failure never breaks the refresh.
+    try {
+      const { evaluateAlertRules } = await import("@/lib/services/alert-evaluator.service");
+      const alertSummary = await evaluateAlertRules();
+      console.log(
+        `[ALERT] Post-refresh evaluation: rules=${alertSummary.rulesEvaluated} coins=${alertSummary.coinsChecked} fired=${alertSummary.alertsFired} dispatched=${alertSummary.alertsDispatched} errors=${alertSummary.errors.length}`
+      );
+    } catch (alertError) {
+      console.error("Alert evaluation error (non-blocking):", alertError);
+    }
+
     return NextResponse.json({
       success: true,
       data: {

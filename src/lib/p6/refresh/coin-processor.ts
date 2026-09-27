@@ -33,6 +33,7 @@ import { getHealthStatus, getBusinessDate } from "@/lib/utils";
 import { ruleVersionService } from "@/lib/services/rule-version.service";
 import { indicatorService } from "@/lib/services/indicator.service";
 import { ruleEngineService } from "@/lib/services/rule-engine.service";
+import { eventRiskService } from "@/lib/services/event-risk.service";
 import { evaluateKlineObservationQualityBatch } from "@/lib/p6/ingestion/kline-quality-batch-hook";
 
 // ─── Types ───────────────────────────────────────────────────────────────
@@ -522,6 +523,20 @@ export async function processSingleCoin(
         });
 
       // ── Recommendation ──
+      // ALERT-04: nắm rủi ro sự kiện đang active để (a) ghi vào
+      // reasonBreakdown cho UI giải thích, (b) nối câu cảnh báo vào reason
+      // khi coin đang chịu event risk đáng kể.
+      const coinEventRisk = await eventRiskService.getCoinEventRiskScore(coin.id, ctx.today);
+      const eventClause =
+        coinEventRisk.eventRiskScore >= 40
+          ? ` ⚠ Rủi ro sự kiện: ${coinEventRisk.eventRiskScore.toFixed(0)}/100 (${
+              coinEventRisk.activeEvents
+                .slice(0, 2)
+                .map((e) => e.title)
+                .join("; ") || "event"
+            }).`
+          : "";
+
       const recommendation = await ruleEngineService.evaluate({
         health: healthScore,
         trend: featureResult.trend_score,
@@ -536,12 +551,13 @@ export async function processSingleCoin(
         .values({
           coinId: coin.id, date: ctx.today,
           signal: recommendation.signal,
-          reason: recommendation.reason,
+          reason: recommendation.reason + eventClause,
           reasonBreakdown: {
             trend: featureResult.trend_score,
             derivative: featureResult.derivative_score,
             volume: featureResult.volume_score,
             momentum: featureResult.momentum_score,
+            eventRisk: coinEventRisk.eventRiskScore,
             ruleId: recommendation.ruleId,
             matched: recommendation.matched,
           },
@@ -551,12 +567,13 @@ export async function processSingleCoin(
           target: [recommendations.coinId, recommendations.date],
           set: {
             signal: recommendation.signal,
-            reason: recommendation.reason,
+            reason: recommendation.reason + eventClause,
             reasonBreakdown: {
               trend: featureResult.trend_score,
               derivative: featureResult.derivative_score,
               volume: featureResult.volume_score,
               momentum: featureResult.momentum_score,
+              eventRisk: coinEventRisk.eventRiskScore,
               ruleId: recommendation.ruleId,
               matched: recommendation.matched,
             },
