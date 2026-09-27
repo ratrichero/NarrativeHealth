@@ -50,6 +50,8 @@ export interface CoinMover {
   scoreChange: number;
   narrativeId: number | null;
   narrativeName: string | null;
+  /** PA-A: shown as relative strength/weakness, not a genuine directional signal. */
+  watchOnly?: boolean;
 }
 
 export interface SourceStatusSummary {

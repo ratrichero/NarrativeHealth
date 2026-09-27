@@ -8,6 +8,7 @@ import {
   healthScores,
   recommendations,
   sourceStatus,
+  features,
 } from "@/db/schema";
 import { eq, desc, and, gte, sql } from "drizzle-orm";
 import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
@@ -174,35 +175,113 @@ export async function GET() {
       (a, b) => (b.healthScore ?? -1) - (a.healthScore ?? -1)
     );
 
-    // Get top movers (biggest positive changes) — for the freshest date with data
-    const topMoversData = await db
+    // PA-A (MOVE-COMPOSITE): "Mạnh nhất" / "Weakest" must agree with the
+    // scoring used by Đề xuất nổi bật (top-recommendations). Raw scoreChange
+    // ranking put bearish-only markets under a green header, while weakest
+    // ranked by health alone ignored trend/momentum. We replicate the same
+    // classifyDirection + bull/bear composites here (small intentional copy —
+    // see src/app/api/dashboard/top-recommendations/route.ts as source of
+    // truth) so both views tell the same story on the same data date.
+    const moverRows = await db
       .select({
         coinId: healthScores.coinId,
         healthScore: healthScores.healthScore,
         scoreChange: healthScores.scoreChange,
+        signal: recommendations.signal,
+        trendScore: features.trendScore,
+        momentumScore: features.momentumScore,
         symbol: coins.symbol,
         name: coins.name,
       })
       .from(healthScores)
       .innerJoin(coins, eq(coins.id, healthScores.coinId))
-      .where(and(eq(healthScores.date, dataDate), eq(coins.isActive, true)))
-      .orderBy(desc(healthScores.scoreChange))
-      .limit(5);
+      .leftJoin(
+        recommendations,
+        and(
+          eq(recommendations.coinId, healthScores.coinId),
+          eq(recommendations.date, dataDate)
+        )
+      )
+      .leftJoin(
+        features,
+        and(
+          eq(features.coinId, healthScores.coinId),
+          eq(features.date, dataDate)
+        )
+      )
+      .where(and(eq(healthScores.date, dataDate), eq(coins.isActive, true)));
 
-    // Get weakest coins (biggest negative changes or lowest scores)
-    const weakestCoinsData = await db
-      .select({
-        coinId: healthScores.coinId,
-        healthScore: healthScores.healthScore,
-        scoreChange: healthScores.scoreChange,
-        symbol: coins.symbol,
-        name: coins.name,
-      })
-      .from(healthScores)
-      .innerJoin(coins, eq(coins.id, healthScores.coinId))
-      .where(and(eq(healthScores.date, dataDate), eq(coins.isActive, true)))
-      .orderBy(healthScores.healthScore)
-      .limit(5);
+    // Mirror of classifyDirection in top-recommendations/route.ts
+    const moverDirection = (
+      signal: string,
+      health: number,
+      change: number | null
+    ): "BULLISH" | "BEARISH" => {
+      if (signal === "WEAK" || signal === "CAUTION") return "BEARISH";
+      if (change !== null && change <= -3) return "BEARISH";
+      if (health < 50) return "BEARISH";
+      return "BULLISH";
+    };
+
+    const moverScored = moverRows.map((r) => {
+      const health = r.healthScore ?? 0;
+      const trend = r.trendScore ?? 50;
+      const momentum = r.momentumScore ?? 50;
+      const change = r.scoreChange ?? 0;
+      const direction = moverDirection(r.signal ?? "OBSERVE", health, r.scoreChange);
+      // Bull strength composite (top-recommendations bullComposite)
+      const bullComposite =
+        health * 0.4 + trend * 0.35 + momentum * 0.15 + Math.max(0, Math.min(20, change + 10)) * 0.5;
+      // Bear weakness composite (top-recommendations bearComposite)
+      const bearComposite =
+        (100 - health) * 0.45 + Math.max(0, -change) * 8 + (100 - trend) * 0.25 + (100 - momentum) * 0.15;
+      return { ...r, direction, bullComposite, bearComposite };
+    });
+
+    type MoverEntry = { row: (typeof moverScored)[number]; watchOnly: boolean };
+
+    // Strongest = top bullComposite among genuine BULLISH. Top-Rec-Fill
+    // parity: when nothing classifies BULLISH, fill with the relatively
+    // strongest coins (bullComposite across ALL coins, independent of their
+    // classified direction) flagged watchOnly — relative strength, never a
+    // presented-as-real directional signal.
+    const topMoversData: MoverEntry[] = moverScored
+      .filter((s) => s.direction === "BULLISH")
+      .sort((a, b) => b.bullComposite - a.bullComposite)
+      .slice(0, 5)
+      .map((s) => ({ row: s, watchOnly: false }));
+    if (topMoversData.length < 5) {
+      const chosenIds = new Set(topMoversData.map((e) => e.row.coinId));
+      const padPool = moverScored
+        .filter((s) => !chosenIds.has(s.coinId))
+        .sort((a, b) => b.bullComposite - a.bullComposite);
+      for (const s of padPool) {
+        if (topMoversData.length >= 5) break;
+        topMoversData.push({ row: s, watchOnly: true });
+      }
+    }
+
+    // Weakest = top bearComposite among genuine BEARISH; symmetric fill with
+    // the relatively weakest coins (bearComposite across ALL coins) flagged
+    // watchOnly when the day is broadly bullish.
+    const weakestCoinsData: MoverEntry[] = moverScored
+      .filter((s) => s.direction === "BEARISH")
+      .sort((a, b) => b.bearComposite - a.bearComposite)
+      .slice(0, 5)
+      .map((s) => ({ row: s, watchOnly: false }));
+    if (weakestCoinsData.length < 5) {
+      const chosenIds = new Set([
+        ...topMoversData.map((e) => e.row.coinId),
+        ...weakestCoinsData.map((e) => e.row.coinId),
+      ]);
+      const padPool = moverScored
+        .filter((s) => !chosenIds.has(s.coinId))
+        .sort((a, b) => b.bearComposite - a.bearComposite);
+      for (const s of padPool) {
+        if (weakestCoinsData.length >= 5) break;
+        weakestCoinsData.push({ row: s, watchOnly: true });
+      }
+    }
 
     // Get source status
     const sourceStatusData = await db
@@ -245,7 +324,7 @@ export async function GET() {
           coingecko: sourceStatusMap.coingecko,
           lastUpdate: new Date().toISOString(),
         },
-        topMovers: topMoversData.map((c) => ({
+        topMovers: topMoversData.map(({ row: c, watchOnly }) => ({
           id: c.coinId,
           symbol: c.symbol,
           name: c.name,
@@ -253,8 +332,9 @@ export async function GET() {
           scoreChange: c.scoreChange || 0,
           narrativeId: null,
           narrativeName: null,
+          watchOnly,
         })),
-        weakestCoins: weakestCoinsData.map((c) => ({
+        weakestCoins: weakestCoinsData.map(({ row: c, watchOnly }) => ({
           id: c.coinId,
           symbol: c.symbol,
           name: c.name,
@@ -262,6 +342,7 @@ export async function GET() {
           scoreChange: c.scoreChange || 0,
           narrativeId: null,
           narrativeName: null,
+          watchOnly,
         })),
         alertCount: 0,
         lastUpdate: new Date().toISOString(),

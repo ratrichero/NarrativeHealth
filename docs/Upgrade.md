@@ -4,6 +4,37 @@
 
 ---
 
+## DASH-MOVE-COMPOSITE-09-2026 — Top Movers/Weakest đồng bộ logic đánh giá (Phương án A) (2026-09-27)
+
+### Vấn đề
+
+Card "Top Movers" xếp theo `scoreChange DESC`, "Weakest Coins" xếp theo `healthScore ASC` — cả hai đều không dùng đúng logic phân loại của Đề xuất nổi bật. Hệ quả: ngày 2026-09-27 toàn bộ 49 coin đều tín hiệu WEAK + score_change âm, nhưng card Top Movers vẫn header xanh TrendingUp trong khi nội dung toàn coin giảm (giảm ít nhất) — mâu thuẫn giữa hình thức và bản chất dữ liệu.
+
+### Hướng xử lý (user chọn Phương án A)
+
+Hai card dùng lại đúng pipeline phân loại + composite của `top-recommendations`:
+
+- **"Mạnh nhất" (Strongest)** thay cho Top Movers: top 5 theo `bullComposite` (health*0.4 + trend*0.35 + momentum*0.15 + clamp(change+10,0,20)*0.5), chỉ tính coin phân loại **BULLISH thật** (classifyDirection: không WEAK/CAUTION, change > −3, health ≥ 50) — đồng bộ logic nhóm LONG.
+- **Weakest Coins**: top 5 theo `bearComposite` ((100−health)*0.45 + max(0,−change)*8 + (100−trend)*0.25 + (100−momentum)*0.15) — đồng bộ logic nhóm SHORT.
+- **Watch only (Top-Rec-Fill parity):** khi không đủ coin BULLISH thật (thị trường suy yếu toàn diện), các slot còn lại của Mạnh nhất được lấp bằng coin **mạnh nhất tương đối** (bullComposite tính trên TOÀN BỘ coin, bất kể hướng phân loại) và gắn cờ `watchOnly: true`; UI hiển thị badge "Watch only" + tooltip giải thích — đây là sức mạnh tương đối, không phải tín hiệu mua. Đối xứng cho Weakest trong ngày tăng giá rộng.
+- Query movers mới: innerJoin `coins` + leftJoin `recommendations` (signal) + leftJoin `features` (trendScore, momentumScore) cùng `dataDate`.
+- Composite/classify được nhân bản có chủ đích (nhỏ, có comment trỏ về nguồn sự thật `top-recommendations/route.ts`) để tránh ràng buộc export chéo giữa các route.
+
+### Files changed
+
+```
+src/app/api/dashboard/route.ts — query join features/recommendations + composite scoring + watchOnly fill
+src/types/index.ts — CoinMover.watchOnly?: boolean
+src/app/page.tsx — card "Top Movers" → "Mạnh nhất" + badge Watch only (UI tiếng Việt)
+```
+
+### Verification
+
+- Typecheck PASS (riêng debug script tạm có lỗi có sẵn, không thuộc thay đổi).
+- API thực tế (dataDate 2026-09-27, mọi coin WEAK): Mạnh nhất = 5 coin khoẻ nhất tương đối (ARB/JUP/NEAR/RENDER/UNI, health 63.4) tất cả `watchOnly: true`; Weakest = BEARISH thật theo bearComposite (BLESS −32.6 dẫn đầu) — header xanh giờ phản ánh đúng ý nghĩa "tương đối mạnh nhất để theo dõi", không phải tín hiệu mua.
+
+---
+
 ## SQ-RICH-CONTENT-09-2026 — Nội dung Square giàu ý nghĩa hơn: hook tối thiểu 3 câu (2026-09-27)
 
 ### Vấn đề

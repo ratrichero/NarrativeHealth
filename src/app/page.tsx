@@ -103,12 +103,12 @@ export default function DashboardPage() {
 
       {/* Top Movers & Weakest */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Top Movers */}
+        {/* Strongest — PA-A: same bullComposite ranking as Đề xuất nổi bật */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-green-500" />
-              <CardTitle>Top Movers</CardTitle>
+              <CardTitle>Mạnh nhất</CardTitle>
             </div>
           </CardHeader>
           <CardContent>
@@ -122,8 +122,16 @@ export default function DashboardPage() {
                     href={coinUrl(coin.id, coin.symbol)}
                     className="flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors min-w-0"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
                       <span className="font-medium text-white truncate">{coin.symbol}</span>
+                      {coin.watchOnly && (
+                        <span
+                          className="shrink-0 rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-slate-400"
+                          title="Coin này không phải tín hiệu BULLISH thật — chỉ là tương đối mạnh nhất trong thị trường hiện tại"
+                        >
+                          Watch only
+                        </span>
+                      )}
                       <HealthBadge
                         status={getHealthStatus(coin.healthScore)}
                         score={coin.healthScore}
@@ -137,7 +145,7 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Weakest Coins */}
+        {/* Weakest — PA-A: same bearComposite ranking as the SHORT side */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
@@ -156,8 +164,16 @@ export default function DashboardPage() {
                     href={coinUrl(coin.id, coin.symbol)}
                     className="flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors min-w-0"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
                       <span className="font-medium text-white truncate">{coin.symbol}</span>
+                      {coin.watchOnly && (
+                        <span
+                          className="shrink-0 rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-slate-400"
+                          title="Coin này không phải tín hiệu BEARISH thật — chỉ là tương đối yếu nhất trong thị trường hiện tại"
+                        >
+                          Watch only
+                        </span>
+                      )}
                       <HealthBadge
                         status={getHealthStatus(coin.healthScore)}
                         score={coin.healthScore}
