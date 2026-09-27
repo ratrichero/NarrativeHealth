@@ -282,8 +282,15 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
             latencyMs: pubLatency,
           });
         } else {
-          const errorMsg = result.errorMessage ?? result.errorCode;
-          if (errorMsg === "THESIS_STABLE" || errorMsg === "DUPLICATE") {
+          // SQ-DEDUP-FIX: dedup/idempotency results are identifiable by
+          // errorCode ("THESIS_STABLE" / "DUPLICATE" / "ALREADY_PUBLISHED"),
+          // not errorMessage. The old code compared the human message
+          // ("Similar thesis recently published") against the code, never
+          // matched, and every deduped opportunity was recorded as FAILED —
+          // polluting failure counts and surfacing as "Publish failed ..."
+          // in execution logs and admin UI.
+          const dedupCodes = new Set(["THESIS_STABLE", "DUPLICATE", "ALREADY_PUBLISHED"]);
+          if (result.errorCode && dedupCodes.has(result.errorCode)) {
             deduplicatedCount++;
             details.push({
               opportunityId: opp.id,
@@ -295,6 +302,7 @@ export async function runSquarePipeline(): Promise<SquarePipelineResult> {
               latencyMs: pubLatency,
             });
           } else {
+            const errorMsg = result.errorMessage ?? result.errorCode;
             failedCount++;
             errors.push(
               `Publish failed for opportunity ${opp.id}: ${errorMsg}`

@@ -4,6 +4,35 @@
 
 ---
 
+## SQ-DEDUP-FIX-09-2026 — Dedup bị đếm nhầm thành FAILURE trong pipeline đăng bài (2026-09-27)
+
+### Vấn đề
+
+Pipeline đăng bài 11:56 báo `failed=1` (status PARTIAL) với lỗi `Publish failed for opportunity 905: Similar thesis recently published`, kèm alert "Đã xảy ra lỗi chưa được phân loại". Trong khi đó bản chất là cơ chế chống trùng lặp hoạt động ĐÚNG: coin đã được đăng bài với thesis giống hệt trong cửa sổ TTL.
+
+### Nguyên nhân gốc
+
+`src/lib/square/production.ts` so kết quả publish bằng **errorMessage** ("Similar thesis recently published") với **errorCode** (`THESIS_STABLE` / `DUPLICATE`) — hai chuỗi khác nhau nên không bao giờ khớp → mọi kết quả dedup rơi vào nhánh FAILED: `deduplicated` luôn = 0, failure count bị làm đầy, errorSummary chứa message gây hiểu nhầm, và error-explainer (không phân loại được) hiển thị alert "chưa được phân loại".
+
+### Hướng xử lý
+
+- **production.ts:** xác định dedup qua `result.errorCode` thuộc `{ THESIS_STABLE, DUPLICATE, ALREADY_PUBLISHED }` → ghi `DEDUPED` + tăng `deduplicatedCount` đúng ý nghĩa. Nhánh FAILED giờ chỉ nhận lỗi thật.
+- **error-explainer.ts (defense in depth):** thêm giải thích tiếng Việt cho `THESIS_STABLE` / `DUPLICATE` (mức BINANCE_CODE_EXPLANATIONS) và pattern `/Similar thesis|Similar content recently|recently published/` — nếu dedup có lọt vào errorSummary thì UI cũng hiện "không phải lỗi" thay vì cảnh báo chưa phân loại.
+
+### Files changed
+
+```
+src/lib/square/production.ts — dedup detection theo errorCode thay vì errorMessage
+src/lib/square/error-explainer.ts — THESIS_STABLE/DUPLICATE explanations + dedup pattern
+```
+
+### Verification
+
+- Typecheck PASS; jest square suites 134/134 PASS (1 run fail do timeout mạng khi test gọi LLM thật — rerun OK, flaky không liên quan thay đổi).
+- Chạy pipeline tiếp theo: opportunity trùng thesis sẽ được ghi `DEDUPED`, `deduplicated ≥ 1`, `failed=0`, execution status SUCCESS thay vì PARTIAL.
+
+---
+
 ## DASH-MOVE-COMPOSITE-09-2026 — Top Movers/Weakest đồng bộ logic đánh giá (Phương án A) (2026-09-27)
 
 ### Vấn đề

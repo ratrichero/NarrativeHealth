@@ -76,6 +76,17 @@ const BINANCE_CODE_EXPLANATIONS: Record<string, ErrorExplanation> = {
     summary: "Cơ hội này đã được đăng bài trước đó rồi.",
     action: "Bỏ qua bình thường — đây là cơ chế chống trùng bài hoạt động đúng.",
   },
+  THESIS_STABLE: {
+    summary:
+      "Bài được bỏ qua vì luận điểm (thesis) tương tự vừa được đăng gần đây — cơ chế chống trùng lặp hoạt động đúng.",
+    action:
+      "Không cần can thiệp. Coin sẽ được đăng lại khi thesis thực sự thay đổi (mức giá/setup mới).",
+  },
+  DUPLICATE: {
+    summary:
+      "Bài được bỏ qua vì nội dung tương tự đã đăng gần đây — cơ chế chống trùng lặp hoạt động đúng.",
+    action: "Không cần can thiệp.",
+  },
 };
 
 // Pattern-driven explanations, checked in order. First match wins.
@@ -122,6 +133,14 @@ const ERROR_PATTERNS: { pattern: RegExp; explain: (m: RegExpMatchArray) => Error
       summary:
         "Bị giới hạn tốc độ: gửi yêu cầu quá dày trong một khoảng thời gian ngắn.",
       action: "Hệ thống tự động chờ theo hướng dẫn của API rồi thử lại — không cần can thiệp.",
+    }),
+  },
+  {
+    pattern: /(Similar thesis|Similar content recently|recently published)/i,
+    explain: () => ({
+      summary:
+        "Bài bị bỏ qua bởi cơ chế chống trùng lặp: luận điểm/nội dung tương tự vừa được đăng gần đây.",
+      action: "Không phải lỗi — pipeline hoạt động đúng. Cơ hội sẽ được đăng lại khi thesis thay đổi.",
     }),
   },
   {
