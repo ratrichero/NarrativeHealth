@@ -4,6 +4,39 @@
 
 ---
 
+## SQ-RICH-CONTENT-09-2026 — Nội dung Square giàu ý nghĩa hơn: hook tối thiểu 3 câu (2026-09-27)
+
+### Vấn đề
+
+Các bài đăng Binance Square (LLM tier `primary`) đều ~916-973 ký tự / 7 câu, nhưng mở đầu chỉ 1 câu hook đơn giản ("$FET strength is fading — trend and momentum are losing ground, signaling a bearish shift.") rồi nhảy thẳng vào Direction + setup. Người đọc không có bối cảnh, thiếu lý do quan tâm.
+
+### Cải tiến (src/lib/square/content-generator.ts)
+
+**LLM prompt:**
+- HOOK nâng từ "1-2 lines" → **MINIMUM 3 FULL SENTENCES (3-5)** với công thức: (1) hiện tượng thị trường, (2) tại sao nó quan trọng — tension/opportunity, (3) bạn đang theo dõi gì tiếp theo. Cấm lặp ý.
+- Bổ sung cấu trúc bắt buộc **WHY NOW:** + **INVALIDATION:** thành các dòng riêng có nhãn (trước đây chỉ là keyword validation).
+- Giới hạn độ dài: "under 800 chars" → **900–1300 chars** (rich nhưng dense — mở rộng hook và diễn giải dữ liệu, cấm filler).
+- Example trong prompt nâng thành hook 4 câu để model có style target rõ ràng.
+
+**Quota:**
+- `MAX_TEXT_LENGTH` 1200 → **1400**; `MAX_LLM_OUTPUT_TOKENS` 800 → **950** (vẫn dưới OTPM 1000 của Groq qwen — tránh 429).
+
+**Template fallback (khi LLM lỗi):** không còn thua kém LLM về chiều sâu:
+- Hook tự sinh thêm **2 câu phân tích từ metrics thật** (RSI overbought → exhaustion pattern; breadth X/Y → rotation mất động cơ; giá vs EMA20 → cushion/structure) — tổng hook 3 câu. Cho LONG/SHORT hướng đối xứng.
+- Thêm dòng **WHY NOW:** + **INVALIDATION:** như LLM.
+
+### Verification
+
+- Typecheck PASS; jest square suites 62/62 PASS.
+- Render thử template (LLM off): hook **4 câu**, 1155 chars, đầy đủ Direction/WHY NOW/INVALIDATION/chart CTA/disclaimer.
+- Render qua LLM (OpenAI-compatible primary): 1305 chars, hook 3 câu đúng cấu trúc, không vi phạm banned words.
+
+### Ghi chú liên quan
+
+`MAX_TEXT_LENGTH` 1400 < giới hạn Binance Square (error 20013 đã classify trong publisher) và 1400 được dùng cả bởi validateLLMOutput.
+
+---
+
 ## TOP-REC-FILL-09-2026 — Đề xuất nổi bật: giữ 3/3 khi thị trường suy yếu toàn diện (2026-09-27)
 
 ### Vấn đề

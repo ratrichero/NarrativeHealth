@@ -10,10 +10,11 @@ const TEMPLATE_VERSION = "1.0.0";
 // SQ-DIAG: Groq enforces an org-level OTPM (output tokens/minute) limit — for
 // qwen models it is 1000. Requesting max_tokens above that limit is rejected
 // instantly with HTTP 429 before generation even starts, which silently pushed
-// every Square post onto the template fallback. 800 tokens comfortably covers
-// the ≤800-char post target; keep this BELOW the smallest provider OTPM limit.
-const MAX_LLM_OUTPUT_TOKENS = 800;
-const MAX_TEXT_LENGTH = 1200;
+// every Square post onto the template fallback. SQ-RICH-CONTENT: 950 tokens
+// still sits below the smallest provider OTPM limit while giving the model
+// room for the richer 3+ sentence hooks and fuller context paragraphs.
+const MAX_LLM_OUTPUT_TOKENS = 950;
+const MAX_TEXT_LENGTH = 1400;
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -278,25 +279,28 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   lines.push("- Open the setup section with the exact phrase 'Direction: ' followed by LONG or SHORT plus a one-clause reason.");
   lines.push("");
   lines.push("STRUCTURE (follow exactly):");
-  lines.push("1. HOOK (1-2 lines): an interesting market observation in plain trader language — what trend, momentum, volume or breadth is doing. No internal scores or points.");
+  lines.push("1. HOOK (MINIMUM 3 FULL SENTENCES, 3-5 sentences total): this is the heart of the post — make it insightful and engaging. Sentence 1: what the market/coin is doing right now in plain trader language (trend, momentum, volume, breadth). Sentence 2: WHY it matters — the tension or opportunity (e.g. what happens if the level holds vs breaks, what crowded positioning means, what history says about setups like this). Sentence 3: what YOU are watching next (specific level, specific behavior, specific signal). No internal scores or points. Each sentence must add new information — never restate the previous one.");
   lines.push("2. DIRECTION: one line starting with 'Direction: ' — LONG or SHORT, then the why.");
   lines.push("3. PRICE & SETUP: current price, entry zone, targets (+% gain), stop (-% risk), risk/reward ratio.");
   lines.push("4. DATA READS (bullets): one dense line per signal — trend score, RSI with interpretation, funding rate with interpretation, 24h volume, narrative breadth (X of Y coins up). Every line has a number.");
   lines.push("5. LEADERS: leading coins with cashtags.");
-  lines.push("6. INVALIDATION: one clear line — when is this thesis dead.");
-  lines.push("7. CHART: one line telling readers how to open the chart (use the exact chart pointer provided in FACTS below).");
-  lines.push("8. QUESTION: end with 1 short question inviting readers to comment, then the disclaimer below.");
+  lines.push("6. WHY NOW: one line starting with 'WHY NOW:' — the single most important reason this setup matters TODAY, not a generic restatement.");
+  lines.push("7. INVALIDATION: one clear line starting with 'INVALIDATION:' — when is this thesis dead, with a specific condition.");
+  lines.push("8. CHART: one line telling readers how to open the chart (use the exact chart pointer provided in FACTS below).");
+  lines.push("9. QUESTION: end with 1 short question inviting readers to comment, then the disclaimer below.");
   lines.push("");
   lines.push("RULES:");
   lines.push("- Use ONLY the facts provided below. Do NOT invent any price, volume, or data.");
   lines.push("- Do NOT change Entry/TP/SL levels. Do NOT add or remove cashtags.");
   lines.push("- NEVER use the words BUY, SELL, ORDER, EXECUTE as commands. The words LONG and SHORT (as in 'Direction: SHORT setup') are REQUIRED and allowed — just never use them as verbs describing your own past actions.");
-  lines.push("- Keep the whole post under 800 characters.");
+  lines.push("- Keep the whole post between 900 and 1300 characters — rich but dense. If the post feels thin, expand the HOOK and the data interpretations, never pad with filler.");
   lines.push("- End with exactly: ⚠️ Data-driven analysis, not financial advice. DYOR.");
   lines.push("");
   lines.push("EXAMPLE (style reference — do not copy content):");
   lines.push("---");
   lines.push("$PENDLE is catching attention today — trend, momentum and volume are lining up in its favor, and breadth confirms it: 6 of 8 coins in the group moving together.");
+  lines.push("");
+  lines.push("That kind of synchronized rotation is rare — it usually means real capital rotating in, not a single-coin pump. The interesting question is whether the group can hold its higher lows while RSI still has room before overbought. Watch the $2.20 area: buyers defending it keeps the setup alive, losing it turns this into a fade.");
   lines.push("");
   lines.push("Price: $2.28");
   lines.push("Entry: 2.1962 – 2.3736");
@@ -481,8 +485,39 @@ function buildViralTemplate(brief: SquareContentBrief): string {
     ? "📍 Direction: SHORT setup (futures) — strength is fading; short into the entry zone above, targets below."
     : "📍 Direction: LONG setup (futures) — momentum + structure favor upside; levels below define the accumulation zone.";
 
-  // 1. Hook (rotating, metric-driven)
+  // 1. Hook (rotating, metric-driven) — SQ-RICH-CONTENT: append a second and
+  // third analytic sentence derived from real metrics so even the deterministic
+  // fallback meets the 3-sentence minimum (never pad — each adds information).
   lines.push(brief.hookLine ?? brief.text.split("\n")[0]);
+  const hookExtra: string[] = [];
+  if (m && isShort) {
+    if (m.rsi14 != null && m.rsi14 >= 70) {
+      hookExtra.push("RSI that stretched into overbought while price stalls is the classic exhaustion pattern — the crowd is positioned, the fuel is thinning.");
+    } else if (m.coinsTotal > 0) {
+      hookExtra.push(`With only ${m.coinsUp} of ${m.coinsTotal} coins in the group still improving, the collective trend has lost its engine — individual bounces become harder to trust.`);
+    }
+    if (m.priceVsEma20Pct != null) {
+      hookExtra.push(
+        m.priceVsEma20Pct >= 0
+          ? `Price still sits ${m.priceVsEma20Pct.toFixed(1)}% above its 20-day average — that cushion is exactly what a fading structure eats first.`
+          : `Price already sits ${Math.abs(m.priceVsEma20Pct).toFixed(1)}% below its 20-day average — rallies back toward it are the textbook zone sellers wait for.`
+      );
+    }
+  } else if (m) {
+    if (m.coinsUp > 0 && m.coinsTotal > 0) {
+      hookExtra.push(`${m.coinsUp} of ${m.coinsTotal} coins in the group moving together is the signature of genuine rotation — broad participation, not a single-coin pop.`);
+    }
+    if (m.priceVsEma20Pct != null) {
+      hookExtra.push(
+        m.priceVsEma20Pct >= 0
+          ? `Price holding ${m.priceVsEma20Pct.toFixed(1)}% above its 20-day average keeps the structure constructive — dips into that average are where buyers have defended before.`
+          : `Reclaiming the 20-day average (price currently ${Math.abs(m.priceVsEma20Pct).toFixed(1)}% below it) is the first confirmation this setup needs.`
+      );
+    }
+  }
+  for (const extra of hookExtra.slice(0, 2)) {
+    lines.push(extra);
+  }
   lines.push("");
   lines.push(dirLine);
   lines.push("");
@@ -588,9 +623,14 @@ function buildViralTemplate(brief: SquareContentBrief): string {
     lines.push("");
   }
 
-  // 6. Invalidation
+  // 6. WHY NOW + INVALIDATION (SQ-RICH-CONTENT: explicit labeled lines so the
+  // deterministic fallback carries the same structure the LLM is asked for)
+  if (brief.whyNowFacts && brief.whyNowFacts.length > 0) {
+    lines.push(`WHY NOW: ${brief.whyNowFacts[0]}`);
+    lines.push("");
+  }
   if (brief.invalidation) {
-    lines.push(`Invalidate if: ${brief.invalidation.replace(/^(Setup invalidates if|Narrative thesis weakens if) /i, "")}`);
+    lines.push(`INVALIDATION: ${brief.invalidation.replace(/^(Setup invalidates if|Narrative thesis weakens if) /i, "")}`);
     lines.push("");
   }
 
