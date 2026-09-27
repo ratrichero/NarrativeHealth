@@ -1,6 +1,158 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-09-24
+## Ngày cập nhật: 2026-09-27
+
+---
+
+## AUTH-01-09-2026 — Hệ thống Authen 2 lớp + tái tổ chức Admin Control Panel (2026-09-27)
+
+### Yêu cầu
+
+1. **Authen Admin**: phải đăng nhập mới được vào `/admin` (menu Admin) để cấu hình hệ thống.
+2. **Authen User**: xây sẵn cơ chế, **bật/tắt được trong Admin Control Panel** — khi bật, mọi trang yêu cầu đăng nhập.
+3. **Admin Control Panel**: tab hiện rối khi nhiều tính năng mới → tách thành **các Icon module riêng biệt**; rà soát phần thừa/không hợp lý và đề xuất hướng xử lý.
+
+### Kiến trúc auth 2 lớp (src/middleware.ts — rewrite)
+
+- **Lớp 1 — ADMIN, luôn bật, fail-closed**: `/admin`, `/admin/*`, `/api/admin/*` yêu cầu admin session JWT (cookie `nhd_session`, httpOnly, sameSite=lax, HS256 qua `jose`; secure ở prod). Pages → 302 `/admin/login?returnTo=…`; APIs → 401 JSON. Public duy nhất: `/admin/login` + endpoint đăng nhập.
+- **Lớp 2 — USER, toggle toàn cục, mặc định TẮT**: khi bật và chưa có session: pages → 302 `/login?returnTo=…`, APIs `/api/*` → 401. Exempt: `/login`, `/admin/login`, `/api/auth/*`, static `/_next`, `/favicon.ico`, `/images`, `/icons`. Edge không có DB driver nên probe `/api/auth/mode` qua loopback (timeout 1500ms), **fail-open** chỉ cho lớp tùy chọn này (lớp admin vẫn fail-closed tuyệt đối).
+- SEO 308 redirects (coin/narrative id-slug) giữ nguyên nguyên trạng.
+
+### Session & lưu trữ
+
+- `src/lib/auth/session.ts` — signSession/verifySession (jose HS256), `SESSION_COOKIE`, TTL 86400s, payload `{sub: "admin"|"user", username?, displayName?}`. **Fail-closed khi thiếu `AUTH_SECRET`** (≥32 ký tự).
+- `src/lib/auth/store.ts` — bcryptjs cost 10; `adminUsers`, `appSettings` (key `auth_enabled`, value `{enabled: boolean}`); getUserAuthEnabled default false.
+- `src/db/schema.ts` — thêm 2 bảng `admin_users`, `app_settings` (additive). Vận hành: `bun run scripts/create-auth-tables.ts` (do `drizzle-kit push` vướng prompt tương tác về constraint cũ `narrative_membership_events` — không truncate được bảng có dữ liệu).
+
+### APIs mới
+
+```
+POST /api/auth/admin/login   — đăng nhập admin; BOOTSTRAP: khi admin_users rỗng, lần POST đầu TẠO admin đầu tiên (username ≥3, password ≥8) rồi đăng nhập luôn; sau đó chỉ đăng nhập thường
+POST /api/auth/logout        — xóa cookie session
+GET  /api/auth/status        — { authEnabled, adminCount, session }
+GET  /api/auth/settings      — đọc toggle (public); PATCH — set toggle (fail-closed, yêu cầu admin session)
+GET  /api/auth/mode          — probe cho middleware (Node runtime, fail-open trả false khi lỗi)
+```
+
+### Trang đăng nhập
+
+- `/admin/login` — admin login + bootstrap mode (tự phát hiện adminCount === 0, đổi label "Tạo tài khoản & đăng nhập").
+- `/login` — user login (dùng cùng credential admin hiện có), redirect `returnTo` mặc định `/`.
+- Cả hai dùng `useSearchParams` → bọc `Suspense` để prerender an toàn (Next 16).
+
+### Navigation (menu công khai)
+
+- Thêm useQuery `["auth-status"]` (staleTime 30s): đã đăng nhập admin → menu trailing hiện link **Admin**; chưa → link đăng nhập admin. Nút logout (icon) ở desktop + mobile dropdown. `navItems` không còn hard-code link `/admin`.
+
+### Tái tổ chức Admin Control Panel (icon modules)
+
+10 tab phẳng → **4 module card icon** (grid 2 cột mobile / 4 cột desktop) phía trên tab bar; tab bar chỉ hiện sub-tab của module đang chọn; click module → mở tab đầu tiên:
+
+```
+🔒 Truy cập & Xác thực (LockKeyhole) → Auth
+🗄  Dữ liệu (Database) → Narratives · Coins · Events
+⚖️  Quy tắc & Cảnh báo (Gavel) → Rules · Rule Versions · Alerts
+🔄 Vận hành (RefreshCw) → Config · Logs · Analytics · Chat Report
+```
+
+- **Module Auth mới**: toggle "Yêu cầu đăng nhập cho người dùng" (GET/PATCH `/api/auth/settings`, hiển thị trạng thái BẬT/TẮT realtime) + link `/admin/login`.
+- **Nút Logout** ở header Admin (POST `/api/auth/logout` → về `/admin/login`).
+- Icon trùng lặp được phân biệt: Narratives=Layers, Coins=Coins, Events=AlertCircle, Alerts=Bell, Config=Settings, Logs=ScrollText, Analytics=BarChart3.
+
+### Rà soát phần thừa / không hợp lý + hướng xử lý
+
+1. **ChatAnalyticsSection nest lồng trong tab Analytics** dưới heading "Narrative Performance" (không đúng nội dung heading) → **chuyển hẳn sang tab Chat Report** (module Vận hành) hiển thị cạnh ChatReportSection; tab Analytics giờ thuần túy Rule Effectiveness + Narrative Performance. *(Đã xử lý trong đợt này.)*
+2. **Icon trùng**: trước đây Narratives/Coins cùng Database, Events/Alerts cùng AlertCircle, Logs/Analytics cùng RefreshCw → gây khó định vị tab. *(Đã tách icon riêng.)*
+3. **Đề xuất tiếp theo (chưa làm, cần quyết định)**: (a) tab "Rule Versions" và "Rules" có thể gộp thành một tab có sub-view vì luôn dùng cặp; (b) "Events" là dữ liệu rủi ro sự kiện nhưng ít dùng — cân nhắc hạ cấp thành phần trong tab Coins; (c) seed/refresh buttons trên header là tác vụ vận hành, có thể chuyển vào module Vận hành khi thêm module mới.
+
+### Env cần bổ sung
+
+```
+AUTH_SECRET=<random ≥32 ký tự>   # BẮT BUỘC — thiếu thì mọi session từ chối (fail-closed)
+```
+
+### Files changed (AUTH-01-09-2026)
+
+```
+src/middleware.ts                          — 2 lớp auth gate + SEO 308 giữ nguyên
+src/lib/auth/session.ts                    — JWT HS256 jose, fail-closed thiếu secret
+src/lib/auth/store.ts                      — admin users + app settings helpers
+src/db/schema.ts                           — + admin_users, app_settings
+src/app/api/auth/admin/login/route.ts      — login + bootstrap admin đầu tiên
+src/app/api/auth/logout/route.ts           — clear cookie
+src/app/api/auth/status/route.ts           — authEnabled + adminCount + session
+src/app/api/auth/settings/route.ts         — GET/PATCH toggle user-auth
+src/app/api/auth/mode/route.ts             — probe middleware (fail-open)
+src/app/admin/login/page.tsx               — admin login + bootstrap (Suspense)
+src/app/login/page.tsx                     — user login (Suspense)
+src/app/admin/page.tsx                     — icon modules + AuthSettingsSection + Logout + gỡ ChatAnalyticsSection khỏi Analytics
+src/components/Navigation.tsx              — auth-status, trailing Admin/Login, logout
+scripts/create-auth-tables.ts              — tạo 2 bảng additive (thay db:push)
+```
+
+### Verification
+
+- Typecheck: **PASS** (`tsc --noEmit`).
+- Jest nhóm liên quan: analytics-ui 27/27, actions route 4/4, route-resilience + P3 panel 23/23 — **PASS**.
+- DB: `admin_users`, `app_settings` đã tạo thành công (additive, không đụng dữ liệu cũ).
+
+---
+
+## UX-REC-MOBILE-09-2026 — Đề xuất 3 LONG / 3 SHORT + tối ưu mobile toàn trang (2026-09-27)
+
+### Yêu cầu
+
+1. Trang chủ — phần "Đề xuất nổi bật": khuyến nghị **3 coin mạnh nhất cho LONG** và **3 coin yếu nhất cho SHORT**.
+2. **Tối ưu giao diện mobile cho tất cả các trang**.
+
+### 1. Đề xuất 3 LONG / 3 SHORT
+
+- **API `src/app/api/dashboard/top-recommendations/route.ts`** (v3): đổi selection từ "2 bullish + 1 bearish" thành **top 3 bullish (LONG) + top 3 bearish (SHORT)**. Khi một bên thiếu ứng viên, các slot còn lại được lấp từ bên kia (hướng không bị làm giả: coin yếu không bao giờ được thăng lên LONG). Toàn bộ logic phân loại `classifyDirection`, composite scoring, ATR fallback, setup Entry/TP/SL giữ nguyên.
+- **Component `src/components/TopRecommendations.tsx`**: render 2 nhóm có **GroupHeader badge LONG (xanh) / SHORT (đỏ)** kèm số coin "mạnh nhất / yếu nhất"; summary "X LONG · Y SHORT · dữ liệu ngày …". Skeleton loading nâng lên 6 card. Card riêng giữ nguyên setup, metrics, reason tiếng Việt.
+- Grid: 1 cột mobile → 3 cột desktop; mỗi nhóm 3 card.
+
+### 2. Mobile pass toàn trang
+
+Rà từng trang, sửa các điểm vỡ bố cục trên màn hình hẹp:
+
+- **Homepage** (`src/app/page.tsx`): SourceStatusBar + RefreshButton xếp dọc trên mobile (`flex-col sm:flex-row`); Top Movers/Weakest rows thêm `gap-3 min-w-0` + truncate symbol chống tràn.
+- **Narrative detail**: header badge row `flex-wrap`; title `text-2xl sm:text-3xl`.
+- **CoinRankingTable** (dùng ở narrative + dashboard): bảng 10 cột thêm `min-w-[560px] sm:min-w-0` để cuộn ngang mượt thay vì bóp méo; header `whitespace-nowrap`; "Confidence" rút gọn "Conf."; coin name `truncate max-w-[90px] sm:max-w-none`.
+- **Watchlist**: bảng thêm `min-w-[520px] sm:min-w-0` (cuộn ngang trên mobile).
+- **Snapshots**: coins table `min-w-[420px]`; header `flex-wrap`, title `text-xl sm:text-2xl`.
+- **Admin**: coins table `min-w-[760px]`, config table `min-w-[640px]`; filter Narrative/Search xếp dọc mobile (`flex-col sm:flex-row`); header Rule Versions / Rules / Events / Alerts xếp dọc + mô tả dài `hidden lg:inline`; item rows event/alert name `break-words` chống tràn.
+- **Square Analytics & Coin detail**: đã responsive sẵn từ trước (grid 2→4 cột, `overflow-x-auto` trên bảng) — kiểm tra lại, không cần sửa.
+- **Navigation**: hamburger + dropdown đã có từ trước (commit c9bdb55) — nguyên trạng.
+- **ChatWidget**: đã có `max-w-[calc(100vw-2rem)]` — nguyên trạng.
+
+### Files changed (UX-REC-MOBILE-09-2026)
+
+```
+src/app/api/dashboard/top-recommendations/route.ts  — selection 3 LONG + 3 SHORT
+src/components/TopRecommendations.tsx               — 2 nhóm LONG/SHORT + GroupHeader
+src/app/page.tsx                                    — header stack + movers row chống tràn
+src/app/narrative/[id]/page.tsx                     — badge wrap + title scale
+src/components/CoinRankingTable.tsx                 — min-width + nowrap + truncate
+src/app/watchlist/page.tsx                          — bảng min-width
+src/app/snapshots/page.tsx                          — bảng min-width + header wrap
+src/app/admin/page.tsx                              — bảng min-width + header/item stack
+```
+
+### Verification (UX-REC-MOBILE-09-2026)
+
+| Kiểm tra | Kết quả |
+|---|---|
+| Typecheck (`bun run typecheck`) | ✅ PASS — 0 error |
+| Jest analytics-ui (27 tests) | ✅ 27/27 PASS |
+| API shape (direction, setup) | Không đổi — tương thích client cũ |
+| Logic selection | LONG = top 3 composite tăng; SHORT = top 3 composite yếu; pad chéo khi thiếu |
+| Frozen phases (P3/P4/P5/P6) | ✅ Không đụng |
+| Square pipeline | ✅ Không đụng |
+
+### Lưu ý
+
+- API vẫn trả tối đa 6 item, mỗi item có `direction: BULLISH \| BEARISH` — client cũ nếu còn cache chỉ hiển thị thiếu nhóm, không lỗi.
+- Trên mobile, bảng nhiều cột giờ **cuộn ngang có kiểm soát** (min-width) thay vì bóp chữ thành không đọc được.
 
 ---
 

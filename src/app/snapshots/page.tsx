@@ -52,7 +52,7 @@ export default function SnapshotsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Link
           href="/"
           className="inline-flex items-center gap-2 text-slate-400 hover:text-white transition-colors"
@@ -60,7 +60,7 @@ export default function SnapshotsPage() {
           <ArrowLeft className="h-4 w-4" />
           Back to Dashboard
         </Link>
-        <h1 className="text-2xl font-bold text-white">Morning Snapshot History</h1>
+        <h1 className="text-xl sm:text-2xl font-bold text-white">Morning Snapshot History</h1>
       </div>
 
       {snapshotsLoading ? (
@@ -166,7 +166,7 @@ export default function SnapshotsPage() {
                       <p className="text-slate-500 text-sm">No coin data</p>
                     ) : (
                       <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
+                        <table className="w-full text-sm min-w-[420px] sm:min-w-0">
                           <thead>
                             <tr className="border-b border-gray-700 text-left text-gray-400">
                               <th className="pb-2">Symbol</th>

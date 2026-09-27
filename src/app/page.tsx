@@ -68,7 +68,7 @@ export default function DashboardPage() {
             </p>
           )}
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
           <SourceStatusBar sourceStatus={dashboard.sourceStatus} />
           <RefreshButton onRefreshComplete={() => refetch()} />
         </div>
@@ -120,10 +120,10 @@ export default function DashboardPage() {
                   <Link
                     key={coin.id}
                     href={coinUrl(coin.id, coin.symbol)}
-                    className="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors"
+                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors min-w-0"
                   >
-                    <div className="flex items-center gap-3">
-                      <span className="font-medium text-white">{coin.symbol}</span>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="font-medium text-white truncate">{coin.symbol}</span>
                       <HealthBadge
                         status={getHealthStatus(coin.healthScore)}
                         score={coin.healthScore}
@@ -154,10 +154,10 @@ export default function DashboardPage() {
                   <Link
                     key={coin.id}
                     href={coinUrl(coin.id, coin.symbol)}
-                    className="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors"
+                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors min-w-0"
                   >
-                    <div className="flex items-center gap-3">
-                      <span className="font-medium text-white">{coin.symbol}</span>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="font-medium text-white truncate">{coin.symbol}</span>
                       <HealthBadge
                         status={getHealthStatus(coin.healthScore)}
                         score={coin.healthScore}

@@ -23,19 +23,19 @@ export function CoinRankingTable({ coins }: CoinRankingTableProps) {
 
   return (
     <div className="overflow-x-auto -mx-4 px-4">
-      <table className="w-full text-xs">
+      <table className="w-full text-xs min-w-[560px] sm:min-w-0">
         <thead className="text-xs text-slate-500 uppercase tracking-wider">
           <tr className="border-b border-slate-800">
-            <th className="text-left pb-2 pr-2">#</th>
-            <th className="text-left pb-2 pr-2">Coin</th>
-            <th className="text-center pb-2 pr-2">Health</th>
-            <th className="text-center pb-2 pr-2">Change</th>
-            <th className="text-center pb-2 pr-2">Signal</th>
-            <th className="text-center pb-2 pr-2">Confidence</th>
-            <th className="text-right pb-2 pr-2">Trend</th>
-            <th className="text-right pb-2 pr-2">Deriv</th>
-            <th className="text-right pb-2 pr-2">Vol</th>
-            <th className="text-right pb-2">Mom</th>
+            <th className="text-left pb-2 pr-2 whitespace-nowrap">#</th>
+            <th className="text-left pb-2 pr-2 whitespace-nowrap">Coin</th>
+            <th className="text-center pb-2 pr-2 whitespace-nowrap">Health</th>
+            <th className="text-center pb-2 pr-2 whitespace-nowrap">Change</th>
+            <th className="text-center pb-2 pr-2 whitespace-nowrap">Signal</th>
+            <th className="text-center pb-2 pr-2 whitespace-nowrap">Conf.</th>
+            <th className="text-right pb-2 pr-2 whitespace-nowrap">Trend</th>
+            <th className="text-right pb-2 pr-2 whitespace-nowrap">Deriv</th>
+            <th className="text-right pb-2 pr-2 whitespace-nowrap">Vol</th>
+            <th className="text-right pb-2 whitespace-nowrap">Mom</th>
           </tr>
         </thead>
         <tbody>
@@ -48,10 +48,10 @@ export function CoinRankingTable({ coins }: CoinRankingTableProps) {
               <td className="py-2.5 pr-2">
                 <Link
                   href={coinUrl(coin.id, coin.symbol)}
-                  className="flex items-center gap-2 hover:text-cyan-400 transition-colors"
+                  className="flex items-center gap-2 hover:text-cyan-400 transition-colors min-w-0"
                 >
-                  <span className="font-medium text-white text-sm">{coin.symbol}</span>
-                  <span className="text-xs text-slate-500">{coin.name}</span>
+                  <span className="font-medium text-white text-sm whitespace-nowrap">{coin.symbol}</span>
+                  <span className="text-xs text-slate-500 truncate max-w-[90px] sm:max-w-none">{coin.name}</span>
                 </Link>
               </td>
               <td className="py-2.5 pr-2 text-center">

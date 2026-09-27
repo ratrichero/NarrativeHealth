@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { ChatAnalyticsSection } from "@/components/admin/ChatAnalyticsSection";
 import { ChatReportSection } from "@/components/admin/ChatReportSection";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
@@ -24,6 +25,14 @@ import {
   ToggleLeft,
   ToggleRight,
   MessageSquare,
+  LockKeyhole,
+  ShieldCheck,
+  Layers,
+  Coins,
+  Bell,
+  BarChart3,
+  ScrollText,
+  LogOut,
 } from "lucide-react";
 import type { AdminNarrative, AdminCoin, ConfigItem } from "@/types";
 import type { RecommendationRule, RuleCondition } from "@/lib/types/recommendation-rule";
@@ -371,7 +380,167 @@ async function fetchNarrativePerformance(): Promise<any[]> {
   return data.data;
 }
 
-type TabType = "narratives" | "coins" | "config" | "logs" | "rule-versions" | "rules" | "events" | "alerts" | "analytics" | "chat-report";
+type TabType = "narratives" | "coins" | "config" | "logs" | "rule-versions" | "rules" | "events" | "alerts" | "analytics" | "chat-report" | "auth";
+
+/**
+ * AUTH-01 + Panel re-org — tabs grouped into modules rendered as icon cards
+ * above the tab bar. Grouping:
+ *   DATA        → narratives, coins, events
+ *   RULES       → rules, rule-versions, alerts
+ *   OPS         → config (scheduler), logs, analytics, chat-report
+ *   ACCESS      → auth (login toggle + admin account)
+ */
+const ADMIN_MODULES: {
+  id: string;
+  label: string;
+  description: string;
+  icon: typeof Settings;
+  tabs: { id: TabType; label: string }[];
+}[] = [
+  {
+    id: "access",
+    label: "Truy cập & Xác thực",
+    description: "Đăng nhập admin, chế độ yêu cầu đăng nhập cho người dùng",
+    icon: LockKeyhole,
+    tabs: [{ id: "auth", label: "Auth" }],
+  },
+  {
+    id: "data",
+    label: "Dữ liệu",
+    description: "Quản lý narratives, coins và rủi ro sự kiện",
+    icon: Database,
+    tabs: [
+      { id: "narratives", label: "Narratives" },
+      { id: "coins", label: "Coins" },
+      { id: "events", label: "Events" },
+    ],
+  },
+  {
+    id: "rules",
+    label: "Quy tắc & Cảnh báo",
+    description: "Rule engine, phiên bản trọng số, ngưỡng cảnh báo",
+    icon: Gavel,
+    tabs: [
+      { id: "rules", label: "Rules" },
+      { id: "rule-versions", label: "Rule Versions" },
+      { id: "alerts", label: "Alerts" },
+    ],
+  },
+  {
+    id: "ops",
+    label: "Vận hành",
+    description: "Scheduler, logs, analytics, chat report",
+    icon: RefreshCw,
+    tabs: [
+      { id: "config", label: "Config" },
+      { id: "logs", label: "Logs" },
+      { id: "analytics", label: "Analytics" },
+      { id: "chat-report", label: "Chat Report" },
+    ],
+  },
+];
+
+/**
+ * AUTH-01 — Auth settings inside the Access module: global user-auth toggle
+ * (persisted in app_settings, key "auth_enabled") + admin entry point.
+ */
+function AuthSettingsSection() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["auth", "settings"],
+    queryFn: async () => {
+      const response = await fetch("/api/auth/settings");
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as { authEnabled: boolean };
+    },
+  });
+  const queryClient = useQueryClient();
+  const toggleMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const response = await fetch("/api/auth/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as { authEnabled: boolean };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["auth", "settings"] });
+    },
+  });
+
+  const authEnabled = data?.authEnabled ?? false;
+
+  return (
+    <div className="p-4 md:p-6 space-y-6">
+      <div className="flex items-center gap-2">
+        <ShieldCheck className="h-5 w-5 text-cyan-400" />
+        <h3 className="text-lg font-semibold text-white">Access & Authentication</h3>
+      </div>
+
+      <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 md:p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium text-white">
+                Yêu cầu đăng nhập cho người dùng
+              </span>
+              {toggleMutation.isError && (
+                <span className="text-xs text-red-400">
+                  {toggleMutation.error instanceof Error
+                    ? toggleMutation.error.message
+                    : "Lỗi khi lưu"}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-slate-400 max-w-xl">
+              Khi bật, mọi trang và API (trừ trang đăng nhập và auth APIs) sẽ yêu cầu người dùng
+              đăng nhập trước khi truy cập. Khi tắt, website vẫn công khai như mặc định.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={isLoading || toggleMutation.isPending}
+            onClick={() => toggleMutation.mutate(!authEnabled)}
+            aria-pressed={authEnabled}
+            className={`relative inline-flex h-7 w-12 flex-shrink-0 items-center rounded-full transition-colors ${
+              authEnabled ? "bg-cyan-500" : "bg-slate-600"
+            } disabled:opacity-50`}
+          >
+            <span
+              className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                authEnabled ? "translate-x-6" : "translate-x-1"
+              }`}
+            />
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-700">
+          <span className="text-xs text-slate-400">Trạng thái hiện tại:</span>
+          {authEnabled ? (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-green-400">
+              <ToggleRight className="h-3.5 w-3.5" />
+              BẬT — yêu cầu đăng nhập
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-300">
+              <ToggleLeft className="h-3.5 w-3.5" />
+              TẮT — truy cập công khai
+            </span>
+          )}
+          <a
+            href="/admin/login"
+            className="text-xs text-cyan-400 hover:text-cyan-300 underline underline-offset-2 ml-auto"
+          >
+            Trang đăng nhập admin →
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function RuleModal({
   isOpen,
@@ -1347,18 +1516,34 @@ export default function AdminPage() {
     });
   };
 
+  const router = useRouter();
+  const logoutMutation = useMutation({
+    mutationFn: async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+    },
+    onSuccess: () => {
+      router.push("/admin/login");
+      router.refresh();
+    },
+  });
+
   const tabs: { id: TabType; label: string; icon: typeof Settings }[] = [
-    { id: "narratives", label: "Narratives", icon: Database },
-    { id: "coins", label: "Coins", icon: Database },
-    { id: "config", label: "Config", icon: Settings },
-    { id: "logs", label: "Logs", icon: RefreshCw },
-    { id: "rule-versions", label: "Rule Versions", icon: GitBranch },
-    { id: "rules", label: "Rules", icon: Gavel },
+    { id: "auth", label: "Auth", icon: LockKeyhole },
+    { id: "narratives", label: "Narratives", icon: Layers },
+    { id: "coins", label: "Coins", icon: Coins },
     { id: "events", label: "Events", icon: AlertCircle },
-    { id: "alerts", label: "Alerts", icon: AlertCircle },
-    { id: "analytics", label: "Analytics", icon: RefreshCw },
+    { id: "rules", label: "Rules", icon: Gavel },
+    { id: "rule-versions", label: "Rule Versions", icon: GitBranch },
+    { id: "alerts", label: "Alerts", icon: Bell },
+    { id: "config", label: "Config", icon: Settings },
+    { id: "logs", label: "Logs", icon: ScrollText },
+    { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "chat-report", label: "Chat Report", icon: MessageSquare },
   ];
+
+  const activeModule = ADMIN_MODULES.find((mod) =>
+    mod.tabs.some((t) => t.id === activeTab)
+  );
 
   return (
     <div className="space-y-6">
@@ -1384,6 +1569,15 @@ export default function AdminPage() {
           >
             <Play className="h-3.5 w-3.5 mr-1" />
             Run Refresh
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => logoutMutation.mutate()}
+            loading={logoutMutation.isPending}
+            className="text-xs"
+          >
+            <LogOut className="h-3.5 w-3.5 mr-1" />
+            Logout
           </Button>
         </div>
       </div>
@@ -1678,25 +1872,62 @@ export default function AdminPage() {
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-800 overflow-x-auto -mx-2 px-2">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
+      {/* Module cards — chọn module trước, tab bar dưới chỉ hiện tab của module đó */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 md:gap-3">
+        {ADMIN_MODULES.map((mod) => {
+          const ModIcon = mod.icon;
+          const isModuleActive = mod.tabs.some((t) => t.id === activeTab);
           return (
             <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-2.5 py-2.5 text-xs font-medium transition-colors border-b-2 -mb-px whitespace-nowrap flex-shrink-0 md:gap-2 md:px-4 md:py-3 md:text-sm ${
-                activeTab === tab.id
-                  ? "border-cyan-500 text-white"
-                  : "border-transparent text-slate-400 hover:text-white"
+              key={mod.id}
+              onClick={() => setActiveTab(mod.tabs[0].id)}
+              className={`text-left rounded-lg border p-3 md:p-4 transition-colors ${
+                isModuleActive
+                  ? "border-cyan-500 bg-cyan-500/10"
+                  : "border-slate-800 bg-slate-900/50 hover:border-slate-600"
               }`}
             >
-              <Icon className="h-4 w-4 flex-shrink-0" />
-              {tab.label}
+              <div className="flex items-center gap-2">
+                <ModIcon
+                  className={`h-4 w-4 md:h-5 md:w-5 flex-shrink-0 ${
+                    isModuleActive ? "text-cyan-400" : "text-slate-400"
+                  }`}
+                />
+                <span
+                  className={`text-xs md:text-sm font-semibold ${
+                    isModuleActive ? "text-white" : "text-slate-300"
+                  }`}
+                >
+                  {mod.label}
+                </span>
+              </div>
+              <p className="mt-1 text-[10px] md:text-xs text-slate-500">{mod.description}</p>
             </button>
           );
         })}
+      </div>
+
+      {/* Sub-tabs của module đang chọn */}
+      <div className="flex gap-1 border-b border-slate-800 overflow-x-auto -mx-2 px-2">
+        {tabs
+          .filter((tab) => activeModule?.tabs.some((m) => m.id === tab.id))
+          .map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 px-2.5 py-2.5 text-xs font-medium transition-colors border-b-2 -mb-px whitespace-nowrap flex-shrink-0 md:gap-2 md:px-4 md:py-3 md:text-sm ${
+                  activeTab === tab.id
+                    ? "border-cyan-500 text-white"
+                    : "border-transparent text-slate-400 hover:text-white"
+                }`}
+              >
+                <Icon className="h-4 w-4 flex-shrink-0" />
+                {tab.label}
+              </button>
+            );
+          })}
       </div>
 
       {/* Tab Content */}
@@ -1817,7 +2048,7 @@ export default function AdminPage() {
                     Add Coin
                   </Button>
                 </div>
-                <div className="flex gap-3">
+                <div className="flex flex-col sm:flex-row gap-3">
                   {/* Narrative Filter */}
                   <div className="flex-1">
                     <label className="block text-sm font-medium text-slate-400 mb-1">Filter by Narrative</label>
@@ -1864,7 +2095,7 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full min-w-[760px]">
                     <thead>
                       <tr className="border-b border-slate-800">
                         <th className="text-left text-xs font-medium text-slate-500 uppercase py-3 px-6">
@@ -2038,7 +2269,7 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full min-w-[640px]">
                     <thead>
                       <tr className="border-b border-slate-800">
                         <th className="text-left text-xs font-medium text-slate-500 uppercase py-3 px-6">
@@ -2231,10 +2462,10 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                     <h2 className="text-lg font-semibold text-white">Rule Versions</h2>
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs text-gray-400">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3">
+                      <span className="text-xs text-gray-400 hidden lg:inline">
                         Config versions track which rules generated each score
                       </span>
                       <Button
@@ -2324,7 +2555,7 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                     <h2 className="text-lg font-semibold text-white">Recommendation Rules</h2>
                     <Button
                       variant="secondary"
@@ -2406,7 +2637,7 @@ export default function AdminPage() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                     <h2 className="text-lg font-semibold text-white">Event Risks</h2>
                     <Button
                       variant="secondary"
@@ -2423,9 +2654,9 @@ export default function AdminPage() {
                     <div className="space-y-2">
                       {events.map((event: any) => (
                         <div key={event.id} className="bg-slate-800/50 border border-slate-700 rounded p-3">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <span className="text-sm font-medium text-white">{event.title}</span>
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="text-sm font-medium text-white break-words">{event.title}</span>
                               <span className={`ml-2 text-xs px-2 py-0.5 rounded ${
                                 event.riskLevel === 'CRITICAL' ? 'bg-red-900/50 text-red-400' :
                                 event.riskLevel === 'HIGH' ? 'bg-orange-900/50 text-orange-400' :
@@ -2465,7 +2696,7 @@ export default function AdminPage() {
            {activeTab === "alerts" && (
              <div className="space-y-6">
                <div>
-                 <div className="flex items-center justify-between mb-4">
+                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
                    <h2 className="text-lg font-semibold text-white">Alert Rules</h2>
                    <Button
                      variant="secondary"
@@ -2483,9 +2714,9 @@ export default function AdminPage() {
                    <div className="space-y-2">
                      {alertRulesData?.map((rule: any) => (
                        <div key={rule.id} className="bg-slate-800/50 border border-slate-700 rounded p-3">
-                         <div className="flex items-center justify-between">
-                           <div>
-                             <span className="text-sm font-medium text-white">{rule.name}</span>
+                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                           <div className="min-w-0">
+                             <span className="text-sm font-medium text-white break-words">{rule.name}</span>
                              <span className="ml-2 text-xs text-gray-400">{rule.scope}</span>
                              <span className="ml-2 text-xs text-gray-400">{rule.triggerType} = {rule.triggerValue}</span>
                            </div>
@@ -2524,9 +2755,9 @@ export default function AdminPage() {
                   <div className="space-y-2">
                     {alertHistoryData?.map((alert: any) => (
                       <div key={alert.id} className="bg-slate-800/50 border border-slate-700 rounded p-3">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <span className="text-sm font-medium text-white">{alert.ruleName}</span>
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="text-sm font-medium text-white break-words">{alert.ruleName}</span>
                             <span className="ml-2 text-xs text-gray-400">{alert.triggerType}</span>
                           </div>
                           <div className="flex items-center gap-2">
@@ -2591,7 +2822,6 @@ export default function AdminPage() {
               <div>
                 <h2 className="text-lg font-semibold text-white mb-4">Narrative Performance</h2>
 
-              <ChatAnalyticsSection />
                 {narrativePerformanceLoading ? (
                   <div className="py-8 text-center">
                     <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
@@ -2617,7 +2847,15 @@ export default function AdminPage() {
             </div>
           )}
 
-          {activeTab === "chat-report" && <ChatReportSection />}
+          {/* AUTH-01: Access module — user-auth toggle + admin login entry */}
+          {activeTab === "auth" && <AuthSettingsSection />}
+
+          {activeTab === "chat-report" && (
+            <div className="space-y-6">
+              <ChatReportSection />
+              <ChatAnalyticsSection />
+            </div>
+          )}
         </CardContent>
       </Card>
 

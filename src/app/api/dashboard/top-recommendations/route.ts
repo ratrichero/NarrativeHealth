@@ -1,11 +1,12 @@
-// Top Recommendations API — 3 directional opportunities for the dashboard
+// Top Recommendations API — six directional opportunities for the dashboard
+// (3 strongest coins → LONG, 3 weakest → SHORT)
 // SQ-TOP-REC v2:
 //  - ATR fallback: if the indicators table lacks ATR_14 for the data date
 //    (timezone offset between pipelines, or indicator job not run yet), compute
 //    ATR directly from market_price_daily so setups are always available.
-//  - Directional selection: top picks are split bullish (2) + bearish watch (1)
-//    so weak coins surface as short-bias candidates instead of being mixed in
-//    as "good coins".
+//  - Directional selection (v3): 3 strongest coins → LONG + 3 weakest → SHORT.
+//    When one side has fewer candidates, the remaining slots are filled from
+//    the other side so the section still surfaces up to 6 directional picks.
 //  - Vietnamese reason generated from live metrics (DB reason stays English —
 //    the frozen rule-engine templates are untouched).
 
@@ -316,21 +317,26 @@ export async function GET() {
     const bullish = scored.filter((s) => s.direction === "BULLISH").sort((a, b) => b.composite - a.composite);
     const bearish = scored.filter((s) => s.direction === "BEARISH").sort((a, b) => b.composite - a.composite);
 
-    // Selection: 2 bullish + 1 bearish when possible, otherwise fill from best remaining
+    // Selection: top 3 bullish (LONG) + top 3 bearish (SHORT).
+    const LONG_TARGET = 3;
+    const SHORT_TARGET = 3;
     const selected: Scored[] = [
-      ...bullish.slice(0, 2),
-      ...(bearish.length > 0 ? [bearish[0]] : []),
-      ...(bullish.slice(2, 2 + Math.max(0, 3 - 2 - (bearish.length > 0 ? 1 : 0)))),
-    ].slice(0, 3);
+      ...bullish.slice(0, LONG_TARGET),
+      ...bearish.slice(0, SHORT_TARGET),
+    ];
 
-    // If still short (e.g. no bullish coins at all), pad from bearish
-    if (selected.length < 3) {
+    // One side short on candidates → pad the remaining slots from the other
+    // side (direction stays honest: never promote a weak coin into LONG).
+    if (selected.length < LONG_TARGET + SHORT_TARGET) {
       const chosenIds = new Set(selected.map((s) => s.row.coinId));
-      for (const b of bearish) {
-        if (selected.length >= 3) break;
-        if (!chosenIds.has(b.row.coinId)) {
-          selected.push(b);
-          chosenIds.add(b.row.coinId);
+      const fillPool = bullish.length < LONG_TARGET
+        ? bearish.slice(SHORT_TARGET)
+        : bullish.slice(LONG_TARGET);
+      for (const s of fillPool) {
+        if (selected.length >= LONG_TARGET + SHORT_TARGET) break;
+        if (!chosenIds.has(s.row.coinId)) {
+          selected.push(s);
+          chosenIds.add(s.row.coinId);
         }
       }
     }

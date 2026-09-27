@@ -1,21 +1,51 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Layers, Coins, Star, Settings, BarChart3, Menu, X } from "lucide-react";
+import { LayoutDashboard, Layers, Coins, Star, Settings, BarChart3, Menu, X, LogIn, LogOut } from "lucide-react";
+
+interface AuthStatusData {
+  session: { sub: "admin" | "user"; username?: string; displayName?: string } | null;
+}
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/watchlist", label: "Watchlist", icon: Star },
   { href: "/square-analytics", label: "Square Analytics", icon: BarChart3 },
-  { href: "/admin", label: "Admin", icon: Settings },
 ];
 
 export function Navigation() {
   const pathname = usePathname();
+  const router = useRouter();
+  const queryClient = useQueryClient();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const { data } = useQuery<AuthStatusData>({
+    queryKey: ["auth-status"],
+    queryFn: async () => {
+      const res = await fetch("/api/auth/status");
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as AuthStatusData;
+    },
+    staleTime: 30 * 1000,
+    retry: 1,
+  });
+  const isAdmin = data?.session?.sub === "admin";
+
+  const logout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    queryClient.invalidateQueries({ queryKey: ["auth-status"] });
+    router.push("/");
+    router.refresh();
+  };
+
+  const adminLink = { href: "/admin", label: "Admin", icon: Settings };
+  const loginLink = { href: "/admin/login", label: "Admin", icon: LogIn };
+  const trailingItem = isAdmin ? adminLink : loginLink;
 
   return (
     <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-50">
@@ -52,10 +82,47 @@ export function Navigation() {
                   </Link>
                 );
               })}
+              {[trailingItem].map((item) => {
+                const Icon = item.icon;
+                const isActive = pathname === item.href;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={cn(
+                      "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                      isActive
+                        ? "bg-slate-800 text-white"
+                        : "text-slate-400 hover:text-white hover:bg-slate-800/50"
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {item.label}
+                  </Link>
+                );
+              })}
+              {isAdmin && (
+                <button
+                  onClick={logout}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-800/50 transition-colors"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Logout
+                </button>
+              )}
             </div>
           </div>
 
           <div className="flex items-center gap-3">
+            {isAdmin && (
+              <button
+                onClick={logout}
+                className="hidden md:flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-800/50 transition-colors"
+                aria-label="Đăng xuất"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            )}
             <span className="hidden sm:inline text-xs text-slate-500">MVP v1.3</span>
             {/* Mobile hamburger */}
             <button
@@ -72,7 +139,7 @@ export function Navigation() {
         {/* Mobile dropdown menu */}
         {mobileOpen && (
           <div className="md:hidden border-t border-slate-800 py-2 space-y-1">
-            {navItems.map((item) => {
+            {[...navItems, trailingItem].map((item) => {
               const Icon = item.icon;
               const isActive = pathname === item.href;
               return (
@@ -92,6 +159,18 @@ export function Navigation() {
                 </Link>
               );
             })}
+            {isAdmin && (
+              <button
+                onClick={() => {
+                  setMobileOpen(false);
+                  logout();
+                }}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800/50 transition-colors"
+              >
+                <LogOut className="h-4 w-4" />
+                Logout
+              </button>
+            )}
           </div>
         )}
       </div>

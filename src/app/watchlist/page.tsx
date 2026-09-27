@@ -79,7 +79,7 @@ export default function WatchlistPage() {
             </div>
           ) : (
             <div className="overflow-x-auto -mx-4 px-4">
-              <table className="w-full text-xs">
+              <table className="w-full text-xs min-w-[520px] sm:min-w-0">
                 <thead className="text-xs text-slate-500 uppercase tracking-wider">
                   <tr className="border-b border-slate-800">
                     <th className="text-left pb-2 pr-3">Coin</th>

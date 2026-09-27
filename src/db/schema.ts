@@ -1512,6 +1512,44 @@ export const p6IntelligenceSummaries = pgTable(
 export type P6IntelligenceSummary = typeof p6IntelligenceSummaries.$inferSelect;
 export type NewP6IntelligenceSummary = typeof p6IntelligenceSummaries.$inferInsert;
 
+// ─── Auth: admin users + app settings (AUTH-01) ─────────
+
+export const adminUsers = pgTable(
+  "admin_users",
+  {
+    id: serial("id").primaryKey(),
+    username: varchar("username", { length: 50 }).notNull(),
+    // bcrypt hash (bcryptjs, cost 10) — never store plaintext
+    passwordHash: text("password_hash").notNull(),
+    displayName: varchar("display_name", { length: 100 }),
+    isActive: boolean("is_active").notNull().default(true),
+    lastLoginAt: timestamp("last_login_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("admin_users_username_unique").on(table.username),
+  ]
+);
+
+/**
+ * Key-value app settings. Used by the AUTH toggle:
+ *   key = "auth_enabled", value = { enabled: boolean }
+ * When enabled, every page except /login and /admin/login requires a user
+ * session (see src/middleware.ts). Additive table — no impact on existing data.
+ */
+export const appSettings = pgTable(
+  "app_settings",
+  {
+    key: varchar("key", { length: 100 }).primaryKey(),
+    value: jsonb("value").notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  }
+);
+
+export type AdminUser = typeof adminUsers.$inferSelect;
+export type NewAdminUser = typeof adminUsers.$inferInsert;
+export type AppSetting = typeof appSettings.$inferSelect;
+
 // ─── ChatBot conversations (CHAT-P1) ────────────────────
 
 export const chatSessions = pgTable(

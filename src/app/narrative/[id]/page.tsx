@@ -80,12 +80,12 @@ export default function NarrativeDetailPage() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">{narrative.name}</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">{narrative.name}</h1>
           {narrative.description && (
             <p className="text-slate-400">{narrative.description}</p>
           )}
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4">
           <HealthBadge status={narrative.status} score={narrative.healthScore} />
           <ScoreChange change={narrative.scoreChange} />
           <ConfidenceBadge confidence={narrative.avgConfidence} />

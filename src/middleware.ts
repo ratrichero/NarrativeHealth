@@ -1,6 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifySession, SESSION_COOKIE } from "@/lib/auth/session";
 
 /**
+ * AUTH-01 — Access control (Edge middleware):
+ *
+ *   1. ADMIN — ALWAYS ON, fail-closed: /admin, /admin/* and /api/admin/*
+ *      require an admin session JWT (httpOnly cookie, HS256 via `jose`).
+ *      Pages → 302 /admin/login?returnTo=… ; APIs → 401 JSON. Any DB/secret
+ *      problem denies access instead of opening it.
+ *
+ *   2. USER — optional global toggle in `app_settings` (key "auth_enabled").
+ *      Edge has no DB driver, so the gate probes the internal Node endpoint
+ *      /api/auth/mode (same pattern as the SEO resolver below). When ON and
+ *      the visitor has no session: pages → 302 /login?returnTo=…, APIs →
+ *      401 JSON. The probe is fail-open on transport error (transient
+ *      startup/DB hiccups must not brick the whole site); the sensitive
+ *      admin layer above stays strictly fail-closed.
+ *
  * SEO-friendly URLs — additive only (không đổi gốc).
  *
  * URL đẹp dạng id-slug là canonical:
@@ -51,6 +67,21 @@ async function resolve(
   }
 }
 
+/** Probe the user-auth toggle through the Node runtime (no DB in Edge). */
+async function userAuthEnabled(): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `http://127.0.0.1:${process.env.PORT ?? 3000}/api/auth/mode`,
+      { signal: AbortSignal.timeout(1500), cache: "no-store" }
+    );
+    const body = (await res.json()) as { success?: boolean; data?: { authEnabled?: boolean } };
+    return body?.data?.authEnabled === true;
+  } catch {
+    // Probe fail → không chặn người dùng (fail-open cho lớp tùy chọn này).
+    return false;
+  }
+}
+
 function canonicalRedirect(
   request: NextRequest,
   basePath: "coin" | "narrative",
@@ -66,6 +97,59 @@ function canonicalRedirect(
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // ─── AUTH-01 · Lớp 1: ADMIN — luôn bật, fail-closed ───
+  const isAdminPage = pathname === "/admin" || pathname.startsWith("/admin/");
+  const isAdminApi =
+    pathname === "/api/admin" || pathname.startsWith("/api/admin/");
+  const isAdminLogin = pathname === "/admin/login";
+
+  if (isAdminPage || isAdminApi) {
+    const token = request.cookies.get(SESSION_COOKIE)?.value;
+    const session = await verifySession(token).catch(() => null);
+
+    if (isAdminPage) {
+      if (isAdminLogin) return NextResponse.next(); // trang đăng nhập
+      if (session?.sub === "admin") return NextResponse.next();
+      const login = new URL("/admin/login", request.url);
+      login.searchParams.set("returnTo", pathname + (request.nextUrl.search || ""));
+      return NextResponse.redirect(login);
+    }
+
+    // /api/admin/* — chỉ endpoint đăng nhập bootstrap là public
+    if (pathname === "/api/auth/admin/login") return NextResponse.next();
+    if (session?.sub === "admin") return NextResponse.next();
+    return NextResponse.json(
+      { success: false, error: "Unauthorized — admin session required." },
+      { status: 401 }
+    );
+  }
+
+  // ─── AUTH-01 · Lớp 2: USER — toggle toàn cục (mặc định TẮT) ───
+  const token = request.cookies.get(SESSION_COOKIE)?.value;
+  const session = await verifySession(token).catch(() => null);
+  const isAuthApi = pathname.startsWith("/api/auth/");
+  const isLoginPage = pathname === "/login";
+  const isStatic =
+    pathname.startsWith("/_next") ||
+    pathname === "/favicon.ico" ||
+    pathname.startsWith("/images") ||
+    pathname.startsWith("/icons");
+
+  if (!session && !isLoginPage && !isAdminLogin && !isAuthApi && !isStatic) {
+    if (await userAuthEnabled()) {
+      if (pathname.startsWith("/api/")) {
+        return NextResponse.json(
+          { success: false, error: "Unauthorized — login required." },
+          { status: 401 }
+        );
+      }
+      const login = new URL("/login", request.url);
+      login.searchParams.set("returnTo", pathname + (request.nextUrl.search || ""));
+      return NextResponse.redirect(login);
+    }
+  }
+
+  // ─── SEO canonical redirects (hành vi cũ, giữ nguyên) ───
   const coinMatch = pathname.match(/^\/coin\/([^/]+)$/);
   if (coinMatch) {
     const raw = coinMatch[1].toLowerCase();
@@ -115,5 +199,7 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/coin/:path*", "/narrative/:path*"],
+  // Chạy trên mọi route trừ tài nguyên tĩnh Next — để lớp user-auth phủ được
+  // toàn bộ trang. Các nhánh SEO/admin chỉ kích hoạt trên đúng đường của chúng.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
