@@ -1,5 +1,7 @@
 /**
  * AUTH-01 — Shared logout: clears the session cookie for both admin and user.
+ * Clearing must match how the cookie was set (same name/path; no `secure`
+ * attribute needed — deletion matches by name+path regardless).
  */
 
 import { NextResponse } from "next/server";
