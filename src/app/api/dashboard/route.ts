@@ -175,13 +175,19 @@ export async function GET() {
       (a, b) => (b.healthScore ?? -1) - (a.healthScore ?? -1)
     );
 
-    // PA-A (MOVE-COMPOSITE): "Mạnh nhất" / "Weakest" must agree with the
-    // scoring used by Đề xuất nổi bật (top-recommendations). Raw scoreChange
-    // ranking put bearish-only markets under a green header, while weakest
-    // ranked by health alone ignored trend/momentum. We replicate the same
-    // classifyDirection + bull/bear composites here (small intentional copy —
-    // see src/app/api/dashboard/top-recommendations/route.ts as source of
-    // truth) so both views tell the same story on the same data date.
+    // PA-A (MOVE-COMPOSITE, revised): "Strongest Coins" / "Weakest Coins"
+    // must be explainable from the columns actually displayed. The previous
+    // bull/bear composites weighted invisible inputs (trend, momentum, and
+    // change×8 for bears), producing orders like TRUTH (51, −12.8) above
+    // BLUAI (25, −3.0) that looked irrational to readers. Ranking is now
+    // health-first lexicographic:
+    //   Strongest → healthScore DESC, tiebreak scoreChange DESC
+    //   Weakest   → healthScore ASC, tiebreak scoreChange ASC (biggest drop first)
+    // The two visible columns fully determine the order. The BULLISH/BEARISH
+    // direction filter (same classifyDirection mirror as top-recommendations)
+    // is kept so a high-health coin that is falling hard never tops the
+    // green list, and the watchOnly fill preserves relative-strength/weakness
+    // semantics under the same ordering.
     const moverRows = await db
       .select({
         coinId: healthScores.coinId,
@@ -225,48 +231,35 @@ export async function GET() {
 
     const moverScored = moverRows.map((r) => {
       const health = r.healthScore ?? 0;
-      const trend = r.trendScore ?? 50;
-      const momentum = r.momentumScore ?? 50;
       const change = r.scoreChange ?? 0;
       const direction = moverDirection(r.signal ?? "OBSERVE", health, r.scoreChange);
-      // Bull strength composite (top-recommendations bullComposite)
-      const bullComposite =
-        health * 0.4 + trend * 0.35 + momentum * 0.15 + Math.max(0, Math.min(20, change + 10)) * 0.5;
-      // Bear weakness composite (top-recommendations bearComposite)
-      const bearComposite =
-        (100 - health) * 0.45 + Math.max(0, -change) * 8 + (100 - trend) * 0.25 + (100 - momentum) * 0.15;
-      return { ...r, direction, bullComposite, bearComposite };
+      return { ...r, direction, health, change };
     });
 
     type MoverEntry = { row: (typeof moverScored)[number]; watchOnly: boolean };
 
-    // Strongest = top bullComposite among genuine BULLISH. Top-Rec-Fill
-    // parity: when nothing classifies BULLISH, fill with the relatively
-    // strongest coins (bullComposite across ALL coins, independent of their
-    // classified direction) flagged watchOnly — relative strength, never a
-    // presented-as-real directional signal.
+    // Strongest = healthiest BULLISH coins; ties broken by today's gain.
     const topMoversData: MoverEntry[] = moverScored
       .filter((s) => s.direction === "BULLISH")
-      .sort((a, b) => b.bullComposite - a.bullComposite)
+      .sort((a, b) => b.health - a.health || b.change - a.change)
       .slice(0, 5)
       .map((s) => ({ row: s, watchOnly: false }));
     if (topMoversData.length < 5) {
       const chosenIds = new Set(topMoversData.map((e) => e.row.coinId));
       const padPool = moverScored
         .filter((s) => !chosenIds.has(s.coinId))
-        .sort((a, b) => b.bullComposite - a.bullComposite);
+        .sort((a, b) => b.health - a.health || b.change - a.change);
       for (const s of padPool) {
         if (topMoversData.length >= 5) break;
         topMoversData.push({ row: s, watchOnly: true });
       }
     }
 
-    // Weakest = top bearComposite among genuine BEARISH; symmetric fill with
-    // the relatively weakest coins (bearComposite across ALL coins) flagged
-    // watchOnly when the day is broadly bullish.
+    // Weakest = least healthy BEARISH coins; ties broken by today's drop
+    // (most negative change first).
     const weakestCoinsData: MoverEntry[] = moverScored
       .filter((s) => s.direction === "BEARISH")
-      .sort((a, b) => b.bearComposite - a.bearComposite)
+      .sort((a, b) => a.health - b.health || a.change - b.change)
       .slice(0, 5)
       .map((s) => ({ row: s, watchOnly: false }));
     if (weakestCoinsData.length < 5) {
@@ -276,7 +269,7 @@ export async function GET() {
       ]);
       const padPool = moverScored
         .filter((s) => !chosenIds.has(s.coinId))
-        .sort((a, b) => b.bearComposite - a.bearComposite);
+        .sort((a, b) => a.health - b.health || a.change - b.change);
       for (const s of padPool) {
         if (weakestCoinsData.length >= 5) break;
         weakestCoinsData.push({ row: s, watchOnly: true });

@@ -103,13 +103,17 @@ export default function DashboardPage() {
 
       {/* Top Movers & Weakest */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Strongest — PA-A: same bullComposite ranking as Đề xuất nổi bật */}
+        {/* Strongest — PA-A (revised): health-first ordering, explainable
+            from the two displayed columns (health ↓, change ↓ tiebreak). */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-green-500" />
-              <CardTitle>Mạnh nhất</CardTitle>
+              <CardTitle>Strongest Coins</CardTitle>
             </div>
+            <p className="text-xs text-slate-500 mt-1">
+              Xếp theo điểm health giảm dần — cùng điểm thì coin tăng nhiều hơn đứng trên.
+            </p>
           </CardHeader>
           <CardContent>
             {dashboard.topMovers.length === 0 ? (
@@ -145,13 +149,16 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Weakest — PA-A: same bearComposite ranking as the SHORT side */}
+        {/* Weakest — PA-A (revised): health-first ordering, mirrored. */}
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">
               <TrendingDown className="h-5 w-5 text-red-500" />
               <CardTitle>Weakest Coins</CardTitle>
             </div>
+            <p className="text-xs text-slate-500 mt-1">
+              Xếp theo điểm health thấp dần — cùng điểm thì coin giảm nhiều hơn đứng trên.
+            </p>
           </CardHeader>
           <CardContent>
             {dashboard.weakestCoins.length === 0 ? (

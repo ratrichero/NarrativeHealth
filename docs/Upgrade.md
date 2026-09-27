@@ -4,6 +4,29 @@
 
 ---
 
+## DASH-MOVER-ORDER-09-2026 — Strongest/Weakest xếp theo health-first, giải thích được từ cột hiển thị (2026-09-27)
+
+### Vấn đề
+
+Hai bảng "Mạnh nhất" / "Weakest Coins" trên trang chủ xếp theo composite có trọng số các thành phần KHÔNG hiển thị (trend, momentum; bên yếu nhân thêm change×8) — tạo ra thứ tự như TRUTH (51, −12.8) đứng trên BLUAI (25, −3.0) hay RENDER (71, −2.9) trên SOL (70, +2.9), khiến người đọc không giải thích được vì sao coin âm ít hơn lại đứng trên coin âm nhiều hơn.
+
+### Hướng xử lý
+
+Ranking chuyển sang health-first lexicographic — thứ tự hoàn toàn xác định bởi 2 cột đang hiển thị: Strongest = healthScore ↓, tiebreak scoreChange ↓; Weakest = healthScore ↑, tiebreak scoreChange ↑ (rơi nhiều nhất trước). Giữ filter hướng BULLISH/BEARISH (mirror classifyDirection) để coin health cao nhưng đang rơi sâu không lên đầu bảng xanh; watchOnly fill giữ nguyên với cùng thứ tự. Tên bảng chuẩn hóa tiếng Anh: "Strongest Coins" / "Weakest Coins" + dòng giải thích cách xếp dưới tiêu đề.
+
+### Files changed
+
+```
+src/app/api/dashboard/route.ts — health-first sort thay bull/bear composite
+src/app/page.tsx — đổi tên Strongest Coins + mô tả quy tắc xếp
+```
+
+### Verification
+
+Live API: Strongest = RENDER 71.4 → ARB 70.6 (+3.8) → NEAR 70.6 (+2.0) → SOL 69.7 → PUMP 69.6; Weakest = BLUAI 24.8 → XAU 24.8 → PAXG 25.2 → XAG 25.8 → AMZN 36.9. Typecheck PASS; square suites 134/134 (flaky LLM rerun pass).
+
+---
+
 ## ALERT-01..06-09-2026 — Hoàn thiện hệ thống cảnh báo: evaluator tự động, delivery đa kênh, dry-run, unlock collector (2026-09-27)
 
 ### Bối cảnh
