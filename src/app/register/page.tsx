@@ -1,18 +1,18 @@
 "use client";
 
 /**
- * AUTH-01 — User login page. Shown for every page when the global
- * user-auth toggle (Admin Control Panel → Auth) is ON. After a successful
- * login the user is returned to ?returnTo (default "/").
+ * ACC-MGMT — Open self-signup page (no email verification by design:
+ * đăng ký là dùng được luôn). On success the user is logged in immediately
+ * (register issues the session) and returned to ?returnTo.
  */
 
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/Card";
-import { LogIn, Loader2, AlertCircle } from "lucide-react";
+import { UserPlus, Loader2, AlertCircle } from "lucide-react";
 
-export default function LoginPage() {
+export default function RegisterPage() {
   return (
     <Suspense
       fallback={
@@ -21,36 +21,40 @@ export default function LoginPage() {
         </div>
       }
     >
-      <LoginForm />
+      <RegisterForm />
     </Suspense>
   );
 }
 
-function LoginForm() {
+function RegisterForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const returnTo = searchParams.get("returnTo") || "/";
 
   const [username, setUsername] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setError(null);
+    if (password !== confirm) {
+      setError("Mật khẩu nhập lại không khớp.");
+      return;
+    }
+    setLoading(true);
     try {
-      // ACC-MGMT: try the end-user layer first; admin accounts must use
-      // /admin/login (clear error tells them so instead of a silent mismatch).
-      const res = await fetch("/api/auth/login", {
+      const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, displayName: displayName || undefined }),
       });
       const json = await res.json();
       if (!json.success) {
-        setError(json.error ?? "Đăng nhập thất bại.");
+        setError(json.error ?? "Đăng ký thất bại.");
         return;
       }
       router.replace(returnTo.startsWith("/") ? returnTo : "/");
@@ -68,11 +72,11 @@ function LoginForm() {
         <CardContent className="p-6 sm:p-8">
           <div className="flex flex-col items-center text-center mb-6">
             <div className="h-12 w-12 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center mb-3">
-              <LogIn className="h-6 w-6 text-cyan-400" />
+              <UserPlus className="h-6 w-6 text-cyan-400" />
             </div>
-            <h1 className="text-lg font-bold text-white">Đăng nhập</h1>
+            <h1 className="text-lg font-bold text-white">Tạo tài khoản</h1>
             <p className="text-xs text-slate-400 mt-1">
-              Trang yêu cầu đăng nhập để tiếp tục
+              Đăng ký là dùng được ngay — không cần xác thực email
             </p>
           </div>
 
@@ -96,7 +100,21 @@ function LoginForm() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500"
-                placeholder="Tên đăng nhập"
+                placeholder="3-30 ký tự: chữ, số, _"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="displayName" className="block text-sm text-slate-400 mb-1">
+                Tên hiển thị <span className="text-slate-600">(tùy chọn)</span>
+              </label>
+              <input
+                id="displayName"
+                name="displayName"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500"
+                placeholder="Tên của bạn"
               />
             </div>
 
@@ -108,10 +126,27 @@ function LoginForm() {
                 id="password"
                 name="password"
                 type="password"
-                autoComplete="current-password"
+                autoComplete="new-password"
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500"
+                placeholder="Tối thiểu 8 ký tự"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="confirm" className="block text-sm text-slate-400 mb-1">
+                Nhập lại mật khẩu
+              </label>
+              <input
+                id="confirm"
+                name="confirm"
+                type="password"
+                autoComplete="new-password"
+                required
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500"
                 placeholder="••••••••"
               />
@@ -123,26 +158,17 @@ function LoginForm() {
               className="w-full inline-flex items-center justify-center gap-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-medium rounded-lg px-4 py-2.5 text-sm transition-colors"
             >
               {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-              Đăng nhập
+              Tạo tài khoản
             </button>
 
             <p className="text-xs text-slate-400 text-center">
-              Chưa có tài khoản?{" "}
+              Đã có tài khoản?{" "}
               <Link
-                href={`/register${returnTo !== "/" ? `?returnTo=${encodeURIComponent(returnTo)}` : ""}`}
+                href={`/login${returnTo !== "/" ? `?returnTo=${encodeURIComponent(returnTo)}` : ""}`}
                 className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2"
               >
-                Đăng ký ngay
+                Đăng nhập
               </Link>
-            </p>
-            <p className="text-xs text-slate-500 text-center">
-              Quản trị viên?{" "}
-              <a
-                href="/admin/login"
-                className="text-slate-400 hover:text-slate-300 underline underline-offset-2"
-              >
-                Đăng nhập admin
-              </a>
             </p>
           </form>
         </CardContent>

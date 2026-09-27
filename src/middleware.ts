@@ -128,14 +128,23 @@ export async function middleware(request: NextRequest) {
   const token = request.cookies.get(SESSION_COOKIE)?.value;
   const session = await verifySession(token).catch(() => null);
   const isAuthApi = pathname.startsWith("/api/auth/");
-  const isLoginPage = pathname === "/login";
+  // Trang auth công khai: đăng nhập + đăng ký (đăng ký không cần xác thực —
+  // ACC-MGMT: register xong là dùng được ngay, không qua email verification).
+  const isPublicAuthPage =
+    pathname === "/login" || pathname === "/register";
   const isStatic =
     pathname.startsWith("/_next") ||
     pathname === "/favicon.ico" ||
     pathname.startsWith("/images") ||
     pathname.startsWith("/icons");
 
-  if (!session && !isLoginPage && !isAdminLogin && !isAuthApi && !isStatic) {
+  if (
+    !session &&
+    !isPublicAuthPage &&
+    !isAdminLogin &&
+    !isAuthApi &&
+    !isStatic
+  ) {
     if (await userAuthEnabled()) {
       if (pathname.startsWith("/api/")) {
         return NextResponse.json(

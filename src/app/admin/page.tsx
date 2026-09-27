@@ -33,6 +33,7 @@ import {
   BarChart3,
   ScrollText,
   LogOut,
+  Users,
 } from "lucide-react";
 import type { AdminNarrative, AdminCoin, ConfigItem } from "@/types";
 import type { RecommendationRule, RuleCondition } from "@/lib/types/recommendation-rule";
@@ -399,7 +400,8 @@ type TabType =
   | "alerts"
   | "analytics"
   | "chat-report"
-  | "auth";
+  | "auth"
+  | "accounts";
 
 /**
  * AUTH-01 + Panel re-org — tabs grouped into modules rendered as icon cards
@@ -419,9 +421,12 @@ const ADMIN_MODULES: {
   {
     id: "access",
     label: "Truy cập & Xác thực",
-    description: "Đăng nhập admin, chế độ yêu cầu đăng nhập cho người dùng",
+    description: "Đăng nhập admin, chế độ yêu cầu đăng nhập, quản trị tài khoản",
     icon: LockKeyhole,
-    tabs: [{ id: "auth", label: "Auth" }],
+    tabs: [
+      { id: "auth", label: "Auth" },
+      { id: "accounts", label: "Accounts" },
+    ],
   },
   {
     id: "data",
@@ -555,6 +560,505 @@ function AuthSettingsSection() {
             Trang đăng nhập admin →
           </a>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * ACC-MGMT — Account management inside the Access module.
+ *   (A) End-user accounts: full CRUD (create, toggle active, reset password,
+ *       delete). End-user registration is public via /register (no email
+ *       verification — account works immediately).
+ *   (B) Admin accounts: superadmin-only via API guard (role resolved from DB
+ *       since the session payload doesn't carry it); 403 → info notice here.
+ */
+function AccountsSection() {
+  const queryClient = useQueryClient();
+  const [newUser, setNewUser] = useState({ username: "", displayName: "", password: "" });
+  const [newAdmin, setNewAdmin] = useState({ username: "", displayName: "", password: "" });
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const { data: users, isLoading: usersLoading, error: usersError } = useQuery({
+    queryKey: ["admin", "acc-users"],
+    queryFn: async () => {
+      const response = await fetch("/api/admin/users");
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as {
+        id: number;
+        username: string;
+        displayName: string | null;
+        isActive: boolean;
+        lastLoginAt: string | null;
+        createdAt: string;
+      }[];
+    },
+  });
+
+  const { data: admins, isLoading: adminsLoading, error: adminsError } = useQuery({
+    queryKey: ["admin", "acc-admins"],
+    queryFn: async () => {
+      const response = await fetch("/api/admin/admins");
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as {
+        id: number;
+        username: string;
+        displayName: string | null;
+        role: string;
+        isActive: boolean;
+        lastLoginAt: string | null;
+        createdAt: string;
+      }[];
+    },
+  });
+  const adminsForbidden = adminsError instanceof Error;
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["admin", "acc-users"] });
+    queryClient.invalidateQueries({ queryKey: ["admin", "acc-admins"] });
+  };
+
+  const createUserMutation = useMutation({
+    mutationFn: async () => {
+      setFormError(null);
+      const response = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newUser),
+      });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data;
+    },
+    onSuccess: () => {
+      setNewUser({ username: "", displayName: "", password: "" });
+      invalidate();
+    },
+    onError: (e) => setFormError(e instanceof Error ? e.message : "Lỗi khi tạo user"),
+  });
+
+  const createAdminMutation = useMutation({
+    mutationFn: async () => {
+      setFormError(null);
+      const response = await fetch("/api/admin/admins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newAdmin),
+      });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data;
+    },
+    onSuccess: () => {
+      setNewAdmin({ username: "", displayName: "", password: "" });
+      invalidate();
+    },
+    onError: (e) => setFormError(e instanceof Error ? e.message : "Lỗi khi tạo admin"),
+  });
+
+  const toggleUserMutation = useMutation({
+    mutationFn: async ({ id, isActive }: { id: number; isActive: boolean }) => {
+      const response = await fetch(`/api/admin/users/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive }),
+      });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data;
+    },
+    onSuccess: invalidate,
+  });
+
+  const resetUserPasswordMutation = useMutation({
+    mutationFn: async ({ id, password }: { id: number; password: string }) => {
+      const response = await fetch(`/api/admin/users/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data;
+    },
+    onSuccess: invalidate,
+  });
+
+  const deleteUserMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const response = await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data;
+    },
+    onSuccess: invalidate,
+  });
+
+  const toggleAdminMutation = useMutation({
+    mutationFn: async ({ id, isActive }: { id: number; isActive: boolean }) => {
+      const response = await fetch(`/api/admin/admins/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive }),
+      });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data;
+    },
+    onSuccess: invalidate,
+  });
+
+  const setAdminRoleMutation = useMutation({
+    mutationFn: async ({ id, role }: { id: number; role: string }) => {
+      const response = await fetch(`/api/admin/admins/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data;
+    },
+    onSuccess: invalidate,
+  });
+
+  const resetAdminPasswordMutation = useMutation({
+    mutationFn: async ({ id, password }: { id: number; password: string }) => {
+      const response = await fetch(`/api/admin/admins/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data;
+    },
+    onSuccess: invalidate,
+  });
+
+  const deleteAdminMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const response = await fetch(`/api/admin/admins/${id}`, { method: "DELETE" });
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data;
+    },
+    onSuccess: invalidate,
+  });
+
+  const fmtDate = (d: string | null) =>
+    d ? new Date(d).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" }) : "—";
+
+  return (
+    <div className="p-4 md:p-6 space-y-8">
+      <div className="flex items-center gap-2">
+        <Users className="h-5 w-5 text-cyan-400" />
+        <h3 className="text-lg font-semibold text-white">Quản trị tài khoản</h3>
+      </div>
+
+      {formError && (
+        <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-sm text-red-400">
+          {formError}
+        </div>
+      )}
+
+      {/* ─── (A) End-user accounts ─── */}
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 className="text-sm font-semibold text-white">Tài khoản người dùng</h4>
+            <p className="text-xs text-slate-400">
+              Người dùng tự đăng ký công khai tại /register (không cần xác thực email — đăng ký
+              là dùng được ngay). Ở đây bạn bật/tắt, đặt lại mật khẩu hoặc xóa tài khoản.
+            </p>
+          </div>
+          <a
+            href="/register"
+            className="text-xs text-cyan-400 hover:text-cyan-300 underline underline-offset-2"
+          >
+            Trang đăng ký công khai →
+          </a>
+        </div>
+
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <input
+              value={newUser.username}
+              onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+              placeholder="username"
+              className="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white flex-1 min-w-[140px]"
+            />
+            <input
+              value={newUser.displayName}
+              onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })}
+              placeholder="Tên hiển thị (tùy chọn)"
+              className="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white flex-1 min-w-[140px]"
+            />
+            <input
+              type="password"
+              value={newUser.password}
+              onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+              placeholder="Mật khẩu (≥8 ký tự)"
+              className="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white flex-1 min-w-[160px]"
+            />
+            <Button
+              size="sm"
+              onClick={() => createUserMutation.mutate()}
+              loading={createUserMutation.isPending}
+            >
+              <Plus className="h-4 w-4 mr-1" />
+              Thêm user
+            </Button>
+          </div>
+
+          {usersLoading ? (
+            <div className="py-8 text-center">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+            </div>
+          ) : !users || users.length === 0 ? (
+            <div className="py-8 text-center text-slate-500 text-sm">
+              Chưa có tài khoản người dùng nào.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px]">
+                <thead>
+                  <tr className="border-b border-slate-700">
+                    <th className="text-left text-xs font-medium text-slate-500 uppercase py-2 px-3">Username</th>
+                    <th className="text-left text-xs font-medium text-slate-500 uppercase py-2 px-3">Tên hiển thị</th>
+                    <th className="text-center text-xs font-medium text-slate-500 uppercase py-2 px-3">Trạng thái</th>
+                    <th className="text-center text-xs font-medium text-slate-500 uppercase py-2 px-3">Đăng nhập cuối</th>
+                    <th className="text-center text-xs font-medium text-slate-500 uppercase py-2 px-3">Tạo lúc</th>
+                    <th className="text-center text-xs font-medium text-slate-500 uppercase py-2 px-3">Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((u) => (
+                    <tr key={u.id} className="border-b border-slate-800/50">
+                      <td className="py-2.5 px-3 font-medium text-white">{u.username}</td>
+                      <td className="py-2.5 px-3 text-slate-400 text-sm">{u.displayName || "—"}</td>
+                      <td className="py-2.5 px-3 text-center">
+                        <Badge variant={u.isActive ? "success" : "danger"}>
+                          {u.isActive ? "Active" : "Locked"}
+                        </Badge>
+                      </td>
+                      <td className="py-2.5 px-3 text-center text-xs text-slate-400">{fmtDate(u.lastLoginAt)}</td>
+                      <td className="py-2.5 px-3 text-center text-xs text-slate-400">{fmtDate(u.createdAt)}</td>
+                      <td className="py-2.5 px-3">
+                        <div className="flex items-center justify-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            title={u.isActive ? "Khóa đăng nhập" : "Mở khóa"}
+                            loading={toggleUserMutation.isPending}
+                            onClick={() =>
+                              toggleUserMutation.mutate({ id: u.id, isActive: !u.isActive })
+                            }
+                          >
+                            {u.isActive ? (
+                              <ToggleRight className="h-4 w-4 text-green-400" />
+                            ) : (
+                              <ToggleLeft className="h-4 w-4 text-slate-400" />
+                            )}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            title="Đặt lại mật khẩu"
+                            onClick={() => {
+                              const pw = prompt(`Mật khẩu mới cho "${u.username}" (≥8 ký tự):`);
+                              if (pw === null) return;
+                              if (pw.length < 8) {
+                                alert("Mật khẩu tối thiểu 8 ký tự.");
+                                return;
+                              }
+                              resetUserPasswordMutation.mutate({ id: u.id, password: pw });
+                            }}
+                          >
+                            <Edit2 className="h-4 w-4 text-cyan-400" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            title="Xóa tài khoản"
+                            loading={deleteUserMutation.isPending}
+                            onClick={() => {
+                              if (confirm(`Xóa vĩnh viễn tài khoản "${u.username}"?`)) {
+                                deleteUserMutation.mutate(u.id);
+                              }
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4 text-red-400" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ─── (B) Admin accounts — superadmin only ─── */}
+      <div className="space-y-3">
+        <div>
+          <h4 className="text-sm font-semibold text-white">Tài khoản admin</h4>
+          <p className="text-xs text-slate-400">
+            Chỉ superadmin mới xem và quản lý được danh sách này (phân quyền: superadmin / admin).
+            Hệ thống luôn giữ ít nhất một superadmin đang hoạt động — không thể tự khóa chính mình.
+          </p>
+        </div>
+
+        {adminsForbidden ? (
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 text-center text-sm text-slate-400">
+            <LockKeyhole className="h-5 w-5 mx-auto mb-2 text-slate-500" />
+            Tài khoản của bạn không có quyền superadmin — không thể quản lý tài khoản admin.
+          </div>
+        ) : (
+          <>
+            <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <input
+                  value={newAdmin.username}
+                  onChange={(e) => setNewAdmin({ ...newAdmin, username: e.target.value })}
+                  placeholder="username"
+                  className="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white flex-1 min-w-[140px]"
+                />
+                <input
+                  value={newAdmin.displayName}
+                  onChange={(e) => setNewAdmin({ ...newAdmin, displayName: e.target.value })}
+                  placeholder="Tên hiển thị (tùy chọn)"
+                  className="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white flex-1 min-w-[140px]"
+                />
+                <input
+                  type="password"
+                  value={newAdmin.password}
+                  onChange={(e) => setNewAdmin({ ...newAdmin, password: e.target.value })}
+                  placeholder="Mật khẩu (≥8 ký tự)"
+                  className="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white flex-1 min-w-[160px]"
+                />
+                <Button
+                  size="sm"
+                  onClick={() => createAdminMutation.mutate()}
+                  loading={createAdminMutation.isPending}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Thêm admin
+                </Button>
+              </div>
+
+              {adminsLoading ? (
+                <div className="py-8 text-center">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+                </div>
+              ) : !admins || admins.length === 0 ? (
+                <div className="py-8 text-center text-slate-500 text-sm">
+                  Không tải được danh sách admin.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[760px]">
+                    <thead>
+                      <tr className="border-b border-slate-700">
+                        <th className="text-left text-xs font-medium text-slate-500 uppercase py-2 px-3">Username</th>
+                        <th className="text-left text-xs font-medium text-slate-500 uppercase py-2 px-3">Tên hiển thị</th>
+                        <th className="text-center text-xs font-medium text-slate-500 uppercase py-2 px-3">Vai trò</th>
+                        <th className="text-center text-xs font-medium text-slate-500 uppercase py-2 px-3">Trạng thái</th>
+                        <th className="text-center text-xs font-medium text-slate-500 uppercase py-2 px-3">Đăng nhập cuối</th>
+                        <th className="text-center text-xs font-medium text-slate-500 uppercase py-2 px-3">Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {admins.map((a) => (
+                        <tr key={a.id} className="border-b border-slate-800/50">
+                          <td className="py-2.5 px-3 font-medium text-white">{a.username}</td>
+                          <td className="py-2.5 px-3 text-slate-400 text-sm">{a.displayName || "—"}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            <Badge variant={a.role === "superadmin" ? "warning" : "default"}>
+                              {a.role === "superadmin" ? "Superadmin" : "Admin"}
+                            </Badge>
+                          </td>
+                          <td className="py-2.5 px-3 text-center">
+                            <Badge variant={a.isActive ? "success" : "danger"}>
+                              {a.isActive ? "Active" : "Locked"}
+                            </Badge>
+                          </td>
+                          <td className="py-2.5 px-3 text-center text-xs text-slate-400">{fmtDate(a.lastLoginAt)}</td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex items-center justify-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                title={a.role === "superadmin" ? "Hạ xuống admin" : "Nâng lên superadmin"}
+                                loading={setAdminRoleMutation.isPending}
+                                onClick={() =>
+                                  setAdminRoleMutation.mutate({
+                                    id: a.id,
+                                    role: a.role === "superadmin" ? "admin" : "superadmin",
+                                  })
+                                }
+                              >
+                                <ShieldCheck className="h-4 w-4 text-amber-400" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                title={a.isActive ? "Khóa đăng nhập" : "Mở khóa"}
+                                loading={toggleAdminMutation.isPending}
+                                onClick={() =>
+                                  toggleAdminMutation.mutate({ id: a.id, isActive: !a.isActive })
+                                }
+                              >
+                                {a.isActive ? (
+                                  <ToggleRight className="h-4 w-4 text-green-400" />
+                                ) : (
+                                  <ToggleLeft className="h-4 w-4 text-slate-400" />
+                                )}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                title="Đặt lại mật khẩu"
+                                onClick={() => {
+                                  const pw = prompt(`Mật khẩu mới cho "${a.username}" (≥8 ký tự):`);
+                                  if (pw === null) return;
+                                  if (pw.length < 8) {
+                                    alert("Mật khẩu tối thiểu 8 ký tự.");
+                                    return;
+                                  }
+                                  resetAdminPasswordMutation.mutate({ id: a.id, password: pw });
+                                }}
+                              >
+                                <Edit2 className="h-4 w-4 text-cyan-400" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                title="Xóa tài khoản"
+                                loading={deleteAdminMutation.isPending}
+                                onClick={() => {
+                                  if (confirm(`Xóa vĩnh viễn tài khoản admin "${a.username}"?`)) {
+                                    deleteAdminMutation.mutate(a.id);
+                                  }
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4 text-red-400" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1553,6 +2057,7 @@ export default function AdminPage() {
 
   const tabs: { id: TabType; label: string; icon: typeof Settings }[] = [
     { id: "auth", label: "Auth", icon: LockKeyhole },
+    { id: "accounts", label: "Accounts", icon: Users },
     { id: "narratives", label: "Narratives", icon: Layers },
     { id: "coins", label: "Coins", icon: Coins },
     { id: "events", label: "Events", icon: AlertCircle },
@@ -3001,6 +3506,9 @@ export default function AdminPage() {
 
           {/* AUTH-01: Access module — user-auth toggle + admin login entry */}
           {activeTab === "auth" && <AuthSettingsSection />}
+
+          {/* ACC-MGMT: Access module — end-user + admin account management */}
+          {activeTab === "accounts" && <AccountsSection />}
 
           {activeTab === "chat-report" && (
             <div className="space-y-6">

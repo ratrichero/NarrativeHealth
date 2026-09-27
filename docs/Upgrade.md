@@ -4,6 +4,47 @@
 
 ---
 
+## ACC-MGMT-09-2026 — Quản trị tài khoản: admin accounts, user accounts, đăng ký tự do (2026-09-27)
+
+### Mục tiêu
+
+Hoàn thiện nốt module Truy cập & Xác thực trong Admin: (a) quản trị tài khoản admin (phân quyền superadmin/admin, khóa/mở, đặt lại mật khẩu, xóa), (b) theo dõi + quản trị danh sách tài khoản người dùng, (c) mở cơ chế đăng ký tự do không cần xác thực email — đăng ký xong là có session dùng được ngay.
+
+### Hướng xử lý
+
+- **Schema:** bảng `users` mới (username unique, passwordHash bcrypt, displayName, isActive, lastLoginAt, createdAt); cột `role` (varchar, default `superadmin`) cho `admin_users`. DDL additive idempotent (pattern script DDL).
+- **Auth store:** bộ helpers users (`listUsers`, `createUser`, `verifyUserCredentials`, `setUserActive`, `setUserPassword`, `deleteUser`, `touchUserLastLogin`) + admins (`listAdminUsers`, `setAdminActive`, `setAdminRole`, `setAdminPassword`, `countActiveAdmins`). Username là shared namespace users↔admins.
+- **Public endpoints:** `POST /api/auth/register` (tự do, chặn collision cả 2 bảng, sign session `sub="user"` ngay — đăng ký là dùng được; nếu `AUTH_SECRET` chưa cấu hình vẫn tạo tài khoản kèm cảnh báo), `POST /api/auth/login` (user layer, admin đi `/admin/login`), trang `/register` + link qua lại `/login`.
+- **Admin APIs:** `GET/POST /api/admin/users`, `PATCH/PUT/DELETE /api/admin/users/[id]`; `GET/POST /api/admin/admins`, `PATCH/PUT /api/admin/admins/[id]` — guard superadmin resolve role từ DB (session JWT không mang role); cấm tự khóa/demote chính mình; cấm disable/demote superadmin cuối cùng (chống lockout).
+- **Middleware:** whitelist thêm `/register` cạnh `/login` để trang đăng ký không bị chặn khi bật user-auth toggle.
+- **Admin UI:** tab **Accounts** trong module Access — bảng users (toggle active, reset password, delete, thêm user thủ công) + bảng admins (role badge, promote/demote, toggle, reset, delete, thêm admin; 403 → thông báo không đủ quyền).
+
+### Cấu hình bắt buộc
+
+`AUTH_SECRET` (≥32 ký tự) phải được đặt trong môi trường chạy (sandbox `.env.local` / production env) — thiếu key này mọi phiên đăng nhập đều không thể ký (fail-closed đúng thiết kế).
+
+### Files changed
+
+```
+src/db/schema.ts — users table + admin_users.role
+src/lib/auth/store.ts — users/admins helpers
+src/app/api/auth/register/route.ts — NEW open self-signup
+src/app/api/auth/login/route.ts — NEW user login
+src/app/api/admin/users/route.ts + [id]/route.ts — NEW user management
+src/app/api/admin/admins/route.ts + [id]/route.ts — NEW admin management (superadmin guard)
+src/app/register/page.tsx — NEW public register page
+src/app/login/page.tsx — endpoint /api/auth/login + link đăng ký
+src/middleware.ts — whitelist /register
+src/app/admin/page.tsx — tab Accounts (AccountsSection: users + admins)
+```
+
+### Verification
+
+- Typecheck PASS (trừ lỗi debug script cũ có sẵn); jest square suites 134/134 PASS.
+- Live preview: register → `200 {sessionIssued:true}` + cookie HttpOnly; login OK; trùng username → 409; sai mật khẩu → 401; `/register`, `/login` public 200.
+
+---
+
 ## SQ-TP-ORDER-09-2026 — Target SHORT bị gán nhãn ngược: TP1 phải là mức gần (2026-09-27)
 
 ### Vấn đề

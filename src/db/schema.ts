@@ -1523,11 +1523,37 @@ export const adminUsers = pgTable(
     passwordHash: text("password_hash").notNull(),
     displayName: varchar("display_name", { length: 100 }),
     isActive: boolean("is_active").notNull().default(true),
+    // ACC-MGMT: "superadmin" (default) manages other admins; "admin" is a
+    // regular admin without admin-account management rights.
+    role: varchar("role", { length: 20 }).notNull().default("superadmin"),
     lastLoginAt: timestamp("last_login_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
     unique("admin_users_username_unique").on(table.username),
+  ]
+);
+
+/**
+ * ACC-MGMT — End-user accounts. Registered via open self-signup (/register —
+ * no email verification by design), listed and manageable in Admin →
+ * Accounts. Separate table from admin_users: an account is never both, and
+ * user sessions are the same JWT shape with sub="user".
+ */
+export const users = pgTable(
+  "users",
+  {
+    id: serial("id").primaryKey(),
+    username: varchar("username", { length: 50 }).notNull(),
+    // bcrypt hash (bcryptjs, cost 10) — never store plaintext
+    passwordHash: text("password_hash").notNull(),
+    displayName: varchar("display_name", { length: 100 }),
+    isActive: boolean("is_active").notNull().default(true),
+    lastLoginAt: timestamp("last_login_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique("users_username_unique").on(table.username),
   ]
 );
 
@@ -1548,6 +1574,8 @@ export const appSettings = pgTable(
 
 export type AdminUser = typeof adminUsers.$inferSelect;
 export type NewAdminUser = typeof adminUsers.$inferInsert;
+export type User = typeof users.$inferSelect;
+export type NewUser = typeof users.$inferInsert;
 export type AppSetting = typeof appSettings.$inferSelect;
 
 // ─── ChatBot conversations (CHAT-P1) ────────────────────
