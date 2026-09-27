@@ -366,7 +366,11 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
     lines.push(`Entry zone: ${setupEntry.low} – ${setupEntry.high}`);
   }
   if (setupTps) {
-    lines.push(`Take profits: ${setupTps.slice(0, 3).map((tp) => `${tp.label ? tp.label + " " : ""}${tp.level}`).join(", ")}`);
+    // SQ-TP-ORDER: present targets nearest-first for shorts (TP1 near, TP2
+    // far — hit in descending price order); also repairs legacy swapped rows.
+    const orderedTps =
+      brief.direction === "SHORT" ? [...setupTps].sort((a, b) => b.level - a.level) : setupTps;
+    lines.push(`Take profits: ${orderedTps.slice(0, 3).map((tp) => `${tp.label ? tp.label + " " : ""}${tp.level}`).join(", ")}`);
   }
   if (setupSl) {
     lines.push(`Stop loss: ${setupSl.level}`);
@@ -527,12 +531,16 @@ function buildViralTemplate(brief: SquareContentBrief): string {
     lines.push(`Price: $${fmtPrice(m.currentPrice)}`);
     lines.push(`Entry: ${fmtPrice(leaderEntry.low)} – ${fmtPrice(leaderEntry.high)}`);
     if (leaderTps && leaderTps.length > 0) {
-      const tpStr = leaderTps
+      // SQ-TP-ORDER: render targets nearest-first — a short's targets are hit
+      // in descending price order (TP1 near, TP2 far). Sorting by proximity
+      // also repairs legacy opportunities whose stored TP1/TP2 were swapped.
+      const orderedTps = isShort ? [...leaderTps].sort((a, b) => b.level - a.level) : leaderTps;
+      const tpStr = orderedTps
         .slice(0, 2)
         .map((tp) => {
           // SQ-DIR: % is the price move to the level — down for a short's targets.
           const sign = isShort ? "-" : "+";
-          const pct = m.tp1GainPct != null && tp === leaderTps[0] ? ` (${sign}${m.tp1GainPct.toFixed(0)}%)` : "";
+          const pct = m.tp1GainPct != null && tp === orderedTps[0] ? ` (${sign}${m.tp1GainPct.toFixed(0)}%)` : "";
           return `${fmtPrice(tp.level)}${pct}`;
         })
         .join(" → ");

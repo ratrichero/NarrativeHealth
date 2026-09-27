@@ -497,9 +497,14 @@ function calculateSetupLevels(
     const sl = Math.round((entryHigh + atr * 1) * 10000) / 10000;
     return {
       entry: { low: entryLow, high: entryHigh },
+      // SQ-TP-ORDER: labels follow DISTANCE from entry, never raw price order.
+      // TP1 is always the near target (1.5 ATR) and TP2 the far one (3 ATR) —
+      // for a short that means TP1 > TP2 numerically. The old code put tp2 in
+      // the "TP1" slot, so every consumer had to un-swap and any that didn't
+      // published maps like "TP1 0.005400 → TP2 0.007000".
       takeProfits: [
-        { level: tp2, label: "TP1 (1.5 ATR)" },
-        { level: tp1, label: "TP2 (3 ATR)" },
+        { level: tp1, label: "TP1 (1.5 ATR)" },
+        { level: tp2, label: "TP2 (3 ATR)" },
       ],
       stopLoss: { level: sl, label: "SL (1 ATR)" },
       direction,
@@ -1024,11 +1029,17 @@ function buildAsciiPriceMap(
   const fmt = (n: number) => (n >= 100 ? n.toFixed(0) : n >= 1 ? n.toFixed(4) : n.toFixed(6));
   const tpLabel = (tp: PriceTarget) => tp.label ? tp.label.split(" ")[0] : "TP";
   if (direction === "SHORT") {
+    // SQ-TP-ORDER: assign labels strictly by distance from the entry — nearest
+    // target first, regardless of stored labels. Legacy persisted rows from
+    // before the calculateSetupLevels fix carry swapped TP1/TP2 labels;
+    // deriving the labels here repairs their rendered maps without a data
+    // migration. Display order is nearest→farthest: on the top-down price map
+    // the first target price hits after entry is TP1, then TP2 below it.
     const [nearest, next] = [...takeProfits].sort((a, b) => b.level - a.level);
     const parts = [`SL ${fmt(stopLoss.level)}`];
     parts.push(`▓ SHORT ${fmt(entry.low)}–${fmt(entry.high)} ▓`);
-    if (next) parts.push(`→ ${tpLabel(next)} ${fmt(next.level)}`);
-    if (nearest) parts.push(`→ ${tpLabel(nearest)} ${fmt(nearest.level)}`);
+    if (nearest) parts.push(`→ TP1 ${fmt(nearest.level)}`);
+    if (next) parts.push(`→ TP2 ${fmt(next.level)}`);
     return parts.join("  ━  ");
   }
   const parts: string[] = [];

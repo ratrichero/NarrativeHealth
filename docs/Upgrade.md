@@ -4,6 +4,37 @@
 
 ---
 
+## SQ-TP-ORDER-09-2026 — Target SHORT bị gán nhãn ngược: TP1 phải là mức gần (2026-09-27)
+
+### Vấn đề
+
+Bài đăng SHORT hiển thị `SL 0.010700 ━ ▓ SHORT 0.008600–0.009600 ▓ ━ → TP1 0.005400 ━ → TP2 0.007000` — TP1 (mức xa 0.0054) lại đứng trước TP2 (mức gần 0.0070), ngược kỳ vọng trader: TP1 luôn là target gần entry, TP2 là target xa.
+
+### Nguyên nhân gốc (chuỗi 2 lỗi bù nhau)
+
+1. `calculateSetupLevels` (opportunity-engine.ts) nhánh SHORT swap sẵn nhãn: mức xa 3 ATR mang nhãn `"TP1 (1.5 ATR)"`, mức gần 1.5 ATR mang nhãn `"TP2 (3 ATR)"` — nhãn bị gán ngược mức ngay từ nguồn.
+2. Renderer ASCII `buildAsciiPriceMap` nhánh SHORT sort mức theo giá giảm dần rồi in `next` (xa) trước `nearest` (gần) — cố tình bù cho dữ liệu nguồn đã swap, nhưng vì nhãn đi kèm từng mức nên kết quả in ra vẫn `TP1 <xa> → TP2 <gần>`.
+
+### Hướng xử lý (SQ-TP-ORDER)
+
+- **Nguồn chuẩn:** `calculateSetupLevels` SHORT giờ gán nhãn theo khoảng cách — TP1 = gần (entryLow − 1.5 ATR), TP2 = xa (entryLow − 3 ATR); numeric TP1 > TP2 cho short là đúng bản chất.
+- **Renderer tự chữa:** `buildAsciiPriceMap` gán nhãn TP theo vị trí gần→xa (không tin nhãn lưu sẵn) và in thứ tự gần→xa (TP1 ngay dưới entry, TP2 bên dưới) — row legacy đã persist với nhãn swap vẫn render đúng không cần migrate data.
+- **Template fallback + LLM prompt (content-generator.ts):** target liệt kê gần→xa cho SHORT (`Targets: 0.0070 → 0.0054`), % gắn với mức gần (TP1).
+
+### Files changed
+
+```
+src/lib/square/opportunity-engine.ts — calculateSetupLevels SHORT labels + buildAsciiPriceMap near→far labels/order
+src/lib/square/content-generator.ts — template Targets + prompt Take profits sorted near→far for SHORT
+```
+
+### Verification
+
+- Typecheck PASS; jest square suites 134/134 PASS.
+- Script verify render cả 2 shape (legacy swap + mới đúng): `SL 0.010700 ━ ▓ SHORT 0.008600–0.009600 ▓ ━ → TP1 0.007000 ━ → TP2 0.005400` — TP1 luôn mức gần, khớp đúng kỳ vọng.
+
+---
+
 ## SQ-DEDUP-FIX-09-2026 — Dedup bị đếm nhầm thành FAILURE trong pipeline đăng bài (2026-09-27)
 
 ### Vấn đề
