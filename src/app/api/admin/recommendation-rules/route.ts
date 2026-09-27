@@ -7,20 +7,53 @@ import type { CreateRuleInput } from "@/lib/types/recommendation-rule";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const activeVersion = await db
-      .select()
-      .from(ruleVersions)
-      .where(eq(ruleVersions.isActive, true))
-      .limit(1);
+    // Optional ?versionId=<n> — rules của một version cụ thể (Admin Rule Engine
+    // panel). Thiếu/invalid → rules của active version (hành vi cũ).
+    const rawVersionId = request.nextUrl.searchParams.get("versionId");
+    const parsedVersionId =
+      rawVersionId !== null && /^\d+$/.test(rawVersionId)
+        ? Number(rawVersionId)
+        : null;
 
-    if (!activeVersion.length) {
+    let targetVersionId: number | null = null;
+    let versionNumber: number | null = null;
+
+    if (parsedVersionId !== null) {
+      const picked = await db
+        .select()
+        .from(ruleVersions)
+        .where(eq(ruleVersions.id, parsedVersionId))
+        .limit(1);
+      if (picked.length) {
+        targetVersionId = picked[0].id;
+        versionNumber = picked[0].version;
+      }
+    }
+
+    if (targetVersionId === null) {
+      const activeVersion = await db
+        .select()
+        .from(ruleVersions)
+        .where(eq(ruleVersions.isActive, true))
+        .limit(1);
+      if (activeVersion.length) {
+        targetVersionId = activeVersion[0].id;
+        versionNumber = activeVersion[0].version;
+      }
+    }
+
+    if (targetVersionId === null) {
       return NextResponse.json({ success: true, data: [] });
     }
 
-    const rules = await ruleEngineService.getRulesForVersion(activeVersion[0].id);
-    return NextResponse.json({ success: true, data: rules });
+    const rules = await ruleEngineService.getRulesForVersion(targetVersionId);
+    return NextResponse.json({
+      success: true,
+      data: rules,
+      meta: { ruleVersionId: targetVersionId, version: versionNumber },
+    });
   } catch (error) {
     console.error("[GET /api/admin/recommendation-rules]", error);
     return NextResponse.json(

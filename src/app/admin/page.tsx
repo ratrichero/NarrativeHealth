@@ -199,6 +199,15 @@ async function fetchRuleVersions(): Promise<any[]> {
   return data.data;
 }
 
+/** ADMIN-PANEL-REORG: rules của một version (query param) — dùng trong Rule Engine panel. */
+async function fetchRulesForVersion(versionId: number | null): Promise<any[]> {
+  const qs = versionId !== null ? `?versionId=${versionId}` : "";
+  const response = await fetch(`/api/admin/recommendation-rules${qs}`);
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.data;
+}
+
 async function activateRuleVersion(id: number): Promise<{ message: string }> {
   const response = await fetch(`/api/admin/rule-versions/${id}/activate`, { method: "POST" });
   const data = await response.json();
@@ -380,7 +389,17 @@ async function fetchNarrativePerformance(): Promise<any[]> {
   return data.data;
 }
 
-type TabType = "narratives" | "coins" | "config" | "logs" | "rule-versions" | "rules" | "events" | "alerts" | "analytics" | "chat-report" | "auth";
+type TabType =
+  | "narratives"
+  | "coins"
+  | "config"
+  | "logs"
+  | "rule-engine"
+  | "events"
+  | "alerts"
+  | "analytics"
+  | "chat-report"
+  | "auth";
 
 /**
  * AUTH-01 + Panel re-org — tabs grouped into modules rendered as icon cards
@@ -406,7 +425,7 @@ const ADMIN_MODULES: {
   },
   {
     id: "data",
-    label: "Dữ liệu",
+    label: "Dữ liệu & Sự kiện",
     description: "Quản lý narratives, coins và rủi ro sự kiện",
     icon: Database,
     tabs: [
@@ -418,11 +437,10 @@ const ADMIN_MODULES: {
   {
     id: "rules",
     label: "Quy tắc & Cảnh báo",
-    description: "Rule engine, phiên bản trọng số, ngưỡng cảnh báo",
+    description: "Rule engine (rules + versions), ngưỡng cảnh báo",
     icon: Gavel,
     tabs: [
-      { id: "rules", label: "Rules" },
-      { id: "rule-versions", label: "Rule Versions" },
+      { id: "rule-engine", label: "Rule Engine" },
       { id: "alerts", label: "Alerts" },
     ],
   },
@@ -1261,13 +1279,19 @@ export default function AdminPage() {
   const { data: ruleVersions, isLoading: ruleVersionsLoading, refetch: refetchRuleVersions } = useQuery({
     queryKey: ["admin", "rule-versions"],
     queryFn: fetchRuleVersions,
-    enabled: activeTab === "rule-versions",
+    enabled: activeTab === "rule-engine",
   });
 
+  // ADMIN-PANEL-REORG: rules theo version đang chọn trong Rule Engine panel.
+  const [ruleEngineVersionId, setRuleEngineVersionId] = useState<number | null>(null);
+  // ADMIN-PANEL-REORG: bộ lọc tab Events (risk level / event type / trạng thái).
+  const [eventRiskFilter, setEventRiskFilter] = useState<string>("all");
+  const [eventTypeFilter, setEventTypeFilter] = useState<string>("all");
+  const [eventStatusFilter, setEventStatusFilter] = useState<"all" | "active" | "expired">("active");
   const { data: rules, isLoading: rulesLoading, refetch: refetchRules } = useQuery({
-    queryKey: ["admin", "rules"],
-    queryFn: fetchRecommendationRules,
-    enabled: activeTab === "rules",
+    queryKey: ["admin", "rules", ruleEngineVersionId ?? "active"],
+    queryFn: () => fetchRulesForVersion(ruleEngineVersionId),
+    enabled: activeTab === "rule-engine",
   });
 
   const createRuleMutation = useMutation({
@@ -1532,8 +1556,7 @@ export default function AdminPage() {
     { id: "narratives", label: "Narratives", icon: Layers },
     { id: "coins", label: "Coins", icon: Coins },
     { id: "events", label: "Events", icon: AlertCircle },
-    { id: "rules", label: "Rules", icon: Gavel },
-    { id: "rule-versions", label: "Rule Versions", icon: GitBranch },
+    { id: "rule-engine", label: "Rule Engine", icon: GitBranch },
     { id: "alerts", label: "Alerts", icon: Bell },
     { id: "config", label: "Config", icon: Settings },
     { id: "logs", label: "Logs", icon: ScrollText },
@@ -1555,23 +1578,6 @@ export default function AdminPage() {
         <div className="flex items-center gap-2">
           <Button
             variant="secondary"
-            onClick={() => seedMutation.mutate()}
-            loading={seedMutation.isPending}
-            className="text-xs"
-          >
-            <Database className="h-3.5 w-3.5 mr-1" />
-            Seed Data
-          </Button>
-          <Button
-            onClick={() => refreshMutation.mutate()}
-            loading={refreshMutation.isPending}
-            className="text-xs"
-          >
-            <Play className="h-3.5 w-3.5 mr-1" />
-            Run Refresh
-          </Button>
-          <Button
-            variant="secondary"
             onClick={() => logoutMutation.mutate()}
             loading={logoutMutation.isPending}
             className="text-xs"
@@ -1582,23 +1588,8 @@ export default function AdminPage() {
         </div>
       </div>
 
-      {/* Status messages */}
-      {seedMutation.isSuccess && (
-        <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4 flex items-center gap-3">
-          <Check className="h-5 w-5 text-green-500" />
-          <span className="text-green-400">
-            {(seedMutation.data as { message: string }).message}
-          </span>
-        </div>
-      )}
-      {refreshMutation.isSuccess && (
-        <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4 flex items-center gap-3">
-          <Check className="h-5 w-5 text-green-500" />
-          <span className="text-green-400">
-            {(refreshMutation.data as { message: string }).message}
-          </span>
-        </div>
-      )}
+      {/* Status messages — seed/refresh hiển thị scoped trong Data Operations (Config);
+          riêng narrative refresh vẫn hiển thị toàn trang vì bấm từ tab Narratives. */}
       {refreshNarrativeMutation.isSuccess && (
         <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4 flex items-center gap-3">
           <Check className="h-5 w-5 text-green-500" />
@@ -1608,13 +1599,11 @@ export default function AdminPage() {
           </span>
         </div>
       )}
-      {(seedMutation.isError || refreshMutation.isError || refreshNarrativeMutation.isError) && (
+      {refreshNarrativeMutation.isError && (
         <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 flex items-center gap-3">
           <AlertCircle className="h-5 w-5 text-red-500" />
           <span className="text-red-400">
-            {(seedMutation.error as Error)?.message ||
-              (refreshMutation.error as Error)?.message ||
-              (refreshNarrativeMutation.error as Error)?.message}
+            {(refreshNarrativeMutation.error as Error)?.message}
           </span>
         </div>
       )}
@@ -2191,6 +2180,67 @@ export default function AdminPage() {
                 <h3 className="text-lg font-semibold text-white">Configuration</h3>
               </div>
 
+              {/* ADMIN-PANEL-REORG: Data Operations — Seed/Refresh chuyển từ header
+                  xuống module Vận hành để tránh bấm nhầm ở các tab khác. */}
+              <div className="p-4 border-b border-slate-800 space-y-4">
+                <h4 className="text-sm font-medium text-slate-400">Data Operations</h4>
+
+                {(seedMutation.isSuccess || refreshMutation.isSuccess) && (
+                  <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3 flex items-center gap-3">
+                    <Check className="h-4 w-4 text-green-500 flex-shrink-0" />
+                    <span className="text-sm text-green-400">
+                      {seedMutation.isSuccess
+                        ? (seedMutation.data as { message: string }).message
+                        : (refreshMutation.data as { message: string }).message}
+                    </span>
+                  </div>
+                )}
+                {(seedMutation.isError || refreshMutation.isError) && (
+                  <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 flex items-center gap-3">
+                    <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
+                    <span className="text-sm text-red-400">
+                      {(seedMutation.error as Error)?.message ||
+                        (refreshMutation.error as Error)?.message}
+                    </span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Database className="h-4 w-4 text-slate-400" />
+                      <span className="text-sm font-medium text-white">Seed Data</span>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Khởi tạo dữ liệu ban đầu (narratives, coins, source status). Bỏ qua nếu
+                      dữ liệu đã tồn tại.
+                    </p>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => seedMutation.mutate()}
+                      loading={seedMutation.isPending}
+                    >
+                      Run Seed
+                    </Button>
+                  </div>
+
+                  <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Play className="h-4 w-4 text-cyan-400" />
+                      <span className="text-sm font-medium text-white">Run Refresh</span>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Chạy vòng refresh đầy đủ: dữ liệu thị trường → features → health →
+                      intelligence → Square. Tác vụ nặng.
+                    </p>
+                    <Button size="sm" onClick={() => refreshMutation.mutate()} loading={refreshMutation.isPending}>
+                      Run Refresh
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
               {/* Scheduler Config */}
               <div className="p-4 border-b border-slate-800">
                 <h4 className="text-sm font-medium text-slate-400 mb-4">Scheduler Settings</h4>
@@ -2450,8 +2500,25 @@ export default function AdminPage() {
           )}
 
           {/* Rule Versions Tab */}
-          {activeTab === "rule-versions" && (
-            <div>
+          {/* ADMIN-PANEL-REORG: Rule Engine — gộp Rule Versions + Rules vào một
+              panel 2 cột: trái = versions (weights), phải = rules của version
+              đang chọn (mặc định active). */}
+          {activeTab === "rule-engine" && (
+            <div className="p-4 md:p-6 space-y-6">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-white">Rule Engine</h2>
+                <span className="text-xs text-gray-400 hidden lg:inline">
+                  Version xác định trọng số — rules sinh điểm theo version đang chọn
+                </span>
+                <Button
+                  variant="secondary"
+                  onClick={() => setRuleVersionModal({ isOpen: true })}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  New Version
+                </Button>
+              </div>
+
               {ruleVersionsLoading ? (
                 <div className="py-12 text-center">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500 mx-auto" />
@@ -2461,174 +2528,183 @@ export default function AdminPage() {
                   No rule versions found.
                 </div>
               ) : (
-                <div className="space-y-4">
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                    <h2 className="text-lg font-semibold text-white">Rule Versions</h2>
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3">
-                      <span className="text-xs text-gray-400 hidden lg:inline">
-                        Config versions track which rules generated each score
+                <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                  {/* Cột trái — Versions */}
+                  <div className="lg:col-span-2 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-semibold text-slate-300">Versions</h3>
+                      <span className="text-[11px] text-slate-500">
+                        {ruleVersions.length} version(s)
                       </span>
-                      <Button
-                        variant="secondary"
-                        onClick={() => setRuleVersionModal({ isOpen: true })}
-                      >
-                        <Plus className="h-4 w-4 mr-2" />
-                        New Version
-                      </Button>
                     </div>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                  <table className="w-full text-sm min-w-[700px]">
-                    <thead>
-                      <tr className="border-b border-gray-700 text-left text-gray-400">
-                        <th className="pb-2 whitespace-nowrap">Version</th>
-                        <th className="pb-2">Description</th>
-                        <th className="pb-2">Weights</th>
-                        <th className="pb-2">Status</th>
-                        <th className="pb-2">Activated</th>
-                        <th className="pb-2">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ruleVersions.map((v: any) => (
-                        <tr key={v.id} className="border-b border-gray-800 py-2">
-                          <td className="py-3 font-mono text-white">v{v.version}</td>
-                          <td className="py-3 text-gray-300 text-xs">
-                            {v.description ?? '—'}
-                          </td>
-                          <td className="py-3 text-xs text-gray-400">
-                            T:{v.healthWeights.trend}
-                            D:{v.healthWeights.derivative}
-                            V:{v.healthWeights.volume}
-                            M:{v.healthWeights.momentum}
-                          </td>
-                          <td className="py-3">
+                    {ruleVersions.map((v: any) => {
+                      const selected = (ruleEngineVersionId ?? null) === v.id;
+                      return (
+                        <button
+                          key={v.id}
+                          type="button"
+                          onClick={() => setRuleEngineVersionId(v.id)}
+                          className={`w-full text-left rounded-lg border p-3 transition-colors ${
+                            selected
+                              ? "border-cyan-500 bg-cyan-500/10"
+                              : "border-slate-800 bg-slate-900/50 hover:border-slate-600"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-sm text-white">v{v.version}</span>
                             {v.isActive ? (
-                              <span className="rounded-full bg-green-900/50 px-2 py-0.5
-                                               text-xs font-medium text-green-400">
+                              <span className="rounded-full bg-green-900/50 px-2 py-0.5 text-[10px] font-medium text-green-400">
                                 ● Active
                               </span>
                             ) : (
-                              <span className="rounded-full bg-gray-700 px-2 py-0.5
-                                               text-xs text-gray-400">
-                                Inactive
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-3 text-xs text-gray-500">
-                            {v.activatedAt
-                              ? new Date(v.activatedAt).toLocaleDateString('vi-VN')
-                              : '—'}
-                          </td>
-                          <td className="py-3">
-                            {!v.isActive && (
                               <button
-                                onClick={() => activateRuleVersionMutation.mutate(v.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  activateRuleVersionMutation.mutate(v.id);
+                                }}
                                 disabled={activateRuleVersionMutation.isPending}
-                                className="text-xs text-blue-400 hover:text-blue-300
-                                           underline underline-offset-2 disabled:opacity-50"
+                                className="text-[10px] text-blue-400 hover:text-blue-300 underline underline-offset-2 disabled:opacity-50"
                               >
                                 Activate
                               </button>
                             )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === "rules" && (
-            <div>
-              {rulesLoading ? (
-                <div className="py-12 text-center">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-500 mx-auto" />
-                </div>
-              ) : !rules || rules.length === 0 ? (
-                <div className="py-12 text-center text-slate-500">
-                  No recommendation rules found.
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                    <h2 className="text-lg font-semibold text-white">Recommendation Rules</h2>
-                    <Button
-                      variant="secondary"
-                      onClick={() => setRuleModal({ isOpen: true, mode: "add" })}
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Rule
-                    </Button>
-                  </div>
-
-                  <div className="space-y-3">
-                    {rules.map((rule: any) => (
-                      <div key={rule.id} className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-3">
-                            <span className="text-xs font-mono bg-slate-700 px-2 py-1 rounded text-white">
-                              P{rule.priority}
-                            </span>
-                            <span className={`text-xs font-medium px-2 py-1 rounded ${
-                              rule.signal === 'STRONG_WATCH' ? 'bg-green-900/50 text-green-400' :
-                              rule.signal === 'WATCH' ? 'bg-blue-900/50 text-blue-400' :
-                              rule.signal === 'OBSERVE' ? 'bg-yellow-900/50 text-yellow-400' :
-                              rule.signal === 'CAUTION' ? 'bg-orange-900/50 text-orange-400' :
-                              'bg-red-900/50 text-red-400'
-                            }`}>
-                              {rule.signal}
-                            </span>
-                            <span className="text-xs text-gray-400">
-                              Logic: {rule.logicOperator}
-                            </span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => setRuleModal({ isOpen: true, mode: "edit", data: rule })}
-                              className="text-xs text-blue-400 hover:text-blue-300"
-                            >
-                              <Edit2 className="h-4 w-4" />
-                            </button>
-                            <button
-                              onClick={() => deactivateRuleMutation.mutate(rule.id)}
-                              disabled={deactivateRuleMutation.isPending}
-                              className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="mb-2">
-                          <p className="text-xs text-gray-500 mb-1">Conditions:</p>
-                          <div className="flex flex-wrap gap-2">
-                            {(rule.conditions || []).map((cond: RuleCondition, idx: number) => (
-                              <span key={idx} className="text-xs bg-slate-700 px-2 py-1 rounded text-gray-300">
-                                {cond.field} {cond.operator} {cond.value}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div>
-                          <p className="text-xs text-gray-500 mb-1">Reason Template:</p>
-                          <p className="text-xs text-gray-400 italic">
-                            {rule.reasonTemplate || '—'}
+                          <p className="mt-1 text-xs text-gray-300 line-clamp-2">
+                            {v.description ?? "—"}
                           </p>
-                        </div>
+                          <p className="mt-1.5 text-[10px] text-gray-500 font-mono">
+                            T:{v.healthWeights.trend} D:{v.healthWeights.derivative}{" "}
+                            V:{v.healthWeights.volume} M:{v.healthWeights.momentum}
+                          </p>
+                          <p className="mt-1 text-[10px] text-gray-600">
+                            {v.activatedAt
+                              ? `Kích hoạt ${new Date(v.activatedAt).toLocaleDateString("vi-VN")}`
+                              : "Chưa kích hoạt"}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Cột phải — Rules của version đang chọn */}
+                  <div className="lg:col-span-3 space-y-3">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <h3 className="text-sm font-semibold text-slate-300 whitespace-nowrap">
+                          Rules
+                        </h3>
+                        <select
+                          value={ruleEngineVersionId ?? "active"}
+                          onChange={(e) =>
+                            setRuleEngineVersionId(
+                              e.target.value === "active" ? null : Number(e.target.value)
+                            )
+                          }
+                          className="max-w-[220px] px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                        >
+                          <option value="active">
+                            {(() => {
+                              const av = ruleVersions.find((v: any) => v.isActive);
+                              return av ? `Active — v${av.version}` : "Active version";
+                            })()}
+                          </option>
+                          {ruleVersions.map((v: any) => (
+                            <option key={v.id} value={v.id}>
+                              v{v.version}
+                              {v.isActive ? " (active)" : ""}
+                            </option>
+                          ))}
+                        </select>
                       </div>
-                    ))}
+                      <Button
+                        variant="secondary"
+                        onClick={() => setRuleModal({ isOpen: true, mode: "add" })}
+                      >
+                        <Plus className="h-4 w-4 mr-2" />
+                        Add Rule
+                      </Button>
+                    </div>
+
+                    {rulesLoading ? (
+                      <div className="py-10 text-center">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+                      </div>
+                    ) : !rules || rules.length === 0 ? (
+                      <div className="py-10 text-center text-slate-500 text-sm">
+                        Không có rule nào cho version này.
+                      </div>
+                    ) : (
+                      rules.map((rule: any) => (
+                        <div key={rule.id} className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+                          <div className="flex items-center justify-between mb-2 gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-mono bg-slate-700 px-2 py-1 rounded text-white">
+                                P{rule.priority}
+                              </span>
+                              <span className={`text-xs font-medium px-2 py-1 rounded ${
+                                rule.signal === 'STRONG_WATCH' ? 'bg-green-900/50 text-green-400' :
+                                rule.signal === 'WATCH' ? 'bg-blue-900/50 text-blue-400' :
+                                rule.signal === 'OBSERVE' ? 'bg-yellow-900/50 text-yellow-400' :
+                                rule.signal === 'CAUTION' ? 'bg-orange-900/50 text-orange-400' :
+                                'bg-red-900/50 text-red-400'
+                              }`}>
+                                {rule.signal}
+                              </span>
+                              {/* ADMIN-PANEL-REORG: chip version của rule */}
+                              {rule.ruleVersionId != null && (
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-700/60 text-cyan-300">
+                                  v{ruleVersions.find((v: any) => v.id === rule.ruleVersionId)?.version ?? rule.ruleVersionId}
+                                </span>
+                              )}
+                              <span className="text-xs text-gray-400 hidden sm:inline">
+                                Logic: {rule.logicOperator}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <button
+                                onClick={() => setRuleModal({ isOpen: true, mode: "edit", data: rule })}
+                                className="text-xs text-blue-400 hover:text-blue-300"
+                              >
+                                <Edit2 className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => deactivateRuleMutation.mutate(rule.id)}
+                                disabled={deactivateRuleMutation.isPending}
+                                className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="mb-2">
+                            <p className="text-xs text-gray-500 mb-1">Conditions:</p>
+                            <div className="flex flex-wrap gap-2">
+                              {(rule.conditions || []).map((cond: RuleCondition, idx: number) => (
+                                <span key={idx} className="text-xs bg-slate-700 px-2 py-1 rounded text-gray-300">
+                                  {cond.field} {cond.operator} {cond.value}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div>
+                            <p className="text-xs text-gray-500 mb-1">Reason Template:</p>
+                            <p className="text-xs text-gray-400 italic">
+                              {rule.reasonTemplate || '—'}
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               )}
             </div>
           )}
 
+          {/* ADMIN-PANEL-REORG: Events — filter risk/type + badge hết hạn,
+              không hạ vào Coins (event_risks là input P4, liên kết cả narrative). */}
           {activeTab === "events" && (
             <div>
               {eventsLoading ? (
@@ -2639,55 +2715,131 @@ export default function AdminPage() {
                 <div className="space-y-4">
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                     <h2 className="text-lg font-semibold text-white">Event Risks</h2>
-                    <Button
-                      variant="secondary"
-                      onClick={() => setEventModal({ isOpen: true, mode: "add" })}
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Event
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={eventStatusFilter}
+                        onChange={(e) => setEventStatusFilter(e.target.value as "all" | "active" | "expired")}
+                        className="px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                      >
+                        <option value="active">Còn hiệu lực</option>
+                        <option value="expired">Đã hết hạn</option>
+                        <option value="all">Tất cả trạng thái</option>
+                      </select>
+                      <select
+                        value={eventRiskFilter}
+                        onChange={(e) => setEventRiskFilter(e.target.value)}
+                        className="px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                      >
+                        <option value="all">Mọi risk level</option>
+                        <option value="CRITICAL">CRITICAL</option>
+                        <option value="HIGH">HIGH</option>
+                        <option value="MEDIUM">MEDIUM</option>
+                        <option value="LOW">LOW</option>
+                      </select>
+                      <select
+                        value={eventTypeFilter}
+                        onChange={(e) => setEventTypeFilter(e.target.value)}
+                        className="px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                      >
+                        <option value="all">Mọi event type</option>
+                        {Array.from(new Set((events ?? []).map((ev: any) => ev.eventType).filter(Boolean))).map((t) => (
+                          <option key={String(t)} value={String(t)}>
+                            {String(t)}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        variant="secondary"
+                        onClick={() => setEventModal({ isOpen: true, mode: "add" })}
+                      >
+                        <Plus className="h-4 w-4 mr-2" />
+                        Add Event
+                      </Button>
+                    </div>
                   </div>
 
-                  {!events || events.length === 0 ? (
-                    <p className="text-slate-500 text-center py-8">No event risks found.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {events.map((event: any) => (
-                        <div key={event.id} className="bg-slate-800/50 border border-slate-700 rounded p-3">
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <span className="text-sm font-medium text-white break-words">{event.title}</span>
-                              <span className={`ml-2 text-xs px-2 py-0.5 rounded ${
-                                event.riskLevel === 'CRITICAL' ? 'bg-red-900/50 text-red-400' :
-                                event.riskLevel === 'HIGH' ? 'bg-orange-900/50 text-orange-400' :
-                                event.riskLevel === 'MEDIUM' ? 'bg-yellow-900/50 text-yellow-400' :
-                                'bg-green-900/50 text-green-400'
-                              }`}>
-                                {event.riskLevel}
-                              </span>
-                            </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => setEventModal({ isOpen: true, mode: "edit", data: event })}
-                                className="text-xs text-blue-400 hover:text-blue-300"
+                  {(() => {
+                    const today = new Date().toISOString().slice(0, 10);
+                    const filtered = (events ?? []).filter((ev: any) => {
+                      const expired = ev.expiresAt ? String(ev.expiresAt).slice(0, 10) < today : false;
+                      if (eventStatusFilter === "active" && expired) return false;
+                      if (eventStatusFilter === "expired" && !expired) return false;
+                      if (eventRiskFilter !== "all" && ev.riskLevel !== eventRiskFilter) return false;
+                      if (eventTypeFilter !== "all" && ev.eventType !== eventTypeFilter) return false;
+                      return true;
+                    });
+                    if (!events || events.length === 0) {
+                      return <p className="text-slate-500 text-center py-8">No event risks found.</p>;
+                    }
+                    if (filtered.length === 0) {
+                      return (
+                        <p className="text-slate-500 text-center py-8">
+                          Không có event nào khớp bộ lọc ({events.length} event tổng cộng).
+                        </p>
+                      );
+                    }
+                    return (
+                      <>
+                        <p className="text-[11px] text-slate-500">
+                          Hiển thị {filtered.length}/{events.length} event
+                        </p>
+                        <div className="space-y-2">
+                          {filtered.map((event: any) => {
+                            const expired = event.expiresAt
+                              ? String(event.expiresAt).slice(0, 10) < today
+                              : false;
+                            return (
+                              <div
+                                key={event.id}
+                                className={`rounded p-3 border ${
+                                  expired
+                                    ? "bg-slate-800/30 border-slate-800 opacity-75"
+                                    : "bg-slate-800/50 border-slate-700"
+                                }`}
                               >
-                                <Edit2 className="h-4 w-4" />
-                              </button>
-                              <button
-                                onClick={() => deactivateEventMutation.mutate(event.id)}
-                                className="text-xs text-red-400 hover:text-red-300"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="mt-1 text-xs text-gray-400">
-                            {event.eventType} | {event.eventDate} | Score: {event.riskScore ?? '—'}
-                          </div>
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                  <div className="min-w-0 flex flex-wrap items-center gap-2">
+                                    <span className="text-sm font-medium text-white break-words">{event.title}</span>
+                                    <span className={`text-xs px-2 py-0.5 rounded ${
+                                      event.riskLevel === 'CRITICAL' ? 'bg-red-900/50 text-red-400' :
+                                      event.riskLevel === 'HIGH' ? 'bg-orange-900/50 text-orange-400' :
+                                      event.riskLevel === 'MEDIUM' ? 'bg-yellow-900/50 text-yellow-400' :
+                                      'bg-green-900/50 text-green-400'
+                                    }`}>
+                                      {event.riskLevel}
+                                    </span>
+                                    {expired && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 uppercase tracking-wide">
+                                        Đã hết hạn
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex gap-2 flex-shrink-0">
+                                    <button
+                                      onClick={() => setEventModal({ isOpen: true, mode: "edit", data: event })}
+                                      className="text-xs text-blue-400 hover:text-blue-300"
+                                    >
+                                      <Edit2 className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      onClick={() => deactivateEventMutation.mutate(event.id)}
+                                      className="text-xs text-red-400 hover:text-red-300"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="mt-1 text-xs text-gray-400">
+                                  {event.eventType} | {event.eventDate} | Score: {event.riskScore ?? '—'}
+                                  {event.expiresAt && ` | Hết hạn: ${String(event.expiresAt).slice(0, 10)}`}
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
-                      ))}
-                    </div>
-                  )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </div>

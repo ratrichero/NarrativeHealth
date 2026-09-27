@@ -63,7 +63,21 @@ GET  /api/auth/mode          — probe cho middleware (Node runtime, fail-open t
 
 1. **ChatAnalyticsSection nest lồng trong tab Analytics** dưới heading "Narrative Performance" (không đúng nội dung heading) → **chuyển hẳn sang tab Chat Report** (module Vận hành) hiển thị cạnh ChatReportSection; tab Analytics giờ thuần túy Rule Effectiveness + Narrative Performance. *(Đã xử lý trong đợt này.)*
 2. **Icon trùng**: trước đây Narratives/Coins cùng Database, Events/Alerts cùng AlertCircle, Logs/Analytics cùng RefreshCw → gây khó định vị tab. *(Đã tách icon riêng.)*
-3. **Đề xuất tiếp theo (chưa làm, cần quyết định)**: (a) tab "Rule Versions" và "Rules" có thể gộp thành một tab có sub-view vì luôn dùng cặp; (b) "Events" là dữ liệu rủi ro sự kiện nhưng ít dùng — cân nhắc hạ cấp thành phần trong tab Coins; (c) seed/refresh buttons trên header là tác vụ vận hành, có thể chuyển vào module Vận hành khi thêm module mới.
+3. **Tái tổ chức tiếp theo (đã triển khai trong cùng entry — xem mục ADMIN-REORG bên dưới)**: gộp Rules + Rule Versions; xử lý Events; chuyển Seed/Refresh vào module Vận hành.
+
+### ADMIN-REORG (2026-09-27) — triển khai 3 đề xuất tái tổ chức
+
+1. **Gộp Rules + Rule Versions → tab "Rule Engine"** (module Quy tắc & Cảnh báo còn 2 tab: Rule Engine, Alerts):
+   - Layout 2 cột desktop (xếp dọc mobile): trái = danh sách **Versions** (card compact, badge ● Active, nút Activate, click chọn), phải = **Rules của version đang chọn** (mặc định active version).
+   - Dropdown chuyển version + **chip version** trên mỗi rule (vd. `v3`).
+   - API: `GET /api/admin/recommendation-rules?versionId=<n>` — tham số tùy chọn, thiếu/invalid → rules của active version (hành vi cũ nguyên trạng); response thêm `meta {ruleVersionId, version}`. Không đổi schema.
+2. **Events: GIỮ tab riêng, KHÔNG hạ vào Coins** — phân tích: `event_risks` liên kết cả `coinId` lẫn `narrativeId` và là đầu vào của P4 assembler (baseline FROZEN). Bổ sung:
+   - 3 bộ lọc: trạng thái (Còn hiệu lực/Đã hết hạn/Tất cả), risk level, event type (phát sinh từ dữ liệu).
+   - **Badge "Đã hết hạn"** khi `expiresAt < today` + dòng hiển thị ngày hết hạn; counter "Hiển thị X/Y event".
+   - Module "Dữ liệu" đổi label thành **"Dữ liệu & Sự kiện"**.
+3. **Seed/Refresh chuyển từ header vào tab Config** (module Vận hành):
+   - Card **"Data Operations"** đặt trên cùng tab Config: 2 thẻ Seed Data / Run Refresh kèm mô tả, status/error scoped trong card.
+   - Header Admin chỉ còn nút **Logout**; status message toàn trang giữ riêng cho narrative refresh (bấm từ tab Narratives).
 
 ### Env cần bổ sung
 
@@ -88,6 +102,7 @@ src/app/login/page.tsx                     — user login (Suspense)
 src/app/admin/page.tsx                     — icon modules + AuthSettingsSection + Logout + gỡ ChatAnalyticsSection khỏi Analytics
 src/components/Navigation.tsx              — auth-status, trailing Admin/Login, logout
 scripts/create-auth-tables.ts              — tạo 2 bảng additive (thay db:push)
+src/app/api/admin/recommendation-rules/route.ts — GET thêm ?versionId (Rule Engine panel)
 ```
 
 ### Verification
