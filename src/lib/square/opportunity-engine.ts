@@ -3,6 +3,7 @@
 
 import { db } from "@/db";
 import { normalizeCoinSymbol, validateChartSymbol } from "./chart-utils";
+import { orderTpsForDisplay } from "./tp-order";
 import {
   coins,
   narratives,
@@ -1042,10 +1043,15 @@ function buildAsciiPriceMap(
     if (next) parts.push(`→ TP2 ${fmt(next.level)}`);
     return parts.join("  ━  ");
   }
+  // SQ-TP-ORDER (LONG): TP1/TP2 must ALWAYS render — the old `.slice(0, 2)`
+  // kept the two lowest-priced levels, so any EMA target below TP1 pushed TP2
+  // out of the map entirely. Shared helper keeps labeled TPs by name, appends
+  // EMA reference levels, and orders ascending (top-down map: nearest first).
+  const orderedTps = orderTpsForDisplay(takeProfits, "LONG");
   const parts: string[] = [];
   parts.push(`SL ${fmt(stopLoss.level)}`);
   parts.push(`▓ ENTRY ${fmt(entry.low)}–${fmt(entry.high)} ▓`);
-  for (const tp of takeProfits.slice(0, 2)) {
+  for (const tp of orderedTps) {
     parts.push(`→ ${tpLabel(tp)} ${fmt(tp.level)}`);
   }
   return parts.join("  ━  ");
