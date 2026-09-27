@@ -318,33 +318,71 @@ export async function GET() {
     const bearish = scored.filter((s) => s.direction === "BEARISH").sort((a, b) => b.composite - a.composite);
 
     // Selection: top 3 bullish (LONG) + top 3 bearish (SHORT).
+    // TOP-REC-FILL: when the genuinely-bullish side has fewer than 3 coins
+    // (e.g. a broad market drawdown where every signal is WEAK), the remaining
+    // LONG slots are filled with the STRONGEST remaining coins by health —
+    // displayed in the LONG group as relative strength, but WITHOUT a setup
+    // and with an explicit no-trade reason (never a misleading LONG setup on
+    // a WEAK signal). Same symmetric rule for SHORT.
     const LONG_TARGET = 3;
     const SHORT_TARGET = 3;
-    const selected: Scored[] = [
-      ...bullish.slice(0, LONG_TARGET),
-      ...bearish.slice(0, SHORT_TARGET),
-    ];
 
-    // One side short on candidates → pad the remaining slots from the other
-    // side (direction stays honest: never promote a weak coin into LONG).
-    if (selected.length < LONG_TARGET + SHORT_TARGET) {
-      const chosenIds = new Set(selected.map((s) => s.row.coinId));
-      const fillPool = bullish.length < LONG_TARGET
-        ? bearish.slice(SHORT_TARGET)
-        : bullish.slice(LONG_TARGET);
-      for (const s of fillPool) {
-        if (selected.length >= LONG_TARGET + SHORT_TARGET) break;
-        if (!chosenIds.has(s.row.coinId)) {
-          selected.push(s);
-          chosenIds.add(s.row.coinId);
-        }
+    interface Picked {
+      entry: Scored;
+      forced: null | "long" | "short";
+    }
+    const chosenIds = new Set<number>();
+    const longPicks: Picked[] = [];
+    const shortPicks: Picked[] = [];
+
+    // LONG — genuinely bullish coins first
+    for (const s of bullish) {
+      if (longPicks.length >= LONG_TARGET) break;
+      longPicks.push({ entry: s, forced: null });
+      chosenIds.add(s.row.coinId);
+    }
+    // LONG — pad with strongest remaining coins (relative strength, no setup)
+    if (longPicks.length < LONG_TARGET) {
+      const strengthPool = [...scored]
+        .filter((s) => !chosenIds.has(s.row.coinId))
+        .sort((a, b) => (b.row.healthScore ?? 0) - (a.row.healthScore ?? 0));
+      for (const s of strengthPool) {
+        if (longPicks.length >= LONG_TARGET) break;
+        longPicks.push({ entry: s, forced: "long" });
+        chosenIds.add(s.row.coinId);
       }
     }
 
+    // SHORT — genuinely bearish coins first (skip anything already picked LONG)
+    for (const s of bearish) {
+      if (shortPicks.length >= SHORT_TARGET) break;
+      if (chosenIds.has(s.row.coinId)) continue;
+      shortPicks.push({ entry: s, forced: null });
+      chosenIds.add(s.row.coinId);
+    }
+    // SHORT — pad with weakest remaining coins by health (relative, no setup)
+    if (shortPicks.length < SHORT_TARGET) {
+      const weakPool = [...scored]
+        .filter((s) => !chosenIds.has(s.row.coinId))
+        .sort((a, b) => (a.row.healthScore ?? 0) - (b.row.healthScore ?? 0));
+      for (const s of weakPool) {
+        if (shortPicks.length >= SHORT_TARGET) break;
+        shortPicks.push({ entry: s, forced: "short" });
+        chosenIds.add(s.row.coinId);
+      }
+    }
+
+    const selected: Picked[] = [...longPicks, ...shortPicks];
+
     const top: TopRecommendation[] = [];
 
-    for (const s of selected) {
+    for (const pick of selected) {
+      const s = pick.entry;
       const r = s.row;
+      // Forced picks (padding) render under the group direction but never
+      // carry a trade setup — their underlying signal contradicts it.
+      const direction: SetupDirection =
+        pick.forced === "long" ? "BULLISH" : pick.forced === "short" ? "BEARISH" : s.direction;
       const price = r.closePrice ? parseFloat(r.closePrice) : 0;
       let atr = r.atr14 ? parseFloat(r.atr14) : null;
       let atrSource: "indicators" | "price-history-fallback" = "indicators";
@@ -363,9 +401,15 @@ export async function GET() {
       const ema20Pct =
         ema20 && ema20 > 0 && price > 0 ? +(((price - ema20) / ema20) * 100).toFixed(1) : null;
 
-      const hasSetup = price > 0 && atr !== null && atr > 0;
+      const hasSetup = !pick.forced && price > 0 && atr !== null && atr > 0;
       let setupUnavailableReason: string | null = null;
-      if (!hasSetup) {
+      if (pick.forced === "long") {
+        setupUnavailableReason =
+          "Không vào LONG hôm nay — thị trường suy yếu toàn diện, coin mạnh nhất tương đối chỉ để theo dõi chờ đảo chiều.";
+      } else if (pick.forced === "short") {
+        setupUnavailableReason =
+          "Không có setup SHORT — vùng lấp chỗ khi thiếu ứng viên yếu thật sự, chỉ theo dõi.";
+      } else if (!hasSetup) {
         setupUnavailableReason =
           price <= 0
             ? "Không có dữ liệu giá cho ngày dữ liệu mới nhất."
@@ -381,20 +425,25 @@ export async function GET() {
         scoreChange: r.scoreChange,
         status: getHealthStatus(r.healthScore),
         signal: r.signal ?? "OBSERVE",
-        direction: s.direction,
-        reason: buildVietnameseReason(
-          s.direction,
-          r.signal ?? "OBSERVE",
-          r.healthScore,
-          r.scoreChange,
+        direction,
+        reason:
+          pick.forced === "long"
+            ? `Sức khoẻ ${r.healthScore.toFixed(0)} điểm — mạnh nhất tương đối, nhưng tín hiệu ${r.signal ?? "OBSERVE"} chưa đủ điều kiện LONG. Theo dõi chờ tín hiệu phục hồi, không vào lệnh.`
+            : pick.forced === "short"
+              ? `Sức khoẻ ${r.healthScore.toFixed(0)} điểm — yếu nhất tương đối, nhưng chưa đủ điều kiện SHORT thực sự. Chỉ theo dõi.`
+              : buildVietnameseReason(
+                  s.direction,
+                  r.signal ?? "OBSERVE",
+                  r.healthScore,
+                  r.scoreChange,
           r.trendScore != null ? Math.round(r.trendScore) : null,
           r.volumeScore != null ? Math.round(r.volumeScore) : null,
           r.momentumScore != null ? Math.round(r.momentumScore) : null,
-          rsi,
-          ema20Pct
-        ),
+              rsi,
+              ema20Pct
+            ),
         currentPrice: price,
-        setup: hasSetup && atr !== null ? buildSetup(s.direction, price, atr) : null,
+        setup: hasSetup && atr !== null ? buildSetup(direction, price, atr) : null,
         setupUnavailableReason,
         metrics: {
           trendScore: r.trendScore != null ? Math.round(r.trendScore) : null,

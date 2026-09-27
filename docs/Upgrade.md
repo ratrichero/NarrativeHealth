@@ -4,6 +4,36 @@
 
 ---
 
+## TOP-REC-FILL-09-2026 — Đề xuất nổi bật: giữ 3/3 khi thị trường suy yếu toàn diện (2026-09-27)
+
+### Vấn đề
+
+Ngày dữ liệu 2026-09-27 toàn bộ 49 coin đều có signal `WEAK` + score_change âm → `classifyDirection` trả về 0 ứng viên BULLISH → logic v3 pad tất cả 6 slot bằng coin yếu nhất → hiển thị "0 LONG · 6 SHORT", sai với kỳ vọng thiết kế 3 LONG / 3 SHORT.
+
+### Hướng xử lý (chọn bởi user: 3/3 nhưng LONG không setup)
+
+Giữ nguyên tắc **không tạo setup misleading** — coin tín hiệu WEAK không bao giờ có setup LONG. Nhưng phần hiển thị luôn đủ 3/3:
+
+- **LONG thiếu ứng viên thật** → lấp bằng **coin mạnh nhất tương đối** (health cao nhất còn lại, không trùng SHORT), hiển thị trong nhóm LONG nhưng:
+  - `setup = null` + `setupUnavailableReason`: "Không vào LONG hôm nay — thị trường suy yếu toàn diện, coin mạnh nhất tương đối chỉ để theo dõi chờ đảo chiều."
+  - Reason trung thực: "…mạnh nhất tương đối, nhưng tín hiệu WEAK chưa đủ điều kiện LONG. Theo dõi chờ tín hiệu phục hồi, không vào lệnh."
+- **SHORT thiếu ứng viên thật** → đối xứng: lấp bằng coin yếu nhất tương đối, không setup, reason riêng.
+- Ứng viên thật (BULLISH/BEARISH phân loại đúng) giữ nguyên setup ATR như cũ.
+- `buildSetup` dùng `direction` hiển thị (forced picks luôn không có setup nên không ảnh hưởng toán).
+
+### Files changed
+
+```
+src/app/api/dashboard/top-recommendations/route.ts — selection pad theo chiều + forced picks không setup + reason trung thực
+```
+
+### Verification
+
+- Typecheck: PASS. Jest analytics-ui: 27/27 PASS.
+- Runtime preview: API trả LONG 3 (RENDER/NEAR/ENA — health 63.4, setup NO) + SHORT 3 (BLESS/LINEA/COTI — setup YES đầy đủ Entry/TP/SL).
+
+---
+
 ## AUTH-01-09-2026 — Hệ thống Authen 2 lớp + tái tổ chức Admin Control Panel (2026-09-27)
 
 ### Yêu cầu
