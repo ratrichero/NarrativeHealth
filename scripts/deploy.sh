@@ -4,11 +4,11 @@
 #
 #   git up        → 1. pull code (skip everything when already up to date)
 #   2. install deps only when package.json / lockfile changed
-#   3. run drizzle migrations only when drizzle/migrations changed
-#      (idempotent SQL files: CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT
-#      EXISTS — safe to re-run the whole set; state tracked by marker hash)
+#      (+ python deps only when backend/requirements*.txt changed)
+#   3. run raw-SQL migrations only when drizzle/migrations changed
 #   4. rebuild Next only when source/config/deps/migrations changed
-#   5. pm2 restart only when a build actually happened
+#   5. pm2 restart — nextjs-dashboard after a build; fastapi-backend after
+#      backend python changes; both after a full pull
 #
 # Usage:
 #   bash scripts/deploy.sh           # full smart run
@@ -22,6 +22,10 @@ STATE_DIR=".deploy-state"
 mkdir -p "$STATE_DIR"
 MARK="$STATE_DIR/last-deploy.env"
 
+# pm2 process names (must match `pm2 list` on the server)
+PM2_NEXT="nextjs-dashboard"
+PM2_PY="fastapi-backend"
+
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
@@ -30,8 +34,21 @@ ok()   { printf '\033[1;32m[  ok  ]\033[0m %s\n' "$*"; }
 skip() { printf '\033[2m[ skip ]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[ warn ]\033[0m %s\n' "$*"; }
 
+pm2_restart() {
+  local name="$1"
+  if ! command -v pm2 >/dev/null 2>&1; then
+    warn "pm2 not installed — start/reload manually"
+    return 1
+  fi
+  if pm2 describe "$name" >/dev/null 2>&1; then
+    pm2 restart "$name" --update-env >/dev/null && ok "pm2: $name restarted"
+  else
+    warn "pm2 process '$name' not found — check 'pm2 list'"
+  fi
+}
+
 # ─── Load previous state ────────────────────────────────────────────────────
-PREV_COMMIT=""; PREV_LOCK=""; PREV_MIG=""; PREV_SRC=""
+PREV_LOCK=""; PREV_MIG=""; PREV_SRC=""; PREV_PY=""; PREV_PY_HASH=""
 if [[ -f "$MARK" && $FORCE -eq 0 ]]; then
   # shellcheck disable=SC1090
   source "$MARK"
@@ -45,7 +62,7 @@ git fetch origin "$BRANCH" --quiet 2>/dev/null
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "$LOCAL")
 
-NEED_BUILD=0; NEED_DEPS=0; NEED_MIG=0; PULLED=0
+NEED_BUILD=0; NEED_DEPS=0; NEED_MIG=0; PULLED=0; PY_CHANGED=0
 
 if [[ "$LOCAL" != "$REMOTE" ]]; then
   AHEAD=$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 0)
@@ -65,21 +82,35 @@ else
   skip "code already up to date ($(git rev-parse --short HEAD))"
 fi
 
-# ─── 2. Dependencies: install only when the lockfile inputs changed ────────
+# ─── 2a. Node dependencies: install only when lockfile inputs changed ───────
 LOCK_HASH=$(cat package.json package-lock.json bun.lock 2>/dev/null | sha256sum | cut -d' ' -f1)
 if [[ $FORCE -eq 1 || "$LOCK_HASH" != "$PREV_LOCK" ]]; then
-  log "installing dependencies…"
+  log "installing node dependencies…"
   if command -v bun >/dev/null 2>&1 && [[ -f bun.lock ]]; then
-    bun install --frozen-lockfile || npm ci
-  elif [[ -f package-lock.json ]]; then
-    npm ci
+    bun install --frozen-lockfile || npm install
   else
     npm install
   fi
-  ok "dependencies ready"
-  NEED_DEPS=1
+  ok "node dependencies ready"
 else
-  skip "dependencies unchanged"
+  skip "node dependencies unchanged"
+fi
+
+# ─── 2b. Python dependencies: install only when backend requirements changed
+REQ_HASH=$(cat backend/requirements*.txt 2>/dev/null | sha256sum | cut -d' ' -f1)
+if [[ $FORCE -eq 1 || "$REQ_HASH" != "$PREV_PY" ]]; then
+  if [[ -n "$(ls backend/requirements*.txt 2>/dev/null)" ]]; then
+    log "installing python dependencies…"
+    if [[ -x ".venv/bin/pip" ]]; then
+      .venv/bin/pip install -q -r backend/requirements.txt && ok "python deps (venv)"
+      PYDEPS_RAN=1
+    elif command -v pip3 >/dev/null 2>&1; then
+      pip3 install -q --user -r backend/requirements.txt && ok "python deps (--user)"
+      PYDEPS_RAN=1
+    else
+      warn "pip not found — skipped python deps"
+    fi
+  fi
 fi
 
 # ─── 3. Migrations: run only when drizzle/migrations changed ────────────────
@@ -115,21 +146,23 @@ else
   skip "build unchanged — reusing existing .next"
 fi
 
-# ─── 5. Restart pm2: only after a fresh build ───────────────────────────────
+# ─── 5. pm2 restarts — only what actually changed ───────────────────────────
+# backend python sources changed? (backend/ excluding caches/logs)
+PY_HASH=$(find backend -name '*.py' -not -path '*__pycache__*' 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)
+if [[ $FORCE -eq 1 || "$PY_HASH" != "$PREV_PY_HASH" ]]; then
+  PY_CHANGED=1
+fi
+
 if [[ $NEED_BUILD -eq 1 ]]; then
-  if command -v pm2 >/dev/null 2>&1; then
-    if pm2 describe narrative-health >/dev/null 2>&1; then
-      pm2 restart narrative-health --update-env && ok "pm2: narrative-health restarted"
-    else
-      warn "pm2 process 'narrative-health' not found — start it once manually:"
-      warn "  pm2 start npm --name narrative-health -- run start"
-      warn "then re-run this script to get auto-restarts."
-    fi
-  else
-    warn "pm2 not installed — start/reload manually (npm run start)"
-  fi
+  pm2_restart "$PM2_NEXT"
 else
-  skip "server restart not needed"
+  skip "nextjs-dashboard restart not needed (no rebuild)"
+fi
+
+if [[ $PY_CHANGED -eq 1 ]]; then
+  pm2_restart "$PM2_PY"
+else
+  skip "fastapi-backend restart not needed (no python change)"
 fi
 
 # ─── Persist state ──────────────────────────────────────────────────────────
@@ -138,8 +171,9 @@ PREV_COMMIT=$(git rev-parse --short HEAD)
 PREV_LOCK=$LOCK_HASH
 PREV_MIG=$MIG_HASH
 PREV_SRC=$SRC_HASH
+PREV_PY_HASH=$PY_HASH
 LAST_RUN=$(date -Iseconds)
 EOF
 
 DUR=$(( $(date +%s) - STARTED ))
-log "done in ${DUR}s — (code:$PULLED deps:$NEED_DEPS mig:$NEED_MIG build:$NEED_BUILD)"
+log "done in ${DUR}s — (code:$PULLED deps:$NEED_DEPS mig:$NEED_MIG build:$NEED_BUILD pyRestart:$PY_CHANGED)"
