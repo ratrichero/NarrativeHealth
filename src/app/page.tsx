@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
 import { NarrativeCard } from "@/components/NarrativeCard";
 import { SourceStatusBar } from "@/components/SourceStatusBar";
@@ -22,15 +22,23 @@ async function fetchDashboard(): Promise<DashboardData> {
 }
 
 export default function DashboardPage() {
+  const queryClient = useQueryClient();
   const {
     data: dashboard,
     isLoading,
     error,
-    refetch,
   } = useQuery({
     queryKey: ["dashboard"],
     queryFn: fetchDashboard,
+    // DASH-AUTO-REFRESH: dashboard thường được mở cả ngày (tab để qua đêm).
+    // Khi scheduler 6h sáng ghi dữ liệu ngày mới, tab cũ phải tự bắt kịp thay
+    // vì chờ người dùng F5 — poll nhẹ 5 phút/lần (2 request nhẹ, force-dynamic).
+    refetchInterval: 5 * 60 * 1000,
   });
+
+  // RefreshButton chạy pipeline đầy đủ → mọi section đổi dữ liệu. Invalidate
+  // toàn bộ (dashboard + top-recommendations + …) thay vì chỉ query dashboard.
+  const refreshAll = () => queryClient.invalidateQueries();
 
   if (isLoading) {
     return (
@@ -46,7 +54,7 @@ export default function DashboardPage() {
         <AlertCircle className="h-12 w-12 text-red-500 mb-4" />
         <h2 className="text-xl font-semibold text-white mb-2">Failed to load dashboard</h2>
         <p className="text-slate-400 mb-4">{(error as Error).message}</p>
-        <RefreshButton onRefreshComplete={() => refetch()} />
+        <RefreshButton onRefreshComplete={refreshAll} />
       </div>
     );
   }
@@ -70,7 +78,7 @@ export default function DashboardPage() {
         </div>
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
           <SourceStatusBar sourceStatus={dashboard.sourceStatus} />
-          <RefreshButton onRefreshComplete={() => refetch()} />
+          <RefreshButton onRefreshComplete={refreshAll} />
         </div>
       </div>
 

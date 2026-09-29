@@ -272,8 +272,36 @@ export function TopRecommendations() {
     );
   }
 
-  if (error || !data || data.recommendations.length === 0) {
-    return null; // silently hide section when no data — dashboard stays clean
+  if (error) {
+    // Lỗi fetch → hiện section khung + cảnh báo thay vì biến mất im lặng,
+    // để phân biệt rõ "chưa có dữ liệu" với "lỗi tải dữ liệu".
+    return (
+      <section>
+        <h2 className="text-lg font-semibold text-white mb-4">Đề xuất nổi bật</h2>
+        <Card>
+          <CardContent className="flex items-center gap-3 p-5 text-sm text-amber-400">
+            <AlertTriangle className="h-5 w-5 shrink-0" />
+            Không tải được đề xuất ({(error as Error).message}). Thử bấm Refresh Data.
+          </CardContent>
+        </Card>
+      </section>
+    );
+  }
+
+  if (!data || data.recommendations.length === 0) {
+    // Không có dữ liệu (mới seed DB, chưa refresh lần nào) → hiển thị
+    // placeholder thay vì ẩn section để trang không trống bất thường.
+    return (
+      <section>
+        <h2 className="text-lg font-semibold text-white mb-4">Đề xuất nổi bật</h2>
+        <Card>
+          <CardContent className="p-5 text-sm text-slate-400">
+            Chưa có dữ liệu đề xuất. Bấm <strong className="text-slate-200">Refresh Data</strong> để
+            chạy pipeline lần đầu.
+          </CardContent>
+        </Card>
+      </section>
+    );
   }
 
   const longPicks = data.recommendations.filter((r) => r.direction === "BULLISH");

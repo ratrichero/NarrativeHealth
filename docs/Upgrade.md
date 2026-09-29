@@ -1,6 +1,31 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-09-27
+## Ngày cập nhật: 2026-09-29
+
+---
+
+## DASH-STALE-CARD-09-2026 — 6 card khuyến nghị không tự cập nhật sang ngày mới sau khi scheduler chạy (2026-09-29)
+
+### Chẩn đoán
+
+Scheduler `interval_refresh` 6:26 sáng 29/9 ghi đủ 49 coin vào DB (verify trực tiếp API: `dataAsOf = 2026-09-29`, top-recommendations trả đủ 6 card ngày mới) — dữ liệu backend hoàn toàn đúng. Nguyên nhân nằm ở phía client: dashboard là SPA giữ tab mở qua đêm, `TopRecommendations` dùng react-query với `staleTime 5 phút + refetchOnWindowFocus false` nên cache từ 28/9 bị gắn vĩnh viễn vào tab; nút "Refresh Data" cũng chỉ refetch query `dashboard`, không invalidate query `top-recommendations`. Kết quả: dữ liệu mới có sẵn nhưng UI không bao giờ hỏi lại.
+
+### Hướng xử lý
+
+1. **Auto-refetch**: query `dashboard` trên trang chủ thêm `refetchInterval 5 phút` — tab để qua đêm tự bắt kịp dữ liệu ngày mới sau khi scheduler chạy, không cần F5.
+2. **Invalidate toàn bộ**: `RefreshButton` giờ gọi `queryClient.invalidateQueries()` (mọi query, gồm dashboard + top-recommendations) thay vì chỉ refetch query dashboard — bấm refresh là mọi section đổi dữ liệu cùng lúc.
+3. **Empty state minh bạch**: `TopRecommendations` không còn ẩn section im lặng khi lỗi/không có dữ liệu — lỗi fetch hiện cảnh báo vàng, DB trống hiện hướng dẫn bấm Refresh Data, phân biệt rõ "chưa có dữ liệu" với "lỗi tải".
+
+### Files changed
+
+```
+src/app/page.tsx — refetchInterval 5 phút + invalidateQueries cho RefreshButton
+src/components/TopRecommendations.tsx — empty/error state hiển thị thay vì ẩn section
+```
+
+### Verification
+
+Typecheck PASS. Live: `/api/dashboard` → dataAsOf 2026-09-29, dataIsStale false; `/api/dashboard/top-recommendations` → date 2026-09-29, 6 card có setup (ONDO/LINK/POL LONG, TRUTH/MANTA/BLESS SHORT).
 
 ---
 
