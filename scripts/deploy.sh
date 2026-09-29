@@ -41,14 +41,27 @@ pm2_restart() {
     return 1
   fi
   if pm2 describe "$name" >/dev/null 2>&1; then
-    pm2 restart "$name" --update-env >/dev/null && ok "pm2: $name restarted"
-  else
-    warn "pm2 process '$name' not found — check 'pm2 list'"
+    if pm2 restart "$name" --update-env >/dev/null; then
+      ok "pm2: $name restarted"
+      return 0
+    fi
+    warn "pm2 restart $name failed"
+    return 1
   fi
+  warn "pm2 process '$name' not found — check 'pm2 list'"
+  return 1
 }
 
 # ─── Load previous state ────────────────────────────────────────────────────
 PREV_LOCK=""; PREV_MIG=""; PREV_SRC=""; PREV_PY=""; PREV_PY_HASH=""
+# STALE-GUARD: a build whose pm2 restart failed (or was skipped because pm2
+# was momentarily unavailable) must NOT be forgotten — retry the restart on
+# the very next run, even when nothing else changed.
+PENDING_NEXT_RESTART=0
+PENDING_PY_RESTART=0
+if [[ -f "$STATE_DIR/pending-restarts" ]]; then
+  source "$STATE_DIR/pending-restarts"
+fi
 if [[ -f "$MARK" && $FORCE -eq 0 ]]; then
   # shellcheck disable=SC1090
   source "$MARK"
@@ -153,16 +166,30 @@ if [[ $FORCE -eq 1 || "$PY_HASH" != "$PREV_PY_HASH" ]]; then
   PY_CHANGED=1
 fi
 
-if [[ $NEED_BUILD -eq 1 ]]; then
-  pm2_restart "$PM2_NEXT"
+NEXT_RESTART_OK=1; PY_RESTART_OK=1
+if [[ $NEED_BUILD -eq 1 || $PENDING_NEXT_RESTART -eq 1 ]]; then
+  [[ $PENDING_NEXT_RESTART -eq 1 && $NEED_BUILD -eq 0 ]] && warn "retrying pending nextjs-dashboard restart from a previous run"
+  pm2_restart "$PM2_NEXT" || NEXT_RESTART_OK=0
 else
   skip "nextjs-dashboard restart not needed (no rebuild)"
 fi
 
-if [[ $PY_CHANGED -eq 1 ]]; then
-  pm2_restart "$PM2_PY"
+if [[ $PY_CHANGED -eq 1 || $PENDING_PY_RESTART -eq 1 ]]; then
+  [[ $PENDING_PY_RESTART -eq 1 && $PY_CHANGED -eq 0 ]] && warn "retrying pending fastapi-backend restart from a previous run"
+  pm2_restart "$PM2_PY" || PY_RESTART_OK=0
 else
   skip "fastapi-backend restart not needed (no python change)"
+fi
+
+# Persist pending-restart flags when a required restart did not succeed.
+if [[ $NEXT_RESTART_OK -eq 1 && $PY_RESTART_OK -eq 1 ]]; then
+  rm -f "$STATE_DIR/pending-restarts"
+else
+  cat > "$STATE_DIR/pending-restarts" <<EOF
+PENDING_NEXT_RESTART=$(( 1 - NEXT_RESTART_OK ))
+PENDING_PY_RESTART=$(( 1 - PY_RESTART_OK ))
+EOF
+  warn "some pm2 restarts did not succeed — they will retry on the next 'git up'"
 fi
 
 # ─── Persist state ──────────────────────────────────────────────────────────
