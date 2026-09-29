@@ -4,6 +4,47 @@
 
 ---
 
+## BT-03-09-2026 — Backtest 1-lần/ch pick: kết quả chốt lưu DB, xem lại được (2026-09-29)
+
+### Yêu cầu
+
+Mỗi pick đã được check backtest phải **chuyển trạng thái "đã có kết quả"** và **lưu kết quả xem lại được**; lần chạy sau **không chạy lại** pick đã chốt.
+
+### Thiết kế vòng đời (migration `0032_backtest_results.sql`)
+
+Mỗi pick có `backtest_status`:
+- `PENDING` — chưa chạy / còn trong window horizon (chưa đủ dữ liệu tương lai)
+- `EVALUATED` — đã chốt TP1_WIN / TP2_WIN / SL_LOSS (kết quả bất biến)
+- `EXPIRED` — hết horizon không chạm TP/SL (NO_HIT — không phải thua, không tính vào win rate)
+- `SKIPPED` — không có setup dùng được (NO_SETUP)
+
+Kết quả lưu thẳng cột trên pick row: `backtest_outcome`, `backtest_exit_r`, `backtest_hit_day`, `backtest_mfe_pct`, `backtest_mae_pct`, `backtest_entry_filled`, `backtest_horizon_days`, `backtest_run_id`, `backtest_evaluated_at`. Cột thêm bằng `ADD COLUMN IF NOT EXISTS` — idempotent, rows BT-01 cũ giữ PENDING.
+
+### Luồng chạy
+
+- `POST /api/admin/backtest/run` `{horizon?: 7|14|30|60, dryRun?}`: chỉ đọc pick **PENDING**; pick không setup → SKIPPED ngay; pick đã đóng window (dataDate + horizon ≤ hôm nay, helper `isHorizonClosed`) → tính 1 lần và chốt; pick còn trong window → giữ PENDING cho lần sau. Mỗi lần chạy gắn `run_id` + `evaluated_at`. `dryRun:true` báo trước số lượng, không ghi.
+- Engine: outcome mới `NO_HIT` (final khi window đóng) phân biệt với `OPEN` (chưa đóng) — đảm bảo chạy lại cùng horizon cho cùng kết quả; `aggregateOutcomes` đếm `noHit` riêng.
+- `GET /api/admin/backtest/setup-performance` chuyển sang **chỉ đọc kết quả đã lưu** — không tính lại, số không đổi sau khi chốt; trả thêm `statusCounts` + danh sách pick kèm status/outcome để xem lại.
+- Tab Backtest (/admin): nút **Dry run** + **Chạy backtest** (chọn horizon), hàng chip `PENDING/EVALUATED/EXPIRED/SKIPPED` với số lượng, bảng "Kết quả đã lưu" từng pick.
+
+### Files changed
+
+```
+drizzle/migrations/0032_backtest_results.sql — lifecycle + cột kết quả (mới)
+src/db/schema.ts — 10 cột backtest_* trên topRecommendationPicks
+src/lib/backtest/engine.ts — NO_HIT + horizonClosed + isHorizonClosed + noHit
+src/app/api/admin/backtest/run/route.ts — endpoint chạy 1-lần (mới)
+src/app/api/admin/backtest/setup-performance/route.ts — đọc kết quả đã lưu
+src/app/admin/page.tsx — nút chạy + chip trạng thái + bảng kết quả đã lưu
+src/lib/backtest/__tests__/engine.test.ts — 5 test mới (tổng 20)
+```
+
+### Verification
+
+`npx tsc --noEmit` PASS; `npx jest src/lib/backtest` 20/20. Lần "Chạy backtest" thứ 2 với cùng horizon chỉ xử lý pick PENDING mới — picks đã chốt không đụng tới.
+
+---
+
 ## BT-02-09-2026 — Endpoint backtest + dashboard đo hiệu quả (2026-09-29)
 
 ### Bối cảnh

@@ -1664,6 +1664,18 @@ export const topRecommendationPicks = pgTable(
     setupUnavailableReason: text("setup_unavailable_reason"),
     pickedAt: timestamp("picked_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    // ─── BT-03: backtest lifecycle + stored results (written once) ───
+    // PENDING → EVALUATED (TP1_WIN/TP2_WIN/SL_LOSS) | EXPIRED (NO_HIT) | SKIPPED (NO_SETUP)
+    backtestStatus: varchar("backtest_status", { length: 20 }).notNull().default("PENDING"),
+    backtestOutcome: varchar("backtest_outcome", { length: 20 }), // TP1_WIN | TP2_WIN | SL_LOSS | NO_HIT | NO_SETUP
+    backtestExitR: real("backtest_exit_r"),
+    backtestHitDay: integer("backtest_hit_day"),
+    backtestMfePct: real("backtest_mfe_pct"),
+    backtestMaePct: real("backtest_mae_pct"),
+    backtestEntryFilled: boolean("backtest_entry_filled"),
+    backtestHorizonDays: integer("backtest_horizon_days"),
+    backtestRunId: varchar("backtest_run_id", { length: 40 }),
+    backtestEvaluatedAt: timestamp("backtest_evaluated_at"),
   },
   (table) => [
     unique("top_rec_picks_unique").on(table.dataDate, table.coinId),

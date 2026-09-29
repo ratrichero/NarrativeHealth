@@ -3,6 +3,7 @@ import {
   computePickOutcome,
   aggregateOutcomes,
   pearson,
+  isHorizonClosed,
   type BacktestPickInput,
   type BacktestPriceRow,
   type PickOutcome,
@@ -101,6 +102,66 @@ describe("computePickOutcome — BULLISH", () => {
     const prices = [row("2026-09-02", 140, 118), row("2026-09-03", 139, 117)];
     const o = computePickOutcome(basePick(), prices, 14);
     expect(o.entryFilled).toBe(false);
+  });
+});
+
+describe("BT-03 — horizon closure semantics", () => {
+  it("NO_HIT is final when the horizon window is closed", () => {
+    const prices = [row("2026-09-02", 104, 98), row("2026-09-03", 106, 97)];
+    const o = computePickOutcome(basePick(), prices, 2, { horizonClosed: true });
+    expect(o.outcome).toBe("NO_HIT");
+    expect(o.exitR).toBeNull();
+    expect(o.mfePct).not.toBeNull();
+  });
+
+  it("stays OPEN when the window is not closed (stay PENDING)", () => {
+    const prices = [row("2026-09-02", 104, 98), row("2026-09-03", 106, 97)];
+    const o = computePickOutcome(basePick(), prices, 2);
+    expect(o.outcome).toBe("OPEN");
+  });
+
+  it("closed window with a TP hit still resolves as a win", () => {
+    const prices = [row("2026-09-02", 104, 98), row("2026-09-03", 116, 100)];
+    const o = computePickOutcome(basePick(), prices, 2, { horizonClosed: true });
+    expect(o.outcome).toBe("TP1_WIN");
+  });
+
+  it("isHorizonClosed boundary: exactly horizon days is closed", () => {
+    expect(isHorizonClosed("2026-09-01", 14, "2026-09-15")).toBe(true);
+    expect(isHorizonClosed("2026-09-01", 14, "2026-09-14")).toBe(false);
+    expect(isHorizonClosed("2026-09-01", 14, "2026-10-01")).toBe(true);
+  });
+});
+
+describe("aggregateOutcomes — NO_HIT handling", () => {
+  const mk = (over: Partial<PickOutcome>): PickOutcome => ({
+    pickId: 1,
+    dataDate: "2026-09-01",
+    coinId: 1,
+    symbol: "T",
+    direction: "BULLISH",
+    signal: "WATCH",
+    healthScore: 70,
+    pickKind: "GENUINE",
+    entryMid: 100,
+    outcome: "OPEN",
+    exitR: null,
+    hitDay: null,
+    mfePct: null,
+    maePct: null,
+    entryFilled: null,
+    ...over,
+  });
+
+  it("NO_HIT is counted separately and excluded from win rate", () => {
+    const g = aggregateOutcomes("g", [
+      mk({ outcome: "TP1_WIN", exitR: 1, hitDay: 2 }),
+      mk({ outcome: "SL_LOSS", exitR: -1, hitDay: 3 }),
+      mk({ outcome: "NO_HIT" }),
+    ]);
+    expect(g.noHit).toBe(1);
+    expect(g.winRate).toBeCloseTo(50);
+    expect(g.avgR).toBeCloseTo(0);
   });
 });
 

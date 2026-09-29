@@ -32,7 +32,7 @@ export interface BacktestPriceRow {
   low: number;
 }
 
-export type BacktestOutcome = "TP1_WIN" | "TP2_WIN" | "SL_LOSS" | "OPEN" | "INVALID";
+export type BacktestOutcome = "TP1_WIN" | "TP2_WIN" | "SL_LOSS" | "NO_HIT" | "OPEN" | "INVALID";
 
 export interface PickOutcome {
   pickId: number;
@@ -44,7 +44,7 @@ export interface PickOutcome {
   healthScore: number | null;
   pickKind: string;
   entryMid: number | null;
-  outcome: BacktestOutcome;
+  outcome: BacktestOutcome; // NO_HIT = final when horizonClosed; OPEN = window still running
   exitR: number | null; // realized multiple of risk (1R = entryMid↔SL distance)
   hitDay: number | null; // 1-based day index when outcome resolved
   mfePct: number | null; // max favorable excursion, % of entryMid, over horizon
@@ -58,6 +58,7 @@ export interface GroupStats {
   tp1Wins: number;
   tp2Wins: number;
   slLosses: number;
+  noHit: number;
   open: number;
   winRate: number | null; // wins / (wins + losses), OPEN excluded
   avgR: number | null; // avg realized R over resolved picks (SL = -1)
@@ -71,10 +72,20 @@ const mean = (xs: number[]): number | null =>
   xs.length === 0 ? null : +(xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(2);
 
 /** Compute the outcome of one pick against forward daily candles. */
+export interface ComputeOutcomeOptions {
+  /**
+   * BT-03: true when the pick's horizon window has fully elapsed (today is
+   * past dataDate + horizon calendar days). When true, a horizon without a
+   * TP/SL hit becomes a final NO_HIT instead of a transient OPEN.
+   */
+  horizonClosed?: boolean;
+}
+
 export function computePickOutcome(
   pick: BacktestPickInput,
   priceRows: BacktestPriceRow[], // ascending by date, may include the pick day
-  horizonDays: number
+  horizonDays: number,
+  options: ComputeOutcomeOptions = {}
 ): PickOutcome {
   const base: PickOutcome = {
     pickId: pick.pickId,
@@ -174,18 +185,22 @@ export function computePickOutcome(
     }
   }
 
-  return {
-    ...base,
-    outcome: "OPEN",
-    mfePct: +((mfe / entryMid) * 100).toFixed(2),
-    maePct: +((mae / entryMid) * 100).toFixed(2),
-    entryFilled,
-  };
+  const horizonClosed = options.horizonClosed ?? false;
+  const mfePct = +((mfe / entryMid) * 100).toFixed(2);
+  const maePct = +((mae / entryMid) * 100).toFixed(2);
+  const entryFilledOut = entryFilled;
+
+  // BT-03: if the full horizon has elapsed without TP/SL, the result is final
+  // (NO_HIT) — a later run with the same horizon must reach the same verdict.
+  // Otherwise the pick is still OPEN (window not closed; stay PENDING).
+  return horizonClosed
+    ? { ...base, outcome: "NO_HIT", mfePct, maePct, entryFilled: entryFilledOut }
+    : { ...base, outcome: "OPEN", mfePct, maePct, entryFilled: entryFilledOut };
 }
 
 /** Aggregate a list of outcomes into one stats row. */
 export function aggregateOutcomes(group: string, outcomes: PickOutcome[]): GroupStats {
-  const resolved = outcomes.filter((o) => o.outcome !== "OPEN" && o.outcome !== "INVALID");
+  const resolved = outcomes.filter((o) => o.outcome !== "OPEN" && o.outcome !== "INVALID" && o.outcome !== "NO_HIT");
   const wins = resolved.filter((o) => o.outcome !== "SL_LOSS");
   const losses = resolved.filter((o) => o.outcome === "SL_LOSS");
   const fills = outcomes.map((o) => o.entryFilled).filter((f): f is boolean => f != null);
@@ -200,6 +215,7 @@ export function aggregateOutcomes(group: string, outcomes: PickOutcome[]): Group
     tp1Wins: wins.filter((o) => o.outcome === "TP1_WIN").length,
     tp2Wins: wins.filter((o) => o.outcome === "TP2_WIN").length,
     slLosses: losses.length,
+    noHit: outcomes.filter((o) => o.outcome === "NO_HIT").length,
     open: outcomes.filter((o) => o.outcome === "OPEN").length,
     winRate: wins.length + losses.length > 0
       ? +((wins.length / (wins.length + losses.length)) * 100).toFixed(1)
@@ -212,6 +228,18 @@ export function aggregateOutcomes(group: string, outcomes: PickOutcome[]): Group
     avgMfePct: mean(mfes),
     avgMaePct: mean(maes),
   };
+}
+
+/**
+ * BT-03: a pick's horizon window is closed when today's date (business date,
+ * Asia/Ho_Chi_Minh semantics via plain calendar math) is at least `horizon`
+ * calendar days after the pick's data date.
+ */
+export function isHorizonClosed(dataDate: string, horizonDays: number, today: string): boolean {
+  const t = new Date(today + "T00:00:00Z").getTime();
+  const d = new Date(dataDate + "T00:00:00Z").getTime();
+  if (!Number.isFinite(t) || !Number.isFinite(d)) return false;
+  return t - d >= horizonDays * 86400_000;
 }
 
 /** Pearson correlation between two parallel sample arrays; null when degenerate. */

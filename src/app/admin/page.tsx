@@ -772,6 +772,7 @@ interface GroupStatsT {
   tp1Wins: number;
   tp2Wins: number;
   slLosses: number;
+  noHit: number;
   open: number;
   winRate: number | null;
   avgR: number | null;
@@ -790,13 +791,15 @@ interface PickOutcomeT {
   signal: string;
   healthScore: number | null;
   pickKind: string;
-  entryMid: number | null;
-  outcome: string;
+  status: string; // PENDING | EVALUATED | EXPIRED | SKIPPED
+  outcome: string | null; // TP1_WIN | TP2_WIN | SL_LOSS | NO_HIT | NO_SETUP
   exitR: number | null;
   hitDay: number | null;
   mfePct: number | null;
   maePct: number | null;
   entryFilled: boolean | null;
+  horizonDays: number | null;
+  evaluatedAt: string | null;
 }
 
 /**
@@ -808,24 +811,57 @@ interface PickOutcomeT {
  * Read-only; horizon/daysBack adjustable; no mutations.
  */
 function BacktestSection() {
+  const queryClientBC = useQueryClient();
   const [horizon, setHorizon] = useState(14);
   const [daysBack, setDaysBack] = useState(90);
 
   const perfQuery = useQuery({
-    queryKey: ["admin", "backtest", "perf", horizon],
+    queryKey: ["admin", "backtest", "perf"],
     queryFn: async () => {
-      const res = await fetch(`/api/admin/backtest/setup-performance?horizon=${horizon}`);
+      const res = await fetch("/api/admin/backtest/setup-performance");
       const json = await res.json();
       if (!json.success) throw new Error(json.error);
       return json.data as {
-        params: { horizon: number; includeAll: boolean; cutoff: string };
+        params: { includeAll: boolean; cutoff: string };
         totalPicks: number;
+        evaluatedCount: number;
+        pendingCount: number;
+        statusCounts: { PENDING: number; EVALUATED: number; EXPIRED: number; SKIPPED: number };
         byDirection: GroupStatsT[];
         bySignal: GroupStatsT[];
         byHealthBand: GroupStatsT[];
         byPickKind: GroupStatsT[];
         picks: PickOutcomeT[];
       };
+    },
+  });
+
+  // BT-03: evaluate PENDING picks once, store results — re-runs only process
+  // picks still PENDING (window newly closed).
+  const [runResult, setRunResult] = useState<null | {
+    runId: string;
+    horizon: number;
+    pendingBefore: number;
+    evaluated: number;
+    expired: number;
+    skipped: number;
+    stillOpen: number;
+    errors: number;
+  }>(null);
+  const runMutation = useMutation({
+    mutationFn: async (opts: { dryRun?: boolean } = {}) => {
+      const res = await fetch("/api/admin/backtest/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ horizon, dryRun: opts.dryRun ?? false }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as NonNullable<typeof runResult>;
+    },
+    onSuccess: (data) => {
+      setRunResult(data);
+      queryClientBC.invalidateQueries({ queryKey: ["admin", "backtest", "perf"] });
     },
   });
 
@@ -865,6 +901,7 @@ function BacktestSection() {
                 <th className="py-2 pr-3">Picks</th>
                 <th className="py-2 pr-3">Win rate</th>
                 <th className="py-2 pr-3">TP1/TP2/SL</th>
+                <th className="py-2 pr-3">No-hit</th>
                 <th className="py-2 pr-3">Avg R</th>
                 <th className="py-2 pr-3">Ngày thoát</th>
                 <th className="py-2 pr-3">Entry fill</th>
@@ -883,6 +920,7 @@ function BacktestSection() {
                 <td className="py-2 pr-3 text-xs text-slate-400">
                   <span className="text-green-400">{g.tp1Wins}</span>/<span className="text-cyan-400">{g.tp2Wins}</span>/<span className="text-red-400">{g.slLosses}</span>
                 </td>
+                <td className="py-2 pr-3 text-xs text-slate-500">{g.noHit}</td>
                 <td className={`py-2 pr-3 ${g.avgR == null ? "text-slate-500" : g.avgR >= 0 ? "text-green-400" : "text-red-400"}`}>
                   {g.avgR == null ? "—" : g.avgR}
                 </td>
@@ -1019,7 +1057,7 @@ function BacktestSection() {
       {perfQuery.isLoading ? (
         <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 text-sm text-slate-400">Đang tính setup performance…</div>
       ) : perfQuery.error || !perfQuery.data ? (
-        <div className="bg-slate-8/50 border border-slate-700 rounded-lg p-6 text-sm text-red-400">
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 text-sm text-red-400">
           Lỗi setup-performance: {(perfQuery.error as Error)?.message ?? "không có dữ liệu"}
           <span className="block mt-2 text-xs text-slate-500 text-slate-500">
             Chưa có picks trong DB? Picks được lưu từ BT-01 (mỗi lần dashboard gọi top-recommendations) — cần dữ liệu tích lũy.
@@ -1027,18 +1065,138 @@ function BacktestSection() {
         </div>
       ) : (
         <>
-          <div className="flex flex-wrap gap-3 mb-2">
-            <span className="text-xs text-slate-500">
-              Tổng picks đủ điều kiện: <span className="text-slate-300 font-medium">{perfQuery.data.totalPicks}</span>
-              · pickKind GENUINE có setup · horizon {perfQuery.data.params.horizon} ngày
-            </span>
+          {/* ── BT-03: run controls + lifecycle status ── */}
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-sm font-semibold text-white">Chạy backtest</span>
+              <select
+                value={horizon}
+                onChange={(e) => setHorizon(Number(e.target.value))}
+                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200"
+              >
+                {[7, 14, 30, 60].map((h) => (
+                  <option key={h} value={h}>Horizon {h} ngày</option>
+                ))}
+              </select>
+              <Button
+                variant="secondary"
+                loading={runMutation.isPending}
+                onClick={() => runMutation.mutate({ dryRun: true })}
+                title="Xem sẽ đánh giá bao nhiêu pick, không ghi gì"
+              >
+                <Search className="h-4 w-4 mr-2" />
+                Dry run
+              </Button>
+              <Button
+                loading={runMutation.isPending}
+                onClick={() => runMutation.mutate({})}
+                title="Chốt kết quả cho picks PENDING đã đóng cửa sổ horizon — mỗi pick chỉ chạy 1 lần"
+              >
+                <Play className="h-4 w-4 mr-2" />
+                Chạy backtest
+              </Button>
+              <span className="text-xs text-slate-500 ml-auto">
+                Picks đã có kết quả <span className="text-slate-300">không bao giờ chạy lại</span> — lần sau chỉ xử lý pick còn PENDING.
+              </span>
+            </div>
+
+            {runResult && (
+              <div className="mt-3 text-xs bg-slate-900/60 border border-slate-700 rounded p-3 text-slate-300">
+                <span className="font-mono text-cyan-400">{runResult.runId}</span> · horizon {runResult.horizon}d ·{" "}
+                <span className="text-green-400">{runResult.evaluated} chốt kết quả</span> ·{" "}
+                <span className="text-yellow-400">{runResult.expired} hết hạn (no-hit)</span> ·{" "}
+                <span className="text-slate-400">{runResult.skipped} bỏ qua (không setup)</span> ·{" "}
+                <span className="text-cyan-300">{runResult.stillOpen} còn trong window (PENDING)</span>
+                {runResult.errors > 0 && <span className="text-red-400"> · {runResult.errors} lỗi</span>}
+              </div>
+            )}
+
+            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+              {([
+                ["PENDING", "chưa chạy / trong window", "bg-slate-700 text-slate-300"],
+                ["EVALUATED", "đã có kết quả TP/SL", "bg-green-900/50 text-green-400"],
+                ["EXPIRED", "hết horizon không chạm TP/SL", "bg-yellow-900/50 text-yellow-400"],
+                ["SKIPPED", "không có setup", "bg-slate-800 text-slate-500"],
+              ] as const).map(([st, label, cls]) => (
+                <span key={st} className={`px-2 py-1 rounded ${cls}`}>
+                  {st}: {perfQuery.data.statusCounts[st as keyof typeof perfQuery.data.statusCounts] ?? 0}
+                  <span className="ml-1 opacity-70">— {label}</span>
+                </span>
+              ))}
+            </div>
           </div>
+
+          {/* ── Stored per-pick results (reviewable) ── */}
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+            <h4 className="text-sm font-semibold text-white mb-3">
+              Kết quả đã lưu ({perfQuery.data.evaluatedCount} picks đã chốt · {perfQuery.data.pendingCount} PENDING)
+            </h4>
+            {perfQuery.data.picks.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                Chưa có pick nào được chốt kết quả — bấm “Chạy backtest” khi đã tích lũy đủ window.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-slate-500 border-b border-slate-700">
+                      <th className="py-2 pr-3">Ngày</th>
+                      <th className="py-2 pr-3">Coin</th>
+                      <th className="py-2 pr-3">Dir</th>
+                      <th className="py-2 pr-3">Signal</th>
+                      <th className="py-2 pr-3">Health</th>
+                      <th className="py-2 pr-3">Status</th>
+                      <th className="py-2 pr-3">Outcome</th>
+                      <th className="py-2 pr-3">R</th>
+                      <th className="py-2 pr-3">Ngày hit</th>
+                      <th className="py-2 pr-3">MFE/MAE %</th>
+                      <th className="py-2 pr-3">Fill</th>
+                      <th className="py-2">Horizon</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {perfQuery.data.picks.map((p) => (
+                      <tr key={p.pickId} className="border-b border-slate-800 last:border-0">
+                        <td className="py-2 pr-3 font-mono text-slate-400">{p.dataDate}</td>
+                        <td className="py-2 pr-3 font-medium text-slate-200">{p.symbol}</td>
+                        <td className={`py-2 pr-3 ${p.direction === "BULLISH" ? "text-green-400" : "text-red-400"}`}>{p.direction === "BULLISH" ? "LONG" : "SHORT"}</td>
+                        <td className="py-2 pr-3 text-slate-400">{p.signal}</td>
+                        <td className="py-2 pr-3 text-slate-300">{p.healthScore?.toFixed(0) ?? "—"}</td>
+                        <td className="py-2 pr-3">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase ${
+                            p.status === "EVALUATED" ? "bg-green-900/50 text-green-400"
+                            : p.status === "EXPIRED" ? "bg-yellow-900/50 text-yellow-400"
+                            : p.status === "SKIPPED" ? "bg-slate-800 text-slate-500"
+                            : "bg-slate-700 text-slate-300"
+                          }`}>{p.status}</span>
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-xs">
+                          {p.outcome === "TP1_WIN" ? <span className="text-green-400">TP1_WIN</span>
+                            : p.outcome === "TP2_WIN" ? <span className="text-cyan-400">TP2_WIN</span>
+                            : p.outcome === "SL_LOSS" ? <span className="text-red-400">SL_LOSS</span>
+                            : p.outcome === "NO_HIT" ? <span className="text-yellow-400">NO_HIT</span>
+                            : p.outcome === "NO_SETUP" ? <span className="text-slate-500">NO_SETUP</span>
+                            : "—"}
+                        </td>
+                        <td className={`py-2 pr-3 ${p.exitR == null ? "text-slate-500" : p.exitR >= 0 ? "text-green-400" : "text-red-400"}`}>{p.exitR ?? "—"}</td>
+                        <td className="py-2 pr-3 text-slate-400">{p.hitDay ?? "—"}</td>
+                        <td className="py-2 pr-3 text-xs text-slate-400">{fmt(p.mfePct)} / {fmt(p.maePct)}</td>
+                        <td className="py-2 pr-3 text-xs">{p.entryFilled == null ? "—" : p.entryFilled ? <span className="text-green-400">yes</span> : <span className="text-slate-500">no</span>}</td>
+                        <td className="py-2 text-slate-500">{p.horizonDays ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
           {statsTable("Theo direction", perfQuery.data.byDirection)}
           {statsTable("Theo signal", perfQuery.data.bySignal)}
           {statsTable("Theo health band", perfQuery.data.byHealthBand)}
           {statsTable("Genuine vs fill (tham khảo)", perfQuery.data.byPickKind)}
           <p className="text-xs text-slate-500">
-            Quy tắc bảo thủ: một ngày giá chạm cả TP và SL → tính THUA (SL). Win rate = (TP1+TP2) / (TP1+TP2+SL), OPEN chưa tính. MFE/MAE = biên độ thuận/chống lợi nhất % so entryMid trong horizon.
+            Quy tắc bảo thủ: một ngày giá chạm cả TP và SL → tính THUA (SL). Win rate = (TP1+TP2) / (TP1+TP2+SL) — NO_HIT không tính thua. Kết quả chốt 1 lần và lưu DB, xem lại bất cứ lúc nào.
           </p>
         </>
       )}
