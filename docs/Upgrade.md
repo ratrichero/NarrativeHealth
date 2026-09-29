@@ -4,6 +4,43 @@
 
 ---
 
+## BT-02-09-2026 — Endpoint backtest + dashboard đo hiệu quả (2026-09-29)
+
+### Bối cảnh
+
+BT-01 đã lưu snapshot 6 picks/ngày. BT-02 xây lớp đo: 2 endpoint admin + tab Backtest trong /admin, dùng được ngay cả khi dữ liệu mới tích lũy vài ngày (số sẽ có ý nghĩa thống kê sau ~2-4 tuần).
+
+### Backtest engine (`src/lib/backtest/engine.ts` — pure, no DB, 15 unit tests)
+
+- `computePickOutcome`: quét forward N candles từ `market_price_daily` (mặc định 14): TP1/TP2/SL hit + ngày hit, **exitR** (khoảng cách TP/SL so entryMid, đơn vị risk), **MFE/MAE** (biên độ thuận/chống tốt nhất % so entryMid trong horizon), **entry fill** (giá có quay về vùng entry trong 3 ngày). Quy tắc bảo thủ: 1 ngày chạm cả TP và SL → tính SL. BEARISH mirrored.
+- `aggregateOutcomes`: win rate = (TP1+TP2)/(TP1+TP2+SL) — OPEN không tính; avgR, avg ngày thoát, fill rate, avg MFE/MAE.
+- `pearson`: tương quan Pearson, trả null khi mẫu < 5.
+
+### Endpoints (admin-guarded, read-only)
+
+- `GET /api/admin/backtest/setup-performance?horizon=14&all=1&from=YYYY-MM-DD` — outcome từng pick + aggregate theo **direction / signal / health band / pickKind**. Mặc định chỉ GENUINE có setup; `all=1` thêm FILL_*.
+- `GET /api/admin/backtest/health-power?daysBack=90` — sức mạnh dự báo health score: median forward return 1/3/7/14d theo band (80+/60-80/40-60/<40) + **Pearson health↔return theo từng horizon**, kèm trend/volume/momentum làm benchmark (health phải mạnh hơn feature đơn lẻ mới chứng minh composite có giá trị).
+
+### Tab Backtest (/admin → module Vận hành)
+
+2 bảng health power (band medians + correlations) + 4 bảng setup performance (direction/signal/band/pickKind) + explanation footnotes. Horizon 7/14/30/60, lookback 30-365 ngày, auto per-query.
+
+### Files changed
+
+```
+src/lib/backtest/engine.ts — pure engine (mới)
+src/lib/backtest/__tests__/engine.test.ts — 15 tests (mới)
+src/app/api/admin/backtest/setup-performance/route.ts — endpoint picks (mới)
+src/app/api/admin/backtest/health-power/route.ts — endpoint health score (mới)
+src/app/admin/page.tsx — tab backtest + BacktestSection
+```
+
+### Verification
+
+`npx tsc --noEmit` PASS; `npx jest src/lib/backtest` 15/15. Tab mới phải có ở CẢ ADMIN_MODULES và mảng tabs (bài học LLM Monitor).
+
+---
+
 ## BT-01-09-2026 — Lưu 6 khuyến nghị + setup levels vào DB để backtest (2026-09-29)
 
 ### Bối cảnh

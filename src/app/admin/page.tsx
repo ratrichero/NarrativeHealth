@@ -425,7 +425,8 @@ type TabType =
   | "chat-report"
   | "auth"
   | "accounts"
-  | "llm";
+  | "llm"
+  | "backtest";
 
 /**
  * AUTH-01 + Panel re-org — tabs grouped into modules rendered as icon cards
@@ -482,6 +483,7 @@ const ADMIN_MODULES: {
       { id: "config", label: "Config" },
       { id: "logs", label: "Logs" },
       { id: "llm", label: "LLM Monitor" },
+      { id: "backtest", label: "Backtest" },
       { id: "analytics", label: "Analytics" },
       { id: "chat-report", label: "Chat Report" },
     ],
@@ -759,6 +761,287 @@ function LlmMonitorSection() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** BT-02 local view types (mirror of engine types, UI-shaped). */
+interface GroupStatsT {
+  group: string;
+  picks: number;
+  tp1Wins: number;
+  tp2Wins: number;
+  slLosses: number;
+  open: number;
+  winRate: number | null;
+  avgR: number | null;
+  avgDaysToExit: number | null;
+  entryFillRate: number | null;
+  avgMfePct: number | null;
+  avgMaePct: number | null;
+}
+
+interface PickOutcomeT {
+  pickId: number;
+  dataDate: string;
+  coinId: number;
+  symbol: string;
+  direction: string;
+  signal: string;
+  healthScore: number | null;
+  pickKind: string;
+  entryMid: number | null;
+  outcome: string;
+  exitR: number | null;
+  hitDay: number | null;
+  mfePct: number | null;
+  maePct: number | null;
+  entryFilled: boolean | null;
+}
+
+/**
+ * BT-02 — Backtest tab: measure whether the system's picks work.
+ *  1. Setup Performance: persisted top-6 picks (BT-01) joined with daily OHLC
+ *     → win-rate, realized R, MFE/MAE, entry-fill, by direction/signal/band.
+ *  2. Health Power: does the health score predict forward returns?
+ *     Median forward return per band + Pearson correlations per horizon.
+ * Read-only; horizon/daysBack adjustable; no mutations.
+ */
+function BacktestSection() {
+  const [horizon, setHorizon] = useState(14);
+  const [daysBack, setDaysBack] = useState(90);
+
+  const perfQuery = useQuery({
+    queryKey: ["admin", "backtest", "perf", horizon],
+    queryFn: async () => {
+      const res = await fetch(`/api/admin/backtest/setup-performance?horizon=${horizon}`);
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as {
+        params: { horizon: number; includeAll: boolean; cutoff: string };
+        totalPicks: number;
+        byDirection: GroupStatsT[];
+        bySignal: GroupStatsT[];
+        byHealthBand: GroupStatsT[];
+        byPickKind: GroupStatsT[];
+        picks: PickOutcomeT[];
+      };
+    },
+  });
+
+  const powerQuery = useQuery({
+    queryKey: ["admin", "backtest", "power", daysBack],
+    queryFn: async () => {
+      const res = await fetch(`//api/admin/backtest/health-power?daysBack=${daysBack}`.replace("//", "/"));
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as {
+        params: { daysBack: number };
+        totalSamples: number;
+        byBand: { band: string; samples: number; median1d: number | null; median3d: number | null; median7d: number | null; median14d: number | null }[];
+        correlations: { horizonDays: number; samples: number; health: number | null; trend: number | null; volume: number | null; momentum: number | null }[];
+        note: string | null;
+      };
+    },
+  });
+
+  const fmt = (v: number | null | undefined, suffix = "") =>
+    v == null ? "—" : `${v > 0 && suffix === "%" ? "+" : ""}${v}${suffix}`;
+
+  const bandColor = (b: string) =>
+    b === "80+" ? "text-green-400" : b === "60-80" ? "text-cyan-400" : b === "40-60" ? "text-yellow-400" : "text-red-400";
+
+  const statsTable = (title: string, rows: GroupStatsT[]) => (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+      <h4 className="text-sm font-semibold text-white mb-3">{title}</h4>
+      {rows.length === 0 ? (
+        <p className="text-xs text-slate-500">Chưa có picks nào đủ điều kiện.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-sm">
+            <thead>
+              <tr className="text-left text-xs text-slate-500 border-b border-slate-700">
+                <th className="py-2 pr-3">Nhóm</th>
+                <th className="py-2 pr-3">Picks</th>
+                <th className="py-2 pr-3">Win rate</th>
+                <th className="py-2 pr-3">TP1/TP2/SL</th>
+                <th className="py-2 pr-3">Avg R</th>
+                <th className="py-2 pr-3">Ngày thoát</th>
+                <th className="py-2 pr-3">Entry fill</th>
+                <th className="py-2 pr-3">MFE/MAE %</th>
+                <th className="py-2">Open</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((g) => (
+              <tr key={g.group} className="border-b border-slate-800 last:border-0">
+                <td className="py-2 pr-3 font-mono text-slate-200">{g.group}</td>
+                <td className="py-2 pr-3 text-slate-300">{g.picks}</td>
+                <td className={`py-2 pr-3 font-medium ${g.winRate == null ? "text-slate-500" : g.winRate >= 50 ? "text-green-400" : "text-red-400"}`}>
+                  {g.winRate == null ? "—" : `${g.winRate}%`}
+                </td>
+                <td className="py-2 pr-3 text-xs text-slate-400">
+                  <span className="text-green-400">{g.tp1Wins}</span>/<span className="text-cyan-400">{g.tp2Wins}</span>/<span className="text-red-400">{g.slLosses}</span>
+                </td>
+                <td className={`py-2 pr-3 ${g.avgR == null ? "text-slate-500" : g.avgR >= 0 ? "text-green-400" : "text-red-400"}`}>
+                  {g.avgR == null ? "—" : g.avgR}
+                </td>
+                <td className="py-2 pr-3 text-slate-400">{g.avgDaysToExit ?? "—"}</td>
+                <td className="py-2 pr-3 text-slate-400">{g.entryFillRate == null ? "—" : `${g.entryFillRate}%`}</td>
+                <td className="py-2 pr-3 text-xs text-slate-400">
+                  {fmt(g.avgMfePct)} / {fmt(g.avgMaePct)}
+                </td>
+                <td className="py-2 text-slate-500">{g.open}</td>
+              </tr>
+            ))}
+          </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="p-4 md:p-6 space-y-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <BarChart3 className="h-5 w-5 text-cyan-400" />
+        <h3 className="text-lg font-semibold text-white">Backtest</h3>
+        <span className="text-xs text-slate-500">
+          đo hiệu quả picks + sức mạnh health score · pickKind GENUINE có setup, lookback {daysBack} ngày
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <label className="text-xs text-slate-400">Horizon</label>
+          <select
+            value={horizon}
+            onChange={(e) => setHorizon(Number(e.target.value))}
+            className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200"
+          >
+            {[7, 14, 30, 60].map((h) => (
+              <option key={h} value={h}>{h} ngày</option>
+            ))}
+          </select>
+          <label className="text-xs text-slate-400 ml-2">Lookback</label>
+          <select
+            value={daysBack}
+            onChange={(e) => setDaysBack(Number(e.target.value))}
+            className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200"
+          >
+            {[30, 90, 180, 365].map((d) => (
+              <option key={d} value={d}>{d} ngày</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* ── Health Power ── */}
+      {powerQuery.isLoading ? (
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 text-sm text-slate-400">Đang tính health power…</div>
+      ) : powerQuery.error || !powerQuery.data ? (
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 text-sm text-red-400">
+          Lỗi health-power: {(powerQuery.error as Error)?.message ?? "không có dữ liệu"}
+        </div>
+      ) : (
+        <>
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+            <h4 className="text-sm font-semibold text-white mb-3">
+              Sức mạnh dự báo của health score (forward return %, median theo band)
+            </h4>
+            {powerQuery.data.totalSamples === 0 ? (
+              <p className="text-xs text-slate-500">{powerQuery.data.note ?? "Chưa có mẫu."}</p>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px] text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-slate-500 border-b border-slate-700">
+                        <th className="py-2 pr-3">Band health</th>
+                        <th className="py-2 pr-3">Samples</th>
+                        <th className="py-2 pr-3">1d</th>
+                        <th className="py-2 pr-3">3d</th>
+                        <th className="py-2 pr-3">7d</th>
+                        <th className="py-2">14d</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {powerQuery.data.byBand.map((b) => (
+                        <tr key={b.band} className="border-b border-slate-800 last:border-0">
+                          <td className={`py-2 pr-3 font-mono font-medium ${bandColor(b.band)}`}>{b.band}</td>
+                          <td className="py-2 pr-3 text-slate-300">{b.samples}</td>
+                          <td className={`py-2 pr-3 ${b.median1d == null ? "text-slate-500" : b.median1d >= 0 ? "text-green-400" : "text-red-400"}`}>{fmt(b.median1d, "%")}</td>
+                          <td className={`py-2 pr-3 ${b.median3d == null ? "text-slate-500" : b.median3d >= 0 ? "text-green-400" : "text-red-400"}`}>{fmt(b.median3d, "%")}</td>
+                          <td className={`py-2 pr-3 ${b.median7d == null ? "text-slate-500" : b.median7d >= 0 ? "text-green-400" : "text-red-400"}`}>{fmt(b.median7d, "%")}</td>
+                          <td className={`py-2 pr-3 ${b.median14d == null ? "text-slate-500" : b.median14d >= 0 ? "text-green-400" : "text-red-400"}`}>{fmt(b.median14d, "%")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="mt-6">
+                  <h4 className="text-sm font-semibold text-white mb-3">Tương quan Pearson (score ↔ forward return %)</h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[560px] text-sm">
+                      <thead>
+                        <tr className="text-left text-xs text-slate-500 border-b border-slate-700">
+                          <th className="py-2 pr-3">Horizon</th>
+                          <th className="py-2 pr-3">Samples</th>
+                          <th className="py-2 pr-3">Health</th>
+                          <th className="py-2 pr-3">Trend</th>
+                          <th className="py-2 pr-3">Volume</th>
+                          <th className="py-2 pr-3">Momentum</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {powerQuery.data.correlations.map((c) => (
+                          <tr key={c.horizonDays} className="border-b border-slate-800 last:border-0">
+                            <td className="py-2 pr-3 font-mono text-slate-200">{c.horizonDays}d</td>
+                            <td className="py-2 pr-3 text-slate-300">{c.samples}</td>
+                            <td className="py-2 pr-3 font-medium text-slate-200">{fmt(c.health)}</td>
+                            <td className="py-2 pr-3 text-slate-400">{fmt(c.trend)}</td>
+                            <td className="py-2 pr-3 text-slate-400">{fmt(c.volume)}</td>
+                            <td className="py-2 pr-3 text-slate-400">{fmt(c.momentum)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">
+                    Health nên có |r| cao hơn trend/volume/momentum đơn lẻ — nếu không, composite chưa thêm giá trị. |r| &lt; 0.1 ≈ không có tín hiệu; mẫu &lt; 100 điểm thì đọc thận trọng.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ── Setup Performance ── */}
+      {perfQuery.isLoading ? (
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 text-sm text-slate-400">Đang tính setup performance…</div>
+      ) : perfQuery.error || !perfQuery.data ? (
+        <div className="bg-slate-8/50 border border-slate-700 rounded-lg p-6 text-sm text-red-400">
+          Lỗi setup-performance: {(perfQuery.error as Error)?.message ?? "không có dữ liệu"}
+          <span className="block mt-2 text-xs text-slate-500 text-slate-500">
+            Chưa có picks trong DB? Picks được lưu từ BT-01 (mỗi lần dashboard gọi top-recommendations) — cần dữ liệu tích lũy.
+          </span>
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-3 mb-2">
+            <span className="text-xs text-slate-500">
+              Tổng picks đủ điều kiện: <span className="text-slate-300 font-medium">{perfQuery.data.totalPicks}</span>
+              · pickKind GENUINE có setup · horizon {perfQuery.data.params.horizon} ngày
+            </span>
+          </div>
+          {statsTable("Theo direction", perfQuery.data.byDirection)}
+          {statsTable("Theo signal", perfQuery.data.bySignal)}
+          {statsTable("Theo health band", perfQuery.data.byHealthBand)}
+          {statsTable("Genuine vs fill (tham khảo)", perfQuery.data.byPickKind)}
+          <p className="text-xs text-slate-500">
+            Quy tắc bảo thủ: một ngày giá chạm cả TP và SL → tính THUA (SL). Win rate = (TP1+TP2) / (TP1+TP2+SL), OPEN chưa tính. MFE/MAE = biên độ thuận/chống lợi nhất % so entryMid trong horizon.
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -2279,6 +2562,7 @@ export default function AdminPage() {
     { id: "config", label: "Config", icon: Settings },
     { id: "logs", label: "Logs", icon: ScrollText },
     { id: "llm", label: "LLM Monitor", icon: Activity },
+    { id: "backtest", label: "Backtest", icon: BarChart3 },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "chat-report", label: "Chat Report", icon: MessageSquare },
   ];
@@ -3841,6 +4125,7 @@ export default function AdminPage() {
 
           {/* AUTH-01: Access module — user-auth toggle + admin login entry */}
           {activeTab === "llm" && <LlmMonitorSection />}
+          {activeTab === "backtest" && <BacktestSection />}
           {activeTab === "auth" && <AuthSettingsSection />}
 
           {/* ACC-MGMT: Access module — end-user + admin account management */}
