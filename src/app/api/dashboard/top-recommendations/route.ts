@@ -22,6 +22,7 @@ import {
 } from "@/db/schema";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { getBusinessDate, getHealthStatus } from "@/lib/utils";
+import { persistTopPicks } from "@/lib/p6/refresh/persist-top-picks";
 
 export const dynamic = "force-dynamic";
 
@@ -374,6 +375,13 @@ export async function GET() {
 
     const selected: Picked[] = [...longPicks, ...shortPicks];
 
+    // BT-01: forced (filler) picks have no setup and must not be scored as
+    // genuine trades in backtests — remember which picks were forced.
+    const pickKindByCoinId = new Map<number, string>();
+    for (const p of selected) {
+      if (p.forced) pickKindByCoinId.set(p.entry.row.coinId, p.forced);
+    }
+
     const top: TopRecommendation[] = [];
 
     for (const pick of selected) {
@@ -454,6 +462,54 @@ export async function GET() {
           priceVsEma20Pct: ema20Pct,
         },
       });
+    }
+
+    // BT-01: persist the six picks (with setups) for later backtest —
+    // best-effort, awaited before response; failure never breaks the API.
+    try {
+      await persistTopPicks(
+        dataDate,
+        top.map((t, i) => {
+          const forcedRaw = pickKindByCoinId.get(t.coinId);
+          const forcedKind =
+            forcedRaw === "long"
+              ? "FILL_LONG"
+              : forcedRaw === "short"
+                ? "FILL_SHORT"
+                : "GENUINE";
+          return {
+            coinId: t.coinId,
+            symbol: t.symbol,
+            slot: i + 1,
+            pickKind: forcedKind,
+            direction: t.direction,
+            signal: t.signal,
+            healthScore: t.healthScore ?? null,
+            scoreChange: t.scoreChange ?? null,
+            currentPrice: t.currentPrice,
+            hasSetup: t.setup !== null,
+            entryLow: t.setup?.entryLow ?? null,
+            entryHigh: t.setup?.entryHigh ?? null,
+            entryMid:
+              t.setup != null
+                ? +(((t.setup.entryLow + t.setup.entryHigh) / 2).toFixed(6))
+                : null,
+            tp1: t.setup?.takeProfits[0]?.level ?? null,
+            tp2: t.setup?.takeProfits[1]?.level ?? null,
+            stopLoss: t.setup?.stopLoss ?? null,
+            riskRewardRatio: t.setup?.riskRewardRatio ?? null,
+            tp1MovePct: t.setup?.tp1MovePct ?? null,
+            slRiskPct: t.setup?.slRiskPct ?? null,
+            atr14: null, // atr khong co trong API shape; backtest suy lai tu gia
+            atrSource: null,
+            narrativeName: t.narrativeName,
+            metrics: t.metrics as unknown as Record<string, unknown>,
+            setupUnavailableReason: t.setupUnavailableReason,
+          };
+        })
+      );
+    } catch (e) {
+      console.error("[BT-01] route persist failed:", e);
     }
 
     return NextResponse.json({

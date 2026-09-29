@@ -1618,3 +1618,59 @@ export type ChatSession = typeof chatSessions.$inferSelect;
 export type NewChatSession = typeof chatSessions.$inferInsert;
 export type ChatMessage = typeof chatMessages.$inferSelect;
 export type NewChatMessage = typeof chatMessages.$inferInsert;
+
+// ==================== TOP RECOMMENDATION PICKS (BT-01) ====================
+/**
+ * Snapshot của 6 khuyến nghị dashboard (3 LONG + 3 SHORT) mỗi lần sinh,
+ * kèm đầy đủ setup levels (entry/TP/SL) để sau này chạy backtest đo hiệu quả.
+ *
+ * Ghi từ GET /api/dashboard/top-recommendations (nguồn duy nhất của logic
+ * chọn 6 coin), idempotent theo (data_date, coin_id): pick mới → insert,
+ * pick đổi trong ngày → update (giữ picked_at ban đầu, refresh updated_at —
+ * chênh lệch picked_at ↔ updated_at đo được độ ổn định của pick).
+ */
+export const topRecommendationPicks = pgTable(
+  "top_recommendation_picks",
+  {
+    id: serial("id").primaryKey(),
+    dataDate: date("data_date").notNull(), // ngày dữ liệu (max health_scores.date)
+    coinId: integer("coin_id")
+      .notNull()
+      .references(() => coins.id, { onDelete: "cascade" }),
+    symbol: varchar("symbol", { length: 20 }).notNull(),
+    slot: integer("slot").notNull().default(0), // 1-3 LONG, 4-6 SHORT (thứ tự hiển thị)
+    // GENUINE = chọn thật theo composite; FILL_LONG/FILL_SHORT = pick lấp chỗ
+    // không setup (TOP-REC-FILL) — backtest phải loại riêng.
+    pickKind: varchar("pick_kind", { length: 20 }).notNull().default("GENUINE"),
+    direction: varchar("direction", { length: 10 }).notNull(), // BULLISH | BEARISH
+    signal: varchar("signal", { length: 30 }).notNull(),
+    healthScore: real("health_score"),
+    scoreChange: real("score_change"),
+    currentPrice: decimal("current_price", { precision: 24, scale: 8 }),
+    hasSetup: boolean("has_setup").notNull().default(false),
+    entryLow: decimal("entry_low", { precision: 24, scale: 8 }),
+    entryHigh: decimal("entry_high", { precision: 24, scale: 8 }),
+    entryMid: decimal("entry_mid", { precision: 24, scale: 8 }),
+    tp1: decimal("tp1", { precision: 24, scale: 8 }),
+    tp2: decimal("tp2", { precision: 24, scale: 8 }),
+    stopLoss: decimal("stop_loss", { precision: 24, scale: 8 }),
+    riskRewardRatio: real("risk_reward_ratio"),
+    tp1MovePct: real("tp1_move_pct"),
+    slRiskPct: real("sl_risk_pct"),
+    atr14: decimal("atr14", { precision: 24, scale: 8 }),
+    atrSource: varchar("atr_source", { length: 30 }), // indicators | price-history-fallback
+    narrativeName: varchar("narrative_name", { length: 100 }),
+    metrics: jsonb("metrics"), // trend/volume/momentum/RSI/funding/priceVsEma20
+    setupUnavailableReason: text("setup_unavailable_reason"),
+    pickedAt: timestamp("picked_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("top_rec_picks_unique").on(table.dataDate, table.coinId),
+    index("top_rec_picks_date_idx").on(table.dataDate),
+    index("top_rec_picks_coin_idx").on(table.coinId),
+  ]
+);
+
+export type TopRecommendationPick = typeof topRecommendationPicks.$inferSelect;
+export type NewTopRecommendationPick = typeof topRecommendationPicks.$inferInsert;

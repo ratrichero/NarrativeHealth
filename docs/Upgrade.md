@@ -4,6 +4,39 @@
 
 ---
 
+## BT-01-09-2026 — Lưu 6 khuyến nghị + setup levels vào DB để backtest (2026-09-29)
+
+### Bối cảnh
+
+Hệ thống đã có dữ liệu dài nhưng chưa có công cụ đo hiệu quả. Hướng đầu tiên: mỗi lần sinh 6 khuyến nghị dashboard (3 LONG + 3 SHORT, kèm điểm vào/điểm ra khi có setup tốt) → snapshot vào DB để sau này chạy backtest đo win-rate, RR thực tế, chất lượng tín hiệu.
+
+### Thiết kế
+
+- Bảng mới `top_recommendation_picks` (migration `0031_top_recommendation_picks.sql`, idempotent): mỗi hàng = 1 pick theo `(data_date, coin_id)` — direction, signal, healthScore, scoreChange, currentPrice, `pick_kind` (GENUINE / FILL_LONG / FILL_SHORT — pick lấp chỗ không setup bị loại riêng khi backtest), slot 1-6, full setup levels (entryLow/High/Mid, TP1, TP2, SL, RR, tp1MovePct, slRiskPct), atrSource, narrative, metrics jsonb, lý do không có setup, `picked_at`/`updated_at`.
+- Nguồn ghi: GET `/api/dashboard/top-recommendations` — nơi duy nhất chứa logic chọn 6 coin (không nhân bản logic sang refresh pipeline). Persist best-effort: lỗi ghi chỉ log `[BT-01]`, không bao giờ làm fail API dashboard.
+- Idempotent theo ngày dữ liệu: pick mới → INSERT; pick đổi trong ngày → UPDATE (giữ `picked_at`, refresh `updated_at`). Chênh lệch 2 mốc = thước đo **độ ổn định pick** (một hệ thống tốt ít lật thay đổi trong ngày). Upsert dùng `setWhere` so khớp slot/kind/hasSetup để không đốt `updated_at` khi dữ liệu không đổi.
+
+### Cách backtest sau này (join `market_price_daily`)
+
+- **Hit TP/SL**: từ ngày pick, quét forward N ngày: giá chạm TP1/TP2 trước hay SL trước (LONG: high ≥ TP trước low ≤ SL; BEARISH mirrored) → win-rate + RR thực tế theo direction/signal/health band.
+- **MFE/MAE**: max favorable / max adverse excursion trong 1-3-7-14 ngày so với entryMid — đo setup đặt mục tiêu hợp lý chưa (TP1 quá gần/xa? SL quá rộng?).
+- **Điểm vào thực tế**: giá có quay về vùng entry (entryLow-entryHigh) trong vòng 3 ngày không, hay chạy mất luôn?
+
+### Files changed
+
+```
+drizzle/migrations/0031_top_recommendation_picks.sql — bảng mới (mới)
+src/db/schema.ts — topRecommendationPicks + types
+src/lib/p6/refresh/persist-top-picks.ts — upsert best-effort (mới)
+src/app/api/dashboard/top-recommendations/route.ts — persist sau khi build top[], track forced picks
+```
+
+### Verification
+
+`npx tsc --noEmit` PASS. Migration idempotent (IF NOT EXISTS toàn bộ) — tự áp qua `git up` (migrate-raw). Lưu ý: chỉ tích lũy data từ lúc deploy — backtest cần chạy tối thiểu vài tuần.
+
+---
+
 ## LLM-01 + UNLOCK-01-09-2026 — Giám sát LLM (admin) + nguồn dữ liệu unlock Apify (2026-09-29)
 
 ### Bối cảnh
