@@ -9,6 +9,7 @@ import {
   GOOGLE_POOL_BASE_URL,
   type GooglePooledProvider,
 } from "@/lib/llm/google-key-pool";
+import { recordLlmOutcome } from "@/lib/llm/monitor";
 
 export interface ChatLLMProvider {
   name: string;
@@ -120,6 +121,16 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
         if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
           reportGoogleKeyOutcome(provider.apiKey, false, response.status);
         }
+        recordLlmOutcome({
+          provider: provider.name,
+          model: provider.model,
+          source: "chat",
+          ok: false,
+          status: response.status,
+          durationMs: 0,
+          keyHint: provider.apiKey.length > 10 ? `…${provider.apiKey.slice(-4)}` : "…",
+          error: `HTTP ${response.status}: ${errBody.slice(0, 120)}`,
+        });
         continue; // next provider
       }
 
@@ -132,12 +143,30 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
       if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
         reportGoogleKeyOutcome(provider.apiKey, true, response.status);
       }
+      recordLlmOutcome({
+        provider: provider.name,
+        model: provider.model,
+        source: "chat",
+        ok: true,
+        status: response.status,
+        durationMs: 0,
+        keyHint: provider.apiKey.length > 10 ? `…${provider.apiKey.slice(-4)}` : "…",
+      });
       return { provider: provider.name, message: msg as ChatMessage };
     } catch (e) {
       console.warn(`[CHAT-LLM] ${provider.name} failed: ${String(e).slice(0, 150)}`);
       if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
         reportGoogleKeyOutcome(provider.apiKey, false, undefined);
       }
+      recordLlmOutcome({
+        provider: provider.name,
+        model: provider.model,
+        source: "chat",
+        ok: false,
+        status: 0,
+        durationMs: 0,
+        error: String(e).slice(0, 200),
+      });
       continue;
     }
   }
@@ -184,6 +213,15 @@ export async function chatCompletionStream(
       if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
         reportGoogleKeyOutcome(provider.apiKey, false, undefined);
       }
+      recordLlmOutcome({
+        provider: provider.name,
+        model: provider.model,
+        source: "chat",
+        ok: false,
+        status: 0,
+        durationMs: 0,
+        error: String(e).slice(0, 200),
+      });
       continue;
     }
 
@@ -193,6 +231,15 @@ export async function chatCompletionStream(
       if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
         reportGoogleKeyOutcome(provider.apiKey, false, response.status);
       }
+      recordLlmOutcome({
+        provider: provider.name,
+        model: provider.model,
+        source: "chat",
+        ok: false,
+        status: response.status,
+        durationMs: 0,
+        error: `stream HTTP ${response.status}: ${errBody.slice(0, 120)}`,
+      });
       continue;
     }
 

@@ -5,6 +5,7 @@ import type { SquareContentBrief } from "./opportunity-engine";
 import { buildChartCta as buildChartCtaFromEngine } from "./opportunity-engine";
 import { orderTpsForDisplay } from "./tp-order";
 import { resolveGooglePool, reportGoogleKeyOutcome, GOOGLE_POOL_BASE_URL, type GooglePooledProvider } from "@/lib/llm/google-key-pool";
+import { recordLlmOutcome } from "@/lib/llm/monitor";
 
 // ─── Template Version ──────────────────────────────────
 
@@ -116,12 +117,14 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 async function callOpenAICompatible(
   provider: LLMProviderConfig,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  source: "square" | "chat" = "square"
 ): Promise<string | null> {
   // SQ-DIAG: free/on-demand Groq tiers enforce small OTPM budgets — a 429
   // here is usually "Please try again in N s", not a hard failure. Retry a
   // couple of times with backoff before moving on to the next provider.
   const maxHttpAttempts = 3;
+  const startedAt = Date.now();
   let response: Response | null = null;
 
   for (let attempt = 1; attempt <= maxHttpAttempts; attempt++) {
@@ -175,16 +178,41 @@ async function callOpenAICompatible(
     console.warn(
       `[SQ-LLM] ${provider.name} (${provider.model}) HTTP ${response.status}: ${errBody.slice(0, 300)}`
     );
+    recordLlmOutcome({
+      provider: provider.name,
+      model: provider.model,
+      source,
+      ok: false,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      keyHint: maskKeyHint(provider.apiKey),
+      error: `HTTP ${response.status}: ${errBody.slice(0, 120)}`,
+    });
     return null;
   }
 
   const data = await response.json();
   const text = data.choices?.[0]?.message?.content;
+  recordLlmOutcome({
+    provider: provider.name,
+    model: provider.model,
+    source,
+    ok: typeof text === "string" && text.length > 0,
+    status: response.status,
+    durationMs: Date.now() - startedAt,
+    keyHint: maskKeyHint(provider.apiKey),
+    error: typeof text === "string" && text.length > 0 ? undefined : "empty content",
+  });
   return typeof text === "string" && text.length > 0 ? text : null;
 }
 
+function maskKeyHint(key: string): string {
+  return key.length > 10 ? `…${key.slice(-4)}` : "…";
+}
+
 async function generateWithLLM(
-  brief: SquareContentBrief
+  brief: SquareContentBrief,
+  source: "square" | "chat" = "square"
 ): Promise<GeneratedContent | null> {
   // SQ-LLM-FLAG: SQUARE_LLM_ENABLED=false turns the LLM chain off entirely
   // (template-only posting). Unset or any other value keeps the LLM on —
@@ -213,7 +241,7 @@ async function generateWithLLM(
 
       while (attempts < maxAttempts) {
         attempts++;
-        const rawText = await callOpenAICompatible(provider, conversation);
+        const rawText = await callOpenAICompatible(provider, conversation, source);
 
         if (!rawText) {
           if (attempts === 1) {
@@ -295,6 +323,15 @@ async function generateWithLLM(
       console.warn(
         `[SQ-LLM] ${provider.name} request failed (${error instanceof Error ? error.message : String(error)}) — trying next provider.`
       );
+      recordLlmOutcome({
+        provider: provider.name,
+        model: provider.model,
+        source,
+        ok: false,
+        status: 0,
+        durationMs: 0,
+        error: (error instanceof Error ? error.message : String(error)).slice(0, 200),
+      });
     }
   }
 
@@ -730,10 +767,11 @@ function generateFromBrief(
 
 export async function generateContent(
   brief: SquareContentBrief,
-  config: ContentGenerationConfig = DEFAULT_CONTENT_CONFIG
+  config: ContentGenerationConfig = DEFAULT_CONTENT_CONFIG,
+  source: "square" | "chat" = "square"
 ): Promise<GeneratedContent> {
   if (config.useLLM) {
-    const llmResult = await generateWithLLM(brief);
+    const llmResult = await generateWithLLM(brief, source);
     if (llmResult) return llmResult;
   }
 

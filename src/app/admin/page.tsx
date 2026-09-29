@@ -34,6 +34,7 @@ import {
   ScrollText,
   LogOut,
   Users,
+  Activity,
 } from "lucide-react";
 import type { AdminNarrative, AdminCoin, ConfigItem } from "@/types";
 import type { RecommendationRule, RuleCondition } from "@/lib/types/recommendation-rule";
@@ -423,7 +424,8 @@ type TabType =
   | "analytics"
   | "chat-report"
   | "auth"
-  | "accounts";
+  | "accounts"
+  | "llm";
 
 /**
  * AUTH-01 + Panel re-org — tabs grouped into modules rendered as icon cards
@@ -479,6 +481,7 @@ const ADMIN_MODULES: {
     tabs: [
       { id: "config", label: "Config" },
       { id: "logs", label: "Logs" },
+      { id: "llm", label: "LLM Monitor" },
       { id: "analytics", label: "Analytics" },
       { id: "chat-report", label: "Chat Report" },
     ],
@@ -595,6 +598,171 @@ function AuthSettingsSection() {
  *   (B) Admin accounts: superadmin-only via API guard (role resolved from DB
  *       since the session payload doesn't carry it); 403 → info notice here.
  */
+/**
+ * LLM-01 — LLM Monitor tab: live provider outcomes (ring buffer), google
+ * key pool state (GKEY-01) and the 7-day llm/template publication ratio.
+ * Read-only diagnostics — no mutations.
+ */
+function LlmMonitorSection() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["admin", "llm", "status"],
+    queryFn: async () => {
+      const response = await fetch("/api/admin/llm/status");
+      const json = await response.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as {
+        live: { bufferSize: number; dropped: number; outcomes: { at: string; provider: string; model: string; source: string; ok: boolean; status: number; durationMs: number; keyHint?: string; error?: string }[] };
+        tiers: { provider: string; calls: number; ok: number; fail: number; lastStatus: number | null; lastOkAt: string | null; lastFailAt: string | null; avgDurationMs: number | null }[];
+        googlePool: { total: number; available: number; failed: number; perKey: { suffix: string; lastStatus: number | null; successCount: number; failCount: number; cooling: boolean }[] };
+      };
+    },
+    refetchInterval: 30_000,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="p-4 md:p-6">
+        <p className="text-sm text-slate-400">Đang tải trạng thái LLM…</p>
+      </div>
+    );
+  }
+  if (error || !data) {
+    return (
+      <div className="p-4 md:p-6">
+        <p className="text-sm text-red-400">
+          Không tải được trạng thái LLM: {(error as Error)?.message ?? "không có dữ liệu"}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 md:p-6 space-y-6">
+      <div className="flex items-center gap-2">
+        <Activity className="h-5 w-5 text-cyan-400" />
+        <h3 className="text-lg font-semibold text-white">LLM Monitor</h3>
+        <span className="text-xs text-slate-500">
+          cập nhật tự động mỗi 30s · buffer {data.live.bufferSize} cuộc gọi gần nhất
+        </span>
+      </div>
+
+      {/* Tier aggregates */}
+      <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 md:p-5">
+        <h4 className="text-sm font-semibold text-white mb-3">Hiệu suất theo tier (window hiện tại)</h4>
+        {data.tiers.length === 0 ? (
+          <p className="text-xs text-slate-500">
+            Chưa có cuộc gọi LLM nào kể từ khi server khởi động. Gọi một lần refresh/publish hoặc dùng chat để thấy dữ liệu.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="text-left text-xs text-slate-500 border-b border-slate-700">
+                  <th className="py-2 pr-3">Tier</th>
+                  <th className="py-2 pr-3">Calls</th>
+                  <th className="py-2 pr-3">OK</th>
+                  <th className="py-2 pr-3">Fail</th>
+                  <th className="py-2 pr-3">Last status</th>
+                  <th className="py-2 pr-3">Avg ms</th>
+                  <th className="py-2">Lần OK cuối</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.tiers.map((t) => (
+                  <tr key={t.provider} className="border-b border-slate-800 last:border-0">
+                    <td className="py-2 pr-3 font-mono text-slate-200">{t.provider}</td>
+                    <td className="py-2 pr-3 text-slate-300">{t.calls}</td>
+                    <td className="py-2 pr-3 text-green-400">{t.ok}</td>
+                    <td className="py-2 pr-3 text-red-400">{t.fail}</td>
+                    <td className="py-2 pr-3 font-mono text-slate-400">{t.lastStatus ?? "—"}</td>
+                    <td className="py-2 pr-3 font-mono text-slate-400">{t.avgDurationMs ?? "—"}</td>
+                    <td className="py-2 text-slate-500 text-xs">{t.lastOkAt ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Google key pool */}
+      <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 md:p-5">
+        <h4 className="text-sm font-semibold text-white mb-3">
+          Google key pool (GKEY-01) — {data.googlePool.available}/{data.googlePool.total} khả dụng
+        </h4>
+        {data.googlePool.perKey.length === 0 ? (
+          <p className="text-xs text-slate-500">Chưa cấu hình GOOGLE_AI_API_KEY(S).</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {data.googlePool.perKey.map((k) => (
+              <span
+                key={k.suffix}
+                title={`lastStatus=${k.lastStatus ?? "—"} ok=${k.successCount} fail=${k.failCount}`}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono border ${
+                  k.cooling
+                    ? "bg-red-900/30 text-red-300 border-red-800/50"
+                    : "bg-green-900/30 text-green-300 border-green-800/50"
+                }`}
+              >
+                <span className={`h-2 w-2 rounded-full ${k.cooling ? "bg-red-400" : "bg-green-400"}`} />
+                {k.suffix} · ok {k.successCount} / fail {k.failCount}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Long-term ratio pointer (kept out of this endpoint on purpose —
+          the DB aggregation made the route take minutes on the dev DB). */}
+      <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 md:p-5">
+        <h4 className="text-sm font-semibold text-white mb-2">Tỷ lệ LLM / Template dài hạn</h4>
+        <p className="text-xs text-slate-400">
+          Xem breakdown theo ngày ở tab <strong className="text-slate-200">Analytics</strong> (Square analytics, dữ liệu DB đầy đủ).
+        </p>
+      </div>
+
+      {/* Recent outcomes */}
+      <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 md:p-5">
+        <h4 className="text-sm font-semibold text-white mb-3">Cuộc gọi gần nhất (live)</h4>
+        {data.live.outcomes.length === 0 ? (
+          <p className="text-xs text-slate-500">Chưa có cuộc gọi nào trong buffer.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-xs">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-700">
+                  <th className="py-2 pr-3">Thời điểm</th>
+                  <th className="py-2 pr-3">Nguồn</th>
+                  <th className="py-2 pr-3">Tier</th>
+                  <th className="py-2 pr-3">Model</th>
+                  <th className="py-2 pr-3">Kết quả</th>
+                  <th className="py-2">Lỗi</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.live.outcomes.slice(0, 20).map((o, i) => (
+                  <tr key={`${o.at}-${i}`} className="border-b border-slate-800 last:border-0">
+                    <td className="py-1.5 pr-3 font-mono text-slate-500">{o.at.slice(11, 19)}</td>
+                    <td className="py-1.5 pr-3 text-slate-400">{o.source}</td>
+                    <td className="py-1.5 pr-3 font-mono text-slate-300">{o.provider}</td>
+                    <td className="py-1.5 pr-3 font-mono text-slate-500">{o.model}</td>
+                    <td className={`py-1.5 pr-3 font-medium ${o.ok ? "text-green-400" : "text-red-400"}`}>
+                      {o.ok ? "OK" : `FAIL ${o.status || "transport"}`}
+                    </td>
+                    <td className="py-1.5 text-slate-600 truncate max-w-[280px]" title={o.error}>
+                      {o.error ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AccountsSection() {
   const queryClient = useQueryClient();
   const [newUser, setNewUser] = useState({ username: "", displayName: "", password: "" });
@@ -3671,6 +3839,7 @@ export default function AdminPage() {
           )}
 
           {/* AUTH-01: Access module — user-auth toggle + admin login entry */}
+          {activeTab === "llm" && <LlmMonitorSection />}
           {activeTab === "auth" && <AuthSettingsSection />}
 
           {/* ACC-MGMT: Access module — end-user + admin account management */}

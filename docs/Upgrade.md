@@ -4,6 +4,41 @@
 
 ---
 
+## LLM-01 + UNLOCK-01-09-2026 — Giám sát LLM (admin) + nguồn dữ liệu unlock Apify (2026-09-29)
+
+### Bối cảnh
+
+Hai hạng mục tiếp theo theo lộ trình: (1) giám sát sức khỏe các LLM tier sau khi chain chuyển sang google-first + multi-key pool; (2) tìm nguồn unlock data thay thế DefiLlama emissions (đã 402 Pro). Khảo sát nguồn: Mobula 403 free tier, Messari cần key trả phí; chọn **Apify actor `foxlabs/token-unlocks-calendar`** — dữ liệu DefiLlama emissions (~326 dự án) dạng sạch (token, unlockDateIso, pctOfMaxSupply, unlockType), giá theo bản ghi (~$2.5/1000 rows).
+
+### LLM-01 — Giám sát LLM
+
+- `src/lib/llm/monitor.ts`: ring buffer 100 outcome gần nhất (provider, model, source square|chat, ok, HTTP status, durationMs, keyHint đã mask, error) — ghi ở mọi lần gọi HTTP trong cả 2 chain (Square content-generator + chat llm.ts, kể cả streaming); không đụng DB trên hot path.
+- Endpoint `GET /api/admin/llm/status`: live outcomes + tier aggregates (calls/ok/fail/avg ms) + trạng thái Google key pool (GKEY-01). Phiên đầu có truy vấn tỷ lệ 7 ngày từ square_publications nhưng mất **2.5 phút** trên DB dev → đã bỏ, giữ 2 view tức thì; tỷ lệ dài hạn xem qua tab Analytics có sẵn.
+- Tab **LLM Monitor** mới trong admin module Vận hành: bảng tier, chip trạng thái từng Google key (xanh/đỏ + ok/fail), bảng cuộc gọi gần nhất; tự refresh 30s.
+
+### UNLOCK-01 — Apify provider cho unlock collector
+
+- `fetchApifyUnlocks()` trong `src/lib/collectors/unlocks.ts`: khởi chạy actor qua REST API (không thêm dependency), poll run đến khi xong (timeout ~2 phút), đọc dataset và map sang shape `UnlockEntry` chuẩn của collector. Risk level suy từ % max supply (≥5% CRITICAL, ≥2% HIGH, ≥1% MEDIUM, còn lại LOW). Window nhìn trước qua `APIFY_UNLOCK_DAYS_AHEAD` (mặc định 45 ngày).
+- Thứ tự ưu tiên: `APIFY_TOKEN` có → dùng Apify; không thì fall back `UNLOCK_DATA_URL`; cả hai trống → no-op an toàn như cũ. Verify: sync-unlocks trả 200 `configured:false` khi chưa có token.
+- Khi user cung cấp `APIFY_TOKEN` (bằng cách dán vào Settings → Environment), nút Sync unlocks có sẵn ở tab Events sẽ tự dùng nguồn mới.
+
+### Files changed
+
+```
+src/lib/llm/monitor.ts — ring buffer + tier stats (mới)
+src/app/api/admin/llm/status/route.ts — endpoint snapshot (mới)
+src/app/admin/page.tsx — tab LLM Monitor + section
+src/lib/square/content-generator.ts — ghi outcome mọi lần gọi LLM
+src/lib/chat/llm.ts — ghi outcome (non-streaming + streaming)
+src/lib/collectors/unlocks.ts — Apify provider ưu tiên trước UNLOCK_DATA_URL
+```
+
+### Verification
+
+Typecheck PASS. Live: /api/admin/llm/status 200 tức thì; sync-unlocks no-op 200; google-first sinh bài thật OK. Pool tests 11/11; square suites 134/134.
+
+---
+
 ## GKEY-01-09-2026 — Google multi-key router: xoay vòng nhiều key theo dự án (2026-09-29)
 
 ### Câu hỏi & kiểm tra key hiện tại
