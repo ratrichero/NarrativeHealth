@@ -1,6 +1,14 @@
 // CHAT-P1: LLM client for the chatbot — OpenAI-compatible provider chain
 // (same env vars as Square, ordered google → Groq → fallback1 → fallback2)
-// with native tool calling and SSE streaming support.
+// with native tool calling and SSE streaming support. The google tier is a
+// multi-key pool (GKEY-01) shared with the Square chain.
+
+import {
+  resolveGooglePool,
+  reportGoogleKeyOutcome,
+  GOOGLE_POOL_BASE_URL,
+  type GooglePooledProvider,
+} from "@/lib/llm/google-key-pool";
 
 export interface ChatLLMProvider {
   name: string;
@@ -13,17 +21,21 @@ export function resolveChatProviderChain(): ChatLLMProvider[] {
   const chain: ChatLLMProvider[] = [];
 
   // CHAT-LLM-GOOGLE: tried FIRST, mirroring the Square chain order
-  // (google → primary → fallback1 → fallback2). Model defaults to
-  // gemini-2.5-flash-lite; override via GOOGLE_AI_MODEL_NAME.
-  const googleKey = process.env.GOOGLE_AI_API_KEY;
-  if (googleKey) {
-    chain.push({
-      name: "google",
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-      apiKey: googleKey,
-      model: process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite",
-    });
-  }
+  // (google → primary → fallback1 → fallback2). Multi-key pool (GKEY-01):
+  // every available google project key becomes its own chain entry.
+  const googleModel =
+    process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite";
+  const googleEntries = resolveGooglePool(googleModel);
+  chain.push(
+    ...googleEntries.map(
+      (p: GooglePooledProvider): ChatLLMProvider => ({
+        name: p.name,
+        baseUrl: p.baseUrl,
+        apiKey: p.apiKey,
+        model: p.model,
+      })
+    )
+  );
 
   const primaryKey = process.env.OPENAI_API_KEY;
   if (primaryKey) {
@@ -105,6 +117,9 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
       if (!response.ok) {
         const errBody = await response.text().catch(() => "");
         console.warn(`[CHAT-LLM] ${provider.name} (${provider.model}) HTTP ${response.status}: ${errBody.slice(0, 200)}`);
+        if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+          reportGoogleKeyOutcome(provider.apiKey, false, response.status);
+        }
         continue; // next provider
       }
 
@@ -114,9 +129,15 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
         console.warn(`[CHAT-LLM] ${provider.name}: empty message`);
         continue;
       }
+      if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+        reportGoogleKeyOutcome(provider.apiKey, true, response.status);
+      }
       return { provider: provider.name, message: msg as ChatMessage };
     } catch (e) {
       console.warn(`[CHAT-LLM] ${provider.name} failed: ${String(e).slice(0, 150)}`);
+      if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+        reportGoogleKeyOutcome(provider.apiKey, false, undefined);
+      }
       continue;
     }
   }
@@ -160,12 +181,18 @@ export async function chatCompletionStream(
       });
     } catch (e) {
       console.warn(`[CHAT-LLM] ${provider.name} stream failed: ${String(e).slice(0, 150)}`);
+      if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+        reportGoogleKeyOutcome(provider.apiKey, false, undefined);
+      }
       continue;
     }
 
     if (!response.ok || !response.body) {
       const errBody = await response.text().catch(() => "");
       console.warn(`[CHAT-LLM] ${provider.name} stream HTTP ${response.status}: ${errBody.slice(0, 200)}`);
+      if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+        reportGoogleKeyOutcome(provider.apiKey, false, response.status);
+      }
       continue;
     }
 

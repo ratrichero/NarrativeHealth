@@ -4,6 +4,7 @@
 import type { SquareContentBrief } from "./opportunity-engine";
 import { buildChartCta as buildChartCtaFromEngine } from "./opportunity-engine";
 import { orderTpsForDisplay } from "./tp-order";
+import { resolveGooglePool, reportGoogleKeyOutcome, GOOGLE_POOL_BASE_URL, type GooglePooledProvider } from "@/lib/llm/google-key-pool";
 
 // ─── Template Version ──────────────────────────────────
 
@@ -43,9 +44,10 @@ export const DEFAULT_CONTENT_CONFIG: ContentGenerationConfig = {
 // ─── LLM Integration (OpenAI-compatible, multi-tier fallback) ──
 
 // Provider chain, resolved once from env. SQ-LLM-GOOGLE-ORDER (2026-09-29):
-// google → primary → fallback 1 → fallback 2. The google tier (Gemini's
-// OpenAI-compatible surface, GOOGLE_AI_API_KEY) is tried FIRST per product
-// decision; Groq primary and the OpenAI-compatible fallbacks back it up.
+// google → primary → fallback 1 → fallback 2. The google tier is a POOL of
+// Gemini OpenAI-compatible keys (GOOGLE_AI_API_KEYS="k1,k2,…", or the legacy
+// single GOOGLE_AI_API_KEY) rotated round-robin with per-key cooldowns
+// (GKEY-01); Groq primary and the OpenAI-compatible fallbacks back it up.
 interface LLMProviderConfig {
   name: string;
   baseUrl: string;
@@ -58,17 +60,22 @@ function resolveProviderChain(): LLMProviderConfig[] {
 
   // SQ-LLM-GOOGLE: tried FIRST. Model defaults to gemini-2.5-flash-lite
   // (fast, non-thinking, passes post validation); override via
-  // GOOGLE_AI_MODEL_NAME. A 403/broken key here costs one fast failed request
-  // and the chain continues with Groq.
-  const googleKey = process.env.GOOGLE_AI_API_KEY;
-  if (googleKey) {
-    chain.push({
-      name: "google",
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-      apiKey: googleKey,
-      model: process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite",
-    });
-  }
+  // GOOGLE_AI_MODEL_NAME. Supports a multi-key pool (GKEY-01): every unused
+  // google project key expands into its own chain entry so a 429 on one key
+  // flows to the next key BEFORE leaving the google tier.
+  const googleModel =
+    process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite";
+  const googleEntries = resolveGooglePool(googleModel);
+  chain.push(
+    ...googleEntries.map(
+      (p: GooglePooledProvider): LLMProviderConfig => ({
+        name: p.name,
+        baseUrl: p.baseUrl,
+        apiKey: p.apiKey,
+        model: p.model,
+      })
+    )
+  );
 
   const primaryKey = process.env.OPENAI_API_KEY;
   if (primaryKey) {
@@ -149,7 +156,19 @@ async function callOpenAICompatible(
     await sleep(waitMs);
   }
 
-  if (!response) return null;
+  if (!response) {
+    // Transport error (timeout/unreachable) — pool also needs to know.
+    if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+      reportGoogleKeyOutcome(provider.apiKey, false, undefined);
+    }
+    return null;
+  }
+
+  // GKEY-01: feed the outcome back to the google key pool so cooldowns stay
+  // accurate (200 clears; 401/403 long cooldown; 429/5xx short cooldown).
+  if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+    reportGoogleKeyOutcome(provider.apiKey, response.ok, response.status);
+  }
 
   if (!response.ok) {
     const errBody = await response.text().catch(() => "");

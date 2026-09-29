@@ -4,6 +4,37 @@
 
 ---
 
+## GKEY-01-09-2026 — Google multi-key router: xoay vòng nhiều key theo dự án (2026-09-29)
+
+### Câu hỏi & kiểm tra key hiện tại
+
+User hỏi: nhiều key Google từ các dự án khác nhau, có thể làm router linh hoạt không? Trước khi xây, probe lại toàn bộ key sau khi user sửa env: **google ✅ 200 (334ms — key đã được khắc phục sau khi bị khóa 403), primary Groq ✅ 125ms, fallback1 OpenRouter gemma:free ⚠️ 429 upstream (hạn mức free theo giờ), fallback2 vyceai deepseek-v4.1 ✅ ~4.2s**.
+
+### Hướng xử lý — key pool chia sẻ cho Square + chat
+
+Module mới `src/lib/llm/google-key-pool.ts`:
+
+- **Cấu hình**: `GOOGLE_AI_API_KEYS="key1,key2,key3"` (ưu tiên, tự khử trùng lặp) hoặc giữ nguyên `GOOGLE_AI_API_KEY` đơn. Không bắt buộc thêm env mới nếu chỉ dùng 1 key.
+- **Round-robin**: điểm bắt đầu xoay mỗi lần resolve — các post đăng tuần tự được chia đều lên các dự án Google, gấp N lần hạn mức free tier.
+- **Cooldown theo trạng thái**: 429/5xx/transport error → nghỉ ngắn (60s, `GOOGLE_AI_KEY_COOLDOWN_MS`); 401/403 (key bị khóa/hủy) → nghỉ dài (10 phút, `GOOGLE_AI_KEY_AUTH_COOLDOWN_MS`); 200 thành công → mở khóa ngay.
+- **An toàn suy giảm**: key fail rời khỏi pool, pool cạn thì trả rỗng — tier tiếp theo (Groq → fallback) tiếp quản, không bao giờ chặn việc đăng bài.
+- **Wire vào cả 2 chain** (Square content-generator + chat llm.ts) tại chỗ google tier đứng đầu; mỗi lần gọi HTTP đều báo kết quả về pool.
+
+### Files changed
+
+```
+src/lib/llm/google-key-pool.ts — module pool mới (rotation + cooldown + stats)
+src/lib/llm/__tests__/google-key-pool.test.ts — 11 unit tests
+src/lib/square/content-generator.ts — google tier dùng pool + report outcome
+src/lib/chat/llm.ts — như trên cho chatbot (kể cả streaming)
+```
+
+### Verification
+
+Pool tests 11/11 (rotation, dedupe, cooldown ngắn/dài, mở khóa khi thành công, pool cạn rẽ tier); live probe google-first sinh bài hợp lệ 1.7s (`llmProvider: google`); typecheck PASS; square suites 134/134.
+
+---
+
 ## SQ-LLM-GOOGLE-ORDER-09-2026 — Tier google lên đầu chain + wire SQUARE_LLM_ENABLED (2026-09-29)
 
 ### Yêu cầu
