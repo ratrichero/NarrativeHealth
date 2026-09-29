@@ -43,8 +43,10 @@ export const DEFAULT_CONTENT_CONFIG: ContentGenerationConfig = {
 // ─── LLM Integration (OpenAI-compatible, multi-tier fallback) ──
 
 // Provider chain, resolved once from env. Mirrors backend/provider/config.py:
-// primary → fallback 1 → fallback 2. Any OpenAI-compatible endpoint works
-// (Groq, DeepSeek, OpenRouter, Ollama, vLLM...).
+// primary → fallback 1 → fallback 2 → google (last resort). The first three
+// tiers are any OpenAI-compatible endpoint (Groq, DeepSeek, OpenRouter,
+// Ollama, vLLM...); the google tier uses Gemini's OpenAI-compatible surface
+// keyed by GOOGLE_AI_API_KEY.
 interface LLMProviderConfig {
   name: string;
   baseUrl: string;
@@ -85,6 +87,23 @@ function resolveProviderChain(): LLMProviderConfig[] {
     });
   }
 
+  // SQ-LLM-GOOGLE: GOOGLE_AI_API_KEY was historically dead config for this
+  // pipeline — Gemini had no OpenAI-native endpoint, so the key was never
+  // read here. Gemini now exposes an OpenAI-compatible surface
+  // (generativelanguage.googleapis.com/v1beta/openai — probed OK, standard
+  // choices[0].message.content shape), so it becomes the LAST resort tier:
+  // after primary + both OpenAI-compatible fallbacks fail, Square posts stop
+  // dropping to template just because one provider host is down.
+  const googleKey = process.env.GOOGLE_AI_API_KEY;
+  if (googleKey) {
+    chain.push({
+      name: "google",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      apiKey: googleKey,
+      model: process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite",
+    });
+  }
+
   return chain;
 }
 
@@ -122,7 +141,9 @@ async function callOpenAICompatible(
     });
 
     if (response.ok) break;
-    if (response.status !== 429 || attempt === maxHttpAttempts) break;
+    // SQ-LLM-GOOGLE: 503 from Gemini ("high demand — usually temporary") is
+    // transient just like a 429 — retry it instead of burning the tier.
+    if ((response.status !== 429 && response.status !== 503) || attempt === maxHttpAttempts) break;
 
     // Honor Retry-After header when present, else simple backoff.
     const retryAfter = Number(response.headers.get("retry-after"));

@@ -1,6 +1,6 @@
 // CHAT-P1: LLM client for the chatbot — OpenAI-compatible provider chain
-// (same env vars as Square: Groq → fallback1 → fallback2) with native
-// tool calling and SSE streaming support.
+// (same env vars as Square: Groq → fallback1 → fallback2 → google last
+// resort) with native tool calling and SSE streaming support.
 
 export interface ChatLLMProvider {
   name: string;
@@ -39,6 +39,19 @@ export function resolveChatProviderChain(): ChatLLMProvider[] {
       model: process.env.FALLBACK2_MODEL_NAME,
     });
   }
+  // CHAT-LLM-GOOGLE: last-resort tier mirroring the Square chain — Gemini's
+  // OpenAI-compatible endpoint (probed OK) keeps chat alive when Groq and
+  // both OpenAI-compatible fallbacks fail.
+  const googleKey = process.env.GOOGLE_AI_API_KEY;
+  if (googleKey) {
+    chain.push({
+      name: "google",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      apiKey: googleKey,
+      model: process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite",
+    });
+  }
+
   return chain;
 }
 

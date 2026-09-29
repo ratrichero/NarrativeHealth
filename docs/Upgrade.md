@@ -4,6 +4,39 @@
 
 ---
 
+## SQ-LLM-CHAIN-09-2026 — Chẩn đoán posts rơi Template hàng loạt + kích hoạt GOOGLE_AI_API_KEY làm tier dự phòng cuối (2026-09-29)
+
+### Chẩn đoán — vì sao posts rơi Template nhiều dù 2 fallback "key vẫn chạy"
+
+Số liệu 30 ngày (square_publications): 20–22/9 LLM 0% (toàn Template), 24–26/9 LLM 97–100%, rồi 27/9 = 68% LLM, 28/9 = 14%, 29/9 = 40%. Phân phối `llmProvider`: **chỉ `primary` (Groq) từng thành công — fallback1/fallback2 chưa đóng góp bài nào**. Probe trực tiếp từng tier giải thích:
+
+- **primary (Groq, qwen3.8-27b)**: OK ~120ms. Pipeline publish tuần tự, stagger 90s/bài nên tỷ lệ LLM phụ thuộc OTPM (output tokens/phút) của tier Groq free — ngày lưu lượng cao Groq trả 429 hết retries → bài rơi Template. Đây là lý do chính.
+- **fallback1 (hcnsec.cn, DeepSeek-V4-Flash)**: **TIMEOUT 30s từ server** (host up nhưng endpoint chat không phản hồi; đôi lúc 522). Key hợp lệ ≠ endpoint sống — test key bằng client khác thấy "bình thường" vì không đi qua network path của server.
+- **fallback2 (OpenRouter, model `openrouter/free`)**: **slug model KHÔNG TỒN TẠI** trong catalog (model free hợp lệ phải có hậu tố `:free`). API trả 200 kiểu text-completion echo nên output luôn fail validation.
+
+### Ý nghĩa GOOGLE_AI_API_KEY + SQUARE_LLM_ENABLED
+
+`GOOGLE_AI_API_KEY` từng là **config chết** — code Square/chat không bao giờ đọc key này (Gemini không có endpoint OpenAI-native). `SQUARE_LLM_ENABLED=true` cũng không được đọc ở đâu — LLM luôn bật mặc định. Khác với 3 key LLM (OPENAI_API_KEY/FALLBACK×2) là các tier thật của chain. Đã probe: Gemini hiện có **endpoint OpenAI-compatible** (`generativelanguage.googleapis.com/v1beta/openai`) hoạt động tốt với key này.
+
+### Hướng xử lý
+
+1. Thêm tier `google` vào **cuối** chain (Square content-generator + chat llm.ts): base `https://generativelanguage.googleapis.com/v1beta/openai`, model mặc định `gemini-2.5-flash-lite` (override qua `GOOGLE_AI_MODEL_NAME`; chọn lite thay vì 2.5-flash vì 2.5-flash là thinking model — output bị cụt, fail validation trong probe).
+2. Cho phép retry cả **503** (Gemini "high demand, usually temporary") như 429 trong `callOpenAICompatible`.
+3. Không đổi primary/fallback1/fallback2 — user tự quyết thay fallback1 (host chết) hay model fallback2 (slug sai) bằng cách cập nhật env.
+
+### Files changed
+
+```
+src/lib/square/content-generator.ts — tier google cuối chain + retry 503
+src/lib/chat/llm.ts — tier google cuối chain (chatbot dùng chung env)
+```
+
+### Verification
+
+Probe mô phỏng hỏng 3 tier đầu (key invalid) → tier `google` cứu bài: `llmUsed=true, llmProvider=google`, bài 1251 ký tự pass validation. Tier còn sống (primary) chạy bình thường unchanged. Typecheck PASS; square suites 134/134.
+
+---
+
 ## DASH-STALE-CARD-09-2026 — 6 card khuyến nghị không tự cập nhật sang ngày mới sau khi scheduler chạy (2026-09-29)
 
 ### Chẩn đoán
