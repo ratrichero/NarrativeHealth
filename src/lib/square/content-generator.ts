@@ -42,11 +42,10 @@ export const DEFAULT_CONTENT_CONFIG: ContentGenerationConfig = {
 
 // ─── LLM Integration (OpenAI-compatible, multi-tier fallback) ──
 
-// Provider chain, resolved once from env. Mirrors backend/provider/config.py:
-// primary → fallback 1 → fallback 2 → google (last resort). The first three
-// tiers are any OpenAI-compatible endpoint (Groq, DeepSeek, OpenRouter,
-// Ollama, vLLM...); the google tier uses Gemini's OpenAI-compatible surface
-// keyed by GOOGLE_AI_API_KEY.
+// Provider chain, resolved once from env. SQ-LLM-GOOGLE-ORDER (2026-09-29):
+// google → primary → fallback 1 → fallback 2. The google tier (Gemini's
+// OpenAI-compatible surface, GOOGLE_AI_API_KEY) is tried FIRST per product
+// decision; Groq primary and the OpenAI-compatible fallbacks back it up.
 interface LLMProviderConfig {
   name: string;
   baseUrl: string;
@@ -56,6 +55,20 @@ interface LLMProviderConfig {
 
 function resolveProviderChain(): LLMProviderConfig[] {
   const chain: LLMProviderConfig[] = [];
+
+  // SQ-LLM-GOOGLE: tried FIRST. Model defaults to gemini-2.5-flash-lite
+  // (fast, non-thinking, passes post validation); override via
+  // GOOGLE_AI_MODEL_NAME. A 403/broken key here costs one fast failed request
+  // and the chain continues with Groq.
+  const googleKey = process.env.GOOGLE_AI_API_KEY;
+  if (googleKey) {
+    chain.push({
+      name: "google",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+      apiKey: googleKey,
+      model: process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite",
+    });
+  }
 
   const primaryKey = process.env.OPENAI_API_KEY;
   if (primaryKey) {
@@ -84,23 +97,6 @@ function resolveProviderChain(): LLMProviderConfig[] {
       baseUrl: (process.env.FALLBACK2_OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
       apiKey: fallback2Key,
       model: process.env.FALLBACK2_MODEL_NAME,
-    });
-  }
-
-  // SQ-LLM-GOOGLE: GOOGLE_AI_API_KEY was historically dead config for this
-  // pipeline — Gemini had no OpenAI-native endpoint, so the key was never
-  // read here. Gemini now exposes an OpenAI-compatible surface
-  // (generativelanguage.googleapis.com/v1beta/openai — probed OK, standard
-  // choices[0].message.content shape), so it becomes the LAST resort tier:
-  // after primary + both OpenAI-compatible fallbacks fail, Square posts stop
-  // dropping to template just because one provider host is down.
-  const googleKey = process.env.GOOGLE_AI_API_KEY;
-  if (googleKey) {
-    chain.push({
-      name: "google",
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-      apiKey: googleKey,
-      model: process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite",
     });
   }
 
@@ -171,6 +167,14 @@ async function callOpenAICompatible(
 async function generateWithLLM(
   brief: SquareContentBrief
 ): Promise<GeneratedContent | null> {
+  // SQ-LLM-FLAG: SQUARE_LLM_ENABLED=false turns the LLM chain off entirely
+  // (template-only posting). Unset or any other value keeps the LLM on —
+  // this is the first code that has ever read this variable.
+  if (String(process.env.SQUARE_LLM_ENABLED).toLowerCase() === "false") {
+    console.warn("[SQ-LLM] SQUARE_LLM_ENABLED=false — LLM disabled, using template fallback.");
+    return null;
+  }
+
   const chain = resolveProviderChain();
   if (chain.length === 0) {
     // SQ-DIAG: the #1 reason every post falls back to template.

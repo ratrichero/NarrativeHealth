@@ -188,6 +188,9 @@ describe("SQ-OPERATE-02: Quota Warning", () => {
 // ─── Content Generator Integration Tests ─────────────────
 
 describe("SQ-OPERATE-02: Content Generator llmUsed", () => {
+  // Real-network integration test (no mocks): the provider chain may try up
+  // to 4 tiers with repair rounds each. Jest's default 5s timeout made this
+  // flaky whenever the first tier is skipped/fails — allow 25s.
   it("generateContent returns llmUsed field", async () => {
     const { generateContent } = await import("../content-generator");
     const brief = {
@@ -202,7 +205,7 @@ describe("SQ-OPERATE-02: Content Generator llmUsed", () => {
     expect(typeof result.llmUsed).toBe("boolean");
     expect(typeof result.text).toBe("string");
     expect(typeof result.templateVersion).toBe("string");
-  });
+  }, 25_000);
 });
 
 // ─── Publisher Result Interface Tests ────────────────────

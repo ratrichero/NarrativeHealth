@@ -4,6 +4,41 @@
 
 ---
 
+## SQ-LLM-GOOGLE-ORDER-09-2026 — Tier google lên đầu chain + wire SQUARE_LLM_ENABLED (2026-09-29)
+
+### Yêu cầu
+
+(1) GOOGLE_AI_MODEL_NAME có cần thêm vào env không; (2) đưa tier google lên đầu chain; (3) wire SQUARE_LLM_ENABLED thành công tắt LLM thật sự.
+
+### Hướng xử lý
+
+1. **GOOGLE_AI_MODEL_NAME**: tùy chọn — code có default `gemini-2.5-flash-lite`; đã thêm sẵn vào `.env` giá trị default để dễ đổi.
+2. **Chain mới: google → primary → fallback1 → fallback2** (cả Square content-generator lẫn chat llm.ts). Lý do product: ưu tiên quota Google free tier, Groq làm backbone dự phòng. Tier đầu fail/chậm chỉ tốn 1 request nhanh rồi tự rẽ tiếp — probe chứng minh: key Google đang 403 mà bài vẫn ra bởi `primary` trong ~1.2s tổng.
+3. **SQUARE_LLM_ENABLED**: giờ được đọc thật — `false` (không phân biệt hoa thường) tắt toàn bộ LLM, đăng Template-only kèm log cảnh báo; unset/giá trị khác = bật. Đây là lần đầu biến này có tác dụng.
+4. Sửa env typo phát hiện khi probe: `FALLBACK_OPENAI_BASE_URL` bị dán `=https://...` ở đầu (fallback1 chết ngay 0ms "URL is invalid") — đã chuẩn hóa trong `.env`.
+5. Test tích hợp LLM thật (`generateContent returns llmUsed`) tăng timeout 5s → 25s: chain 4 tier + repair vòng dễ tràn 5s khi tier đầu bị skip (nguyên nhân flaky kế phát).
+
+### Cảnh báo vận hành (phát hiện khi probe)
+
+- **GOOGLE_AI_API_KEY đang bị Google khóa**: HTTP 403 `CONSUMER_SUSPENDED` (sáng cùng ngày còn 200 OK). Cần mở AI Studio kiểm tra billing/vi phạm hoặc tạo key mới; không sửa thì tier google chỉ là 1 bước nhảy nhanh vô hại rồi rẽ Groq.
+- fallback1 (OpenRouter `google/gemma-4-31b-it:free`) hợp lệ nhưng tier free đang 429 upstream theo giờ — coi là best-effort.
+- fallback2 (vyceai `deepseek-v4.1`) OK ~1.8–3s.
+
+### Files changed
+
+```
+src/lib/square/content-generator.ts — google đầu chain + gate SQUARE_LLM_ENABLED
+src/lib/chat/llm.ts — google đầu chain (chatbot)
+src/lib/square/__tests__/operate-02-reliability.test.ts — timeout 25s cho test LLM thật
+.env (workspace, không commit) — sửa FALLBACK_OPENAI_BASE_URL typo + thêm GOOGLE_AI_MODEL_NAME
+```
+
+### Verification
+
+Probe: SQUARE_LLM_ENABLED=false → template-only 1ms, không gọi LLM. Bình thường (google 403) → rẽ primary thành công 1.2s. Typecheck PASS; square suites 134/134.
+
+---
+
 ## SQ-LLM-CHAIN-09-2026 — Chẩn đoán posts rơi Template hàng loạt + kích hoạt GOOGLE_AI_API_KEY làm tier dự phòng cuối (2026-09-29)
 
 ### Chẩn đoán — vì sao posts rơi Template nhiều dù 2 fallback "key vẫn chạy"
