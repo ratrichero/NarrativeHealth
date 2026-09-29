@@ -55,14 +55,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER p3_narrative_intelligence_immutable
+CREATE OR REPLACE TRIGGER p3_narrative_intelligence_immutable
 BEFORE UPDATE OR DELETE ON p3_narrative_intelligence
 FOR EACH ROW EXECUTE FUNCTION prevent_p3_history_mutation();
 
-CREATE TRIGGER p3_constituent_snapshots_immutable
+CREATE OR REPLACE TRIGGER p3_constituent_snapshots_immutable
 BEFORE UPDATE OR DELETE ON p3_constituent_snapshots
 FOR EACH ROW EXECUTE FUNCTION prevent_p3_history_mutation();
 
-CREATE TRIGGER p3_constituent_snapshot_members_immutable
+CREATE OR REPLACE TRIGGER p3_constituent_snapshot_members_immutable
 BEFORE UPDATE OR DELETE ON p3_constituent_snapshot_members
 FOR EACH ROW EXECUTE FUNCTION prevent_p3_history_mutation();

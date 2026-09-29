@@ -23,4 +23,4 @@ CREATE TABLE IF NOT EXISTS p3_leadership_members (
   CONSTRAINT p3_leadership_members_persistence_range CHECK (leader_persistence_7d IS NULL OR (leader_persistence_7d >= 0 AND leader_persistence_7d <= 1))
 );
 CREATE INDEX IF NOT EXISTS p3_leadership_members_coin_idx ON p3_leadership_members(coin_id);
-CREATE TRIGGER p3_leadership_members_immutable BEFORE UPDATE OR DELETE ON p3_leadership_members FOR EACH ROW EXECUTE FUNCTION prevent_p3_history_mutation();
+CREATE OR REPLACE TRIGGER p3_leadership_members_immutable BEFORE UPDATE OR DELETE ON p3_leadership_members FOR EACH ROW EXECUTE FUNCTION prevent_p3_history_mutation();

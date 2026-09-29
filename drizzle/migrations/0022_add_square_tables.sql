@@ -21,10 +21,10 @@ CREATE TABLE IF NOT EXISTS square_opportunities (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_square_opportunities_status ON square_opportunities(status);
-CREATE INDEX idx_square_opportunities_type ON square_opportunities(type);
-CREATE INDEX idx_square_opportunities_subject ON square_opportunities(subject_id, narrative_id);
-CREATE INDEX idx_square_opportunities_created ON square_opportunities(created_at);
+CREATE INDEX IF NOT EXISTS idx_square_opportunities_status ON square_opportunities(status);
+CREATE INDEX IF NOT EXISTS idx_square_opportunities_type ON square_opportunities(type);
+CREATE INDEX IF NOT EXISTS idx_square_opportunities_subject ON square_opportunities(subject_id, narrative_id);
+CREATE INDEX IF NOT EXISTS idx_square_opportunities_created ON square_opportunities(created_at);
 
 -- Square Publications - Published posts
 CREATE TABLE IF NOT EXISTS square_publications (
@@ -44,10 +44,10 @@ CREATE TABLE IF NOT EXISTS square_publications (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_square_publications_status ON square_publications(status);
-CREATE INDEX idx_square_publications_opportunity ON square_publications(opportunity_id);
-CREATE INDEX idx_square_publications_fingerprint ON square_publications(fingerprint);
-CREATE INDEX idx_square_publications_published ON square_publications(published_at);
+CREATE INDEX IF NOT EXISTS idx_square_publications_status ON square_publications(status);
+CREATE INDEX IF NOT EXISTS idx_square_publications_opportunity ON square_publications(opportunity_id);
+CREATE INDEX IF NOT EXISTS idx_square_publications_fingerprint ON square_publications(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_square_publications_published ON square_publications(published_at);
 
 -- Square Quota Log - Daily usage tracking
 CREATE TABLE IF NOT EXISTS square_quota_log (
@@ -70,5 +70,5 @@ CREATE TABLE IF NOT EXISTS square_fingerprints (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_square_fingerprints_fingerprint ON square_fingerprints(fingerprint);
-CREATE INDEX idx_square_fingerprints_expires ON square_fingerprints(expires_at);
+CREATE INDEX IF NOT EXISTS idx_square_fingerprints_fingerprint ON square_fingerprints(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_square_fingerprints_expires ON square_fingerprints(expires_at);

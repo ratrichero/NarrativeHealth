@@ -25,3 +25,6 @@ zip/
 
 # TypeScript build info
 tsconfig.tsbuildinfo
+
+# Smart deploy state (scripts/deploy.sh markers)
+.deploy-state/

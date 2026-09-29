@@ -132,30 +132,30 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER p5_decision_records_immutable
+CREATE OR REPLACE TRIGGER p5_decision_records_immutable
 BEFORE UPDATE OR DELETE ON p5_decision_records
 FOR EACH ROW EXECUTE FUNCTION prevent_p5_history_mutation();
 
-CREATE TRIGGER p5_p4_snapshots_immutable
+CREATE OR REPLACE TRIGGER p5_p4_snapshots_immutable
 BEFORE UPDATE OR DELETE ON p5_p4_snapshots
 FOR EACH ROW EXECUTE FUNCTION prevent_p5_history_mutation();
 
-CREATE TRIGGER p5_policies_immutable
+CREATE OR REPLACE TRIGGER p5_policies_immutable
 BEFORE UPDATE OR DELETE ON p5_policies
 FOR EACH ROW EXECUTE FUNCTION prevent_p5_history_mutation();
 
-CREATE TRIGGER p5_guardrails_immutable
+CREATE OR REPLACE TRIGGER p5_guardrails_immutable
 BEFORE UPDATE OR DELETE ON p5_guardrails
 FOR EACH ROW EXECUTE FUNCTION prevent_p5_history_mutation();
 
-CREATE TRIGGER p5_approvals_immutable
+CREATE OR REPLACE TRIGGER p5_approvals_immutable
 BEFORE UPDATE OR DELETE ON p5_approvals
 FOR EACH ROW EXECUTE FUNCTION prevent_p5_history_mutation();
 
-CREATE TRIGGER p5_permissions_immutable
+CREATE OR REPLACE TRIGGER p5_permissions_immutable
 BEFORE UPDATE OR DELETE ON p5_permissions
 FOR EACH ROW EXECUTE FUNCTION prevent_p5_history_mutation();
 
-CREATE TRIGGER p5_audit_events_immutable
+CREATE OR REPLACE TRIGGER p5_audit_events_immutable
 BEFORE UPDATE OR DELETE ON p5_audit_events
 FOR EACH ROW EXECUTE FUNCTION prevent_p5_history_mutation();
