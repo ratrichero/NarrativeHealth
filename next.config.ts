@@ -17,6 +17,15 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "",
   },
+  experimental: {
+    // BUILD-STABILITY: "Collecting page data" spawns one worker per route
+    // (63 on this app). Each worker imports its route module including the
+    // DB pool — on a small VPS this OOM-kills the build (SIGKILL, or it just
+    // looks "frozen" at "Running TypeScript / Collecting page data"). Cap
+    // the workers so the build finishes on low-RAM servers.
+    cpus: 2,
+    workerThreads: false,
+  },
 };
 
 export default nextConfig;
