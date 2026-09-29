@@ -2278,6 +2278,7 @@ export default function AdminPage() {
     { id: "alerts", label: "Alerts", icon: Bell },
     { id: "config", label: "Config", icon: Settings },
     { id: "logs", label: "Logs", icon: ScrollText },
+    { id: "llm", label: "LLM Monitor", icon: Activity },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "chat-report", label: "Chat Report", icon: MessageSquare },
   ];
