@@ -37,12 +37,19 @@ function AdminLoginForm() {
   const [bootstrap, setBootstrap] = useState<boolean | null>(null);
 
   // Is this the very first admin? (bootstrap mode)
+  // AUTH-FIX: this probe must NEVER keep the submit button disabled — on a
+  // slow server the status endpoint can hang (DB wait) and the button looked
+  // permanently grey. Timeout to 2.5s; on any failure assume NOT bootstrap
+  // and enable the button — the login route itself decides authoritatively
+  // (creates the first admin or returns invalid-credentials).
   useEffect(() => {
-    fetch("/api/auth/status")
+    fetch("/api/auth/status", { signal: AbortSignal.timeout(2500) })
       .then((r) => r.json())
       .then((json) => {
         if (json.success && typeof json.data?.adminCount === "number") {
           setBootstrap(json.data.adminCount === 0);
+        } else {
+          setBootstrap(false);
         }
       })
       .catch(() => setBootstrap(false));
