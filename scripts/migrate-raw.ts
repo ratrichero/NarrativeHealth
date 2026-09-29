@@ -4,6 +4,9 @@
 // ADD COLUMN IF NOT EXISTS ...), so re-running the whole set is safe; the
 // sha256 of each applied file is recorded in _raw_migrations to skip work
 // and to re-run a file when its content changes.
+// Load .env explicitly - bare VPSes do not inject env vars into scripts
+// (unlike managed dev environments), and this runner depends on the DB URL.
+import "dotenv/config";
 import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";

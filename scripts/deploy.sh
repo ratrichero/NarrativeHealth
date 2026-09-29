@@ -93,10 +93,13 @@ if [[ $FORCE -eq 1 || "$MIG_HASH" != "$PREV_MIG" ]]; then
   log "applying migrations (raw SQL runner, idempotent)…"
   if npx tsx scripts/migrate-raw.ts || bun scripts/migrate-raw.ts; then
     ok "migrations applied"
+    NEED_MIG=1
   else
-    warn "migration runner failed — check DATABASE_URL / connectivity"
+    warn "migration runner FAILED - will retry on next deploy (marker not updated)"
+    # Keep the old hash so the next deploy re-runs the migration step instead
+    # of wrongly skipping it.
+    MIG_HASH="$PREV_MIG"
   fi
-  NEED_MIG=1
 else
   skip "migrations unchanged"
 fi
