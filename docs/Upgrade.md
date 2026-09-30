@@ -1,8 +1,37 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-09-29
+## Ngày cập nhật: 2026-09-30
 
 ---
+
+## COIN-01-09-2026 — Mở rộng universe 49 → 100 coin (2026-09-30)
+
+### Yêu cầu
+
+Mở rộng danh sách coin theo dõi từ 49 lên ~100 coin, ưu tiên coin có pair Binance (spot và/hoặc futures) để collectors chạy đầy đủ 3 nguồn dữ liệu (Binance spot OHLCV, Binance futures OI/funding, CoinGecko).
+
+### Migration `0034_seed_coins_to_100.sql`
+
+- **0a — dedup ETHFI**: coin bị seed trùng 2 dòng (id 23 + 31, cùng active) → deactivate dòng id lớn. Không DELETE vì bảng P3 có trigger immutability + FK RESTRICT tham chiếu coin trùng; lịch sử giữ nguyên, refresh (lọc `is_active = true`) tự bỏ qua.
+- **0b — `coins_symbol_active_unique`**: partial unique index `ON coins(symbol) WHERE is_active = true` — chặn coin active trùng symbol từ giờ sau (schema.ts định nghĩa unique nhưng DB thật chưa từng có constraint).
+- **Seed 52 coin mới** idempotent (`ON CONFLICT (symbol) WHERE is_active = true DO NOTHING`), chia nhóm: Majors & L1 (15: XRP, BNB, ADA, AVAX, DOGE, TON, TRX, DOT, ATOM, SUI, APT, SEI, HBAR, INJ, TIA), L2 & Interop (7: STRK, ZK, SCR, MNT, OMNI, W, ZRO), DeFi (7: MKR, COMP, SNX, DYDX, GMX, RUNE, KAVA), AI & Compute (6: TAO, WLD, ARKM, IO, VIRTUAL, AIXBT), DePIN (3: FIL, AR, HOT), Gaming (4: AXS, SAND, GALA, IMX), Oracle (PYTH), Memecoin (6: SHIB, PEPE, WIF, BONK, FLOKI, TRUMP), Payment (XLM, VET), Restaking (JTO).
+- **Narrative mapping**: join theo TÊN narrative hiện có (AI, RWA, TOPMC, FAVORITE, RESTAKING, LAYER 2, DEFI / DEX, PAYFI & STABLE) — idempotent trên PK (coin_id, narrative_id).
+- Ứng viên bị loại vì hết/không có pair Binance: RNDR (đã đổi tên RENDER 07/2024), BOB (delist 04/2026), XNO, RIO, LAND, RON, AI16Z (đổi tên), PYUSD.
+
+### Kết quả
+
+100 coin active (48 cũ + 52 mới). Refresh pipeline tự nhận coin mới ở chu kỳ kế tiếp (coin-processor lấy `isActive = true`, collect đủ 3 nguồn, tính health + recommendation + pick).
+
+### Files changed
+
+```
+drizzle/migrations/0034_seed_coins_to_100.sql — dedup + unique index + seed 52 coin + narrative map (mới)
+docs/Upgrade.md — entry này
+```
+
+---
+
+## BT-04-09-2026 — Episode dedup chống trùng pick + đo chất lượng tín hiệu (2026-09-29)
 
 ## BT-04-09-2026 — Episode dedup chống trùng pick + đo chất lượng tín hiệu (2026-09-29)
 
