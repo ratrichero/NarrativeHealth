@@ -4,6 +4,7 @@ import {
   aggregateOutcomes,
   pearson,
   isHorizonClosed,
+  isSameSetupEpisode,
   type BacktestPickInput,
   type BacktestPriceRow,
   type PickOutcome,
@@ -130,6 +131,63 @@ describe("BT-03 — horizon closure semantics", () => {
     expect(isHorizonClosed("2026-09-01", 14, "2026-09-15")).toBe(true);
     expect(isHorizonClosed("2026-09-01", 14, "2026-09-14")).toBe(false);
     expect(isHorizonClosed("2026-09-01", 14, "2026-10-01")).toBe(true);
+  });
+});
+
+describe("BT-04 — isSameSetupEpisode", () => {
+  const prevSetup = {
+    direction: "BULLISH",
+    hasSetup: true,
+    entryLow: "99.5",
+    entryHigh: "100.5",
+    entryMid: "100",
+    tp1: "115",
+    tp2: "130",
+    stopLoss: "85",
+  };
+  const nextSetup = {
+    direction: "BULLISH" as const,
+    hasSetup: true,
+    entryLow: 99.6,
+    entryHigh: 100.4,
+    entryMid: 100,
+    tp1: 115.5,
+    tp2: 130.2,
+    stopLoss: 85.1,
+  };
+
+  it("treats a near-identical re-render as the same episode", () => {
+    expect(isSameSetupEpisode(prevSetup, nextSetup)).toBe(true);
+  });
+
+  it("detects a new episode when direction flips", () => {
+    expect(
+      isSameSetupEpisode(prevSetup, { ...nextSetup, direction: "BEARISH" as const })
+    ).toBe(false);
+  });
+
+  it("detects a new episode when levels move beyond tolerance", () => {
+    expect(
+      isSameSetupEpisode(prevSetup, { ...nextSetup, tp1: 125 })
+    ).toBe(false);
+  });
+
+  it("no-setup picks repeat when direction matches", () => {
+    expect(
+      isSameSetupEpisode(
+        { direction: "BULLISH", hasSetup: false, entryLow: null, entryHigh: null, entryMid: null, tp1: null, tp2: null, stopLoss: null },
+        { direction: "BULLISH", hasSetup: false, entryLow: null, entryHigh: null, entryMid: null, tp1: null, tp2: null, stopLoss: null }
+      )
+    ).toBe(true);
+  });
+
+  it("no-setup pick becomes a new episode when setup appears", () => {
+    expect(
+      isSameSetupEpisode(
+        { direction: "BULLISH", hasSetup: false, entryLow: null, entryHigh: null, entryMid: null, tp1: null, tp2: null, stopLoss: null },
+        nextSetup
+      )
+    ).toBe(false);
   });
 });
 

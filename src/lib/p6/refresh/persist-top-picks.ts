@@ -1,13 +1,21 @@
-// BT-01: Persist 6 picks của dashboard vào bảng top_recommendation_picks.
+// BT-01 + BT-04: Persist 6 picks của dashboard vào bảng top_recommendation_picks
+// với episode dedup: refresh chạy sát nhau thường sinh CÙNG MỘT setup cho cùng
+// coin (giá/ATR không đổi đáng kể) — khi đó KHÔNG tạo row backtest mới, chỉ bump
+// repeat_count/last_repeat_at trên row gốc của episode (backtest dùng data_date
+// lần đầu). Setup thay đổi thật (đổi hướng hoặc levels vượt ngưỡng) → episode
+// mới, row riêng.
+//
 // Best-effort: lỗi ghi không bao giờ làm fail API dashboard; mọi lỗi log [BT-01].
+
 import { db } from "@/db";
 import {
   topRecommendationPicks,
   type NewTopRecommendationPick,
 } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, gte, ne, sql } from "drizzle-orm";
+import { isSameSetupEpisode } from "@/lib/backtest/engine";
 
-interface PersistPickInput {
+export interface PersistPickInput {
   coinId: number;
   symbol: string;
   slot: number; // 1-3 LONG, 4-6 SHORT
@@ -42,6 +50,56 @@ export async function persistTopPicks(
 ): Promise<void> {
   try {
     for (const p of picks) {
+      // ── BT-04: find the coin's latest pick still in its episode window ──
+      // (PENDING hoặc EVALUATED chưa quá 7 ngày — episode kết thúc khi pick
+      // bị EXPIRED/SKIPPED hoặc quá 7 ngày không lặp).
+      // Episode window: 7 ngày — nếu pick gần nhất cũ hơn mà chưa được chốt
+      // (backtest chưa chạy), episode cũ coi như kết thúc; pick mới là episode
+      // mới (tránh bump vô hạn trên row cổ).
+      const episodeCutoff = new Date(
+        new Date(dataDate + "T00:00:00Z").getTime() - 7 * 86400_000
+      ).toISOString().slice(0, 10);
+
+      const [prev] = await db
+        .select({
+          id: topRecommendationPicks.id,
+          dataDate: topRecommendationPicks.dataDate,
+          direction: topRecommendationPicks.direction,
+          hasSetup: topRecommendationPicks.hasSetup,
+          entryLow: topRecommendationPicks.entryLow,
+          entryHigh: topRecommendationPicks.entryHigh,
+          entryMid: topRecommendationPicks.entryMid,
+          tp1: topRecommendationPicks.tp1,
+          tp2: topRecommendationPicks.tp2,
+          stopLoss: topRecommendationPicks.stopLoss,
+          backtestStatus: topRecommendationPicks.backtestStatus,
+        })
+        .from(topRecommendationPicks)
+        .where(
+          and(
+            eq(topRecommendationPicks.coinId, p.coinId),
+            ne(topRecommendationPicks.backtestStatus, "SKIPPED"),
+            ne(topRecommendationPicks.backtestStatus, "EXPIRED"),
+            gte(topRecommendationPicks.dataDate, episodeCutoff)
+          )
+        )
+        .orderBy(desc(topRecommendationPicks.dataDate), desc(topRecommendationPicks.id))
+        .limit(1);
+
+      if (prev && isSameSetupEpisode(prev, p)) {
+        // Cùng episode — KHÔNG insert row mới; bump counter trên row gốc
+        // (data_date giữ nguyên = ngày đầu setup xuất hiện → backtest dùng
+        // ngày đầu, các refresh lặp sau không tạo bản ghi backtest trùng).
+        await db
+          .update(topRecommendationPicks)
+          .set({
+            repeatCount: sql`${topRecommendationPicks.repeatCount} + 1`,
+            lastRepeatAt: new Date(),
+          })
+          .where(eq(topRecommendationPicks.id, prev.id));
+        continue;
+      }
+
       const row: NewTopRecommendationPick = {
         dataDate,
         coinId: p.coinId,

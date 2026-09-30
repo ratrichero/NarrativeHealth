@@ -800,6 +800,7 @@ interface PickOutcomeT {
   entryFilled: boolean | null;
   horizonDays: number | null;
   evaluatedAt: string | null;
+  repeatCount: number;
 }
 
 /**
@@ -877,6 +878,21 @@ function BacktestSection() {
         byBand: { band: string; samples: number; median1d: number | null; median3d: number | null; median7d: number | null; median14d: number | null }[];
         correlations: { horizonDays: number; samples: number; health: number | null; trend: number | null; volume: number | null; momentum: number | null }[];
         note: string | null;
+      };
+    },
+  });
+
+  const signalQuery = useQuery({
+    queryKey: ["admin", "backtest", "signal", daysBack],
+    queryFn: async () => {
+      const res = await fetch(`/api/admin/backtest/signal-quality?daysBack=${daysBack}`);
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as {
+        params: { daysBack: number };
+        totalSamples: number;
+        bySignal: { signal: string; samples: number; median1d: number | null; median3d: number | null; median7d: number | null; median14d: number | null; positive7dRate: number | null }[];
+        byScoreChange: { bucket: string; samples: number; median7d: number | null; positive7dRate: number | null }[];
       };
     },
   });
@@ -1053,6 +1069,85 @@ function BacktestSection() {
         </>
       )}
 
+      {/* ── Signal Quality (BT-04) ── */}
+      {signalQuery.isLoading ? (
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 text-sm text-slate-400">Đang tính chất lượng tín hiệu…</div>
+      ) : signalQuery.error || !signalQuery.data ? (
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 text-sm text-red-400">
+          Lỗi signal-quality: {(signalQuery.error as Error)?.message ?? "không có dữ liệu"}
+        </div>
+      ) : (
+        <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+          <h4 className="text-sm font-semibold text-white mb-1">Chất lượng tín hiệu rule engine (toàn hệ thống, không chỉ 6 picks)</h4>
+          <p className="text-xs text-slate-500 mb-3">
+            Engine tốt: STRONG_WATCH có median return cao nhất, giảm dần về OBSERVE; WEAK/CAUTION âm. Nguồn: bảng recommendations + health_scores hiện có, so return 1/3/7/14 ngày.
+          </p>
+          {signalQuery.data.totalSamples === 0 ? (
+            <p className="text-xs text-slate-500">Chưa có mẫu trong lookback.</p>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-slate-500 border-b border-slate-700">
+                      <th className="py-2 pr-3">Signal</th>
+                      <th className="py-2 pr-3">Samples</th>
+                      <th className="py-2 pr-3">1d</th>
+                      <th className="py-2 pr-3">3d</th>
+                      <th className="py-2 pr-3">7d</th>
+                      <th className="py-2 pr-3">14d</th>
+                      <th className="py-2">%7d dương</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {signalQuery.data.bySignal.map((s) => (
+                      <tr key={s.signal} className="border-b border-slate-800 last:border-0">
+                        <td className="py-2 pr-3 font-mono text-slate-200">{s.signal}</td>
+                        <td className="py-2 pr-3 text-slate-300">{s.samples}</td>
+                        <td className={`py-2 pr-3 ${s.median1d == null ? "text-slate-500" : s.median1d >= 0 ? "text-green-400" : "text-red-400"}`}>{fmt(s.median1d, "%")}</td>
+                        <td className={`py-2 pr-3 ${s.median3d == null ? "text-slate-500" : s.median3d >= 0 ? "text-green-400" : "text-red-400"}`}>{fmt(s.median3d, "%")}</td>
+                        <td className={`py-2 pr-3 ${s.median7d == null ? "text-slate-500" : s.median7d >= 0 ? "text-green-400" : "text-red-400"}`}>{fmt(s.median7d, "%")}</td>
+                        <td className={`py-2 pr-3 ${s.median14d == null ? "text-slate-500" : s.median14d >= 0 ? "text-green-400" : "text-red-400"}`}>{fmt(s.median14d, "%")}</td>
+                        <td className="py-2 text-slate-300">{s.positive7dRate == null ? "—" : `${s.positive7dRate}%`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-6">
+                <h4 className="text-sm font-semibold text-white mb-3">Score change có dự báo được không? (median 7d theo bucket)</h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[480px] text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-slate-500 border-b border-slate-700">
+                        <th className="py-2 pr-3">Δ score</th>
+                        <th className="py-2 pr-3">Samples</th>
+                        <th className="py-2 pr-3">Median 7d</th>
+                        <th className="py-2">%7d dương</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {signalQuery.data.byScoreChange.map((b) => (
+                        <tr key={b.bucket} className="border-b border-slate-800 last:border-0">
+                          <td className="py-2 pr-3 font-mono text-slate-200">{b.bucket}</td>
+                          <td className="py-2 pr-3 text-slate-300">{b.samples}</td>
+                          <td className={`py-2 pr-3 ${b.median7d == null ? "text-slate-500" : b.median7d >= 0 ? "text-green-400" : "text-red-400"}`}>{fmt(b.median7d, "%")}</td>
+                          <td className="py-2 text-slate-300">{b.positive7dRate}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-slate-500 mt-2">
+                  Bucket Δ dương nên có median tốt hơn bucket Δ âm — nếu không, scoreChange chưa mang thông tin dự báo.
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {/* ── Setup Performance ── */}
       {perfQuery.isLoading ? (
         <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 text-sm text-slate-400">Đang tính setup performance…</div>
@@ -1151,6 +1246,7 @@ function BacktestSection() {
                       <th className="py-2 pr-3">Ngày hit</th>
                       <th className="py-2 pr-3">MFE/MAE %</th>
                       <th className="py-2 pr-3">Fill</th>
+                      <th className="py-2 pr-3">Lặp</th>
                       <th className="py-2">Horizon</th>
                     </tr>
                   </thead>
@@ -1182,6 +1278,7 @@ function BacktestSection() {
                         <td className="py-2 pr-3 text-slate-400">{p.hitDay ?? "—"}</td>
                         <td className="py-2 pr-3 text-xs text-slate-400">{fmt(p.mfePct)} / {fmt(p.maePct)}</td>
                         <td className="py-2 pr-3 text-xs">{p.entryFilled == null ? "—" : p.entryFilled ? <span className="text-green-400">yes</span> : <span className="text-slate-500">no</span>}</td>
+                        <td className="py-2 pr-3 text-slate-400">{p.repeatCount > 1 ? <span className="text-cyan-400" title="Số lần setup lặp lại liên tiếp — refresh gần nhau không tạo pick mới">×{p.repeatCount}</span> : "×1"}</td>
                         <td className="py-2 text-slate-500">{p.horizonDays ?? "—"}</td>
                       </tr>
                     ))}

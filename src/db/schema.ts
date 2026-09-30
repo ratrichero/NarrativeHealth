@@ -1676,6 +1676,11 @@ export const topRecommendationPicks = pgTable(
     backtestHorizonDays: integer("backtest_horizon_days"),
     backtestRunId: varchar("backtest_run_id", { length: 40 }),
     backtestEvaluatedAt: timestamp("backtest_evaluated_at"),
+    // ─── BT-04: episode dedup ───
+    // Số lần setup lặp lại liên tiếp (bản thân row = lần đầu; refresh sau cùng
+    // setup chỉ bump counter — backtest dùng data_date của lần ĐẦU).
+    repeatCount: integer("repeat_count").notNull().default(1),
+    lastRepeatAt: timestamp("last_repeat_at"),
   },
   (table) => [
     unique("top_rec_picks_unique").on(table.dataDate, table.coinId),

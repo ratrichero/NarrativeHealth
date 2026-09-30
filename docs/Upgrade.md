@@ -4,6 +4,49 @@
 
 ---
 
+## BT-04-09-2026 — Episode dedup chống trùng pick + đo chất lượng tín hiệu (2026-09-29)
+
+### Yêu cầu
+
+(1) Chống trùng lặp: refresh chạy sát nhau cùng sinh pick cho một coin mà setup chưa đổi → không được ghi thành nhiều bản ghi backtest. (2) Đo chất lượng tín hiệu theo ngưỡng. (3) Sức mạnh health score + backtest setup levels (đã có từ BT-02/03 — hiển thị cùng tab).
+
+### Episode dedup (migration `0033_pick_episode_dedup.sql`)
+
+- Cột mới: `repeat_count` (mặc định 1), `last_repeat_at`.
+- `isSameSetupEpisode` (pure engine, 5 tests): pick mới là LẶP LẠI của pick gần nhất khi cùng coin + cùng hướng + cùng tình trạng setup, và (khi có setup) mọi levels gần như không đổi (tolerance 1% theo giá — dao động nhẹ giữa 2 refresh là noise, không phải setup mới).
+- `persistTopPicks`: trùng episode → **KHÔNG insert**, chỉ bump `repeat_count` + `last_repeat_at` trên row gốc — backtest dùng `data_date` của lần ĐẦU, các lần lặp không tạo bản ghi. Episode kết thúc khi pick EXPIRED/SKIPPED hoặc quá 7 ngày (window tránh bump vô hạn trên row cổ).
+- Bảng "Kết quả đã lưu" hiển thị cột **Lặp (×N)** — biết setup xuất hiện bao nhiêu lần liên tiếp (signal bền hay just noise).
+
+### Chất lượng tín hiệu (`GET /api/admin/backtest/signal-quality?daysBack=120`)
+
+Đo toàn bộ signal layer (không chỉ 6 picks): join `recommendations` × `health_scores` × forward close:
+- **bySignal**: median return 1/3/7/14 ngày + %7d dương cho STRONG_WATCH / WATCH / OBSERVE / CAUTION / WEAK. Engine tốt: STRONG_WATCH cao nhất giảm dần về OBSERVE, WEAK âm.
+- **byScoreChange**: median 7d theo bucket Δ score (≤-3 / -3..-1 / -1..1 / 1..3 / ≥3) — Δ dương phải预测 tốt hơn Δ âm thì scoreChange mới có giá trị.
+
+### Tab Backtest hiện tại (đầy đủ 3 khối đo)
+
+1. **Health power** (BT-02): median forward return theo band + Pearson health/trend/volume/momentum ↔ return.
+2. **Signal quality** (BT-04): bảng theo signal + theo Δ score.
+3. **Setup performance** (BT-02/03): chạy backtest 1-lần/pick, kết quả lưu DB xem lại, cột Lặp mới.
+
+### Files changed
+
+```
+drizzle/migrations/0033_pick_episode_dedup.sql — repeat_count + last_repeat_at (mới)
+src/db/schema.ts — 2 cột mới
+src/lib/backtest/engine.ts — isSameSetupEpisode (pure, testable)
+src/lib/p6/refresh/persist-top-picks.ts — episode dedup khi persist
+src/app/api/admin/backtest/signal-quality/route.ts — endpoint mới
+src/app/admin/page.tsx — section Signal Quality + cột Lặp
+src/lib/backtest/__tests__/engine.test.ts — 5 tests mới (tổng 25)
+```
+
+### Verification
+
+`npx tsc --noEmit` PASS; `npx jest src/lib/backtest` 25/25. Migration idempotent qua `git up`.
+
+---
+
 ## BT-03-09-2026 — Backtest 1-lần/ch pick: kết quả chốt lưu DB, xem lại được (2026-09-29)
 
 ### Yêu cầu

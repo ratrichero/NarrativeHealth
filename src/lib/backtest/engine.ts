@@ -231,6 +231,56 @@ export function aggregateOutcomes(group: string, outcomes: PickOutcome[]): Group
 }
 
 /**
+ * BT-04 — Same-episode test: a re-render is a REPEAT of an earlier pick when
+ * coin, direction, setup-availability and all setup levels are (nearly)
+ * unchanged. Levels use a 1% relative tolerance — small drift between close
+ * refreshes is market noise, not a new setup.
+ */
+export function isSameSetupEpisode(
+  prev: {
+    direction: string;
+    hasSetup: boolean;
+    entryLow: number | string | null;
+    entryHigh: number | string | null;
+    entryMid: number | string | null;
+    tp1: number | string | null;
+    tp2: number | string | null;
+    stopLoss: number | string | null;
+  },
+  next: {
+    direction: string;
+    hasSetup: boolean;
+    entryLow: number | string | null;
+    entryHigh: number | string | null;
+    entryMid: number | string | null;
+    tp1: number | string | null;
+    tp2: number | string | null;
+    stopLoss: number | string | null;
+  }
+): boolean {
+  if (prev.direction !== next.direction) return false;
+  if (prev.hasSetup !== next.hasSetup) return false;
+  if (!next.hasSetup) return true; // no-setup picks: same direction = same episode
+
+  const close = (a: number | string | null, b: number | string | null): boolean => {
+    if (a == null || b == null) return a == null && b == null;
+    const av = Number(a);
+    const bv = Number(b);
+    if (!Number.isFinite(av) || !Number.isFinite(bv) || av <= 0) return false;
+    return Math.abs(av - bv) / av <= 0.01; // 1% relative tolerance
+  };
+
+  return (
+    close(prev.entryLow, next.entryLow) &&
+    close(prev.entryHigh, next.entryHigh) &&
+    close(prev.entryMid, next.entryMid) &&
+    close(prev.tp1, next.tp1) &&
+    close(prev.tp2, next.tp2) &&
+    close(prev.stopLoss, next.stopLoss)
+  );
+}
+
+/**
  * BT-03: a pick's horizon window is closed when today's date (business date,
  * Asia/Ho_Chi_Minh semantics via plain calendar math) is at least `horizon`
  * calendar days after the pick's data date.

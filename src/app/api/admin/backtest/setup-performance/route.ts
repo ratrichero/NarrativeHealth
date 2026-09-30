@@ -54,6 +54,7 @@ export async function GET(req: NextRequest) {
         backtestEntryFilled: topRecommendationPicks.backtestEntryFilled,
         backtestHorizonDays: topRecommendationPicks.backtestHorizonDays,
         backtestEvaluatedAt: topRecommendationPicks.backtestEvaluatedAt,
+        repeatCount: topRecommendationPicks.repeatCount,
       })
       .from(topRecommendationPicks)
       .where(gte(topRecommendationPicks.dataDate, cutoff))
@@ -141,6 +142,7 @@ export async function GET(req: NextRequest) {
           entryFilled: p.backtestEntryFilled,
           horizonDays: p.backtestHorizonDays,
           evaluatedAt: p.backtestEvaluatedAt,
+          repeatCount: p.repeatCount,
         })),
       },
     });
