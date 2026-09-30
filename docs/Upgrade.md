@@ -25,7 +25,7 @@ Không mất dữ liệu lịch sử: `coin_narratives` chỉ là mapping hiện
 1. **`narrative_health` (history không viết lại)** — các row cũ giữ nguyên: narrative cũ giữ số liệu những ngày coin còn ở đó. Từ ngày đổi, coin được tính vào narrative mới, narrative cũ thiếu member. Config `narrative_health` đặt `min_coins_required: 2` → narrative còn < 2 coin sẽ **không có narrative_health mới** (dashboard ngưng cập nhật narrative đó cho tới khi đủ lại).
 2. **P3 Intelligence & membership ledger** — thành viên narrative được chụp qua `narrative_membership_snapshots` (ledger `narrative_membership_events` append-only + trigger immutability). Đổi mapping bằng SQL thẳng (như migration này) đi vòng quanh ledger; hệ thống P3 tự điều chỉnh ở snapshot chu kỳ kế (P3 recomputes từ membership hiện tại), lịch sử leadership/intelligence của narrative cũ giữ nguyên.
 3. **Backtest picks / signal quality** — pick gắn `coin_id`, không gắn narrative → kết quả đã lưu không đổi; sau khi đổi, coin mới thuộc narrative mới chỉ ảnh hưởng CÁCH nhóm hiển thị.
-4. **Cách đúng chuẩn để đổi sau này**: `PUT /api/coins/[id]` với `narrativeIds` — API xóa toàn bộ `coin_narratives` của coin rồi insert lại với danh sách mới (`isPrimary` = phần tử đầu). Đổi qua admin UI nếu có; tránh dual-membership bằng cách luôn gửi danh sách đầy đủ.
+4. **Cách đúng chuẩn để đổi sau này**: Admin → tab Coins → nút Edit trên dòng coin → mục Narratives (checkbox) → Update. UI gọi `PUT /api/coins/[id]` với `narrativeIds` đầy đủ — API xóa toàn bộ `coin_narratives` của coin rồi insert lại với danh sách mới (`isPrimary` = phần tử đầu), không bao giờ dual-membership. Migration SQL chỉ dùng khi cần đổi hàng loạt (như 19 coin ở entry này).
 
 ### Files changed
 
