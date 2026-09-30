@@ -20,7 +20,13 @@ import { eq, and, desc, sql, gte } from "drizzle-orm";
 
 // ─── Types ─────────────────────────────────────────────
 
-export type OpportunityType = "COIN_SETUP" | "NARRATIVE_SETUP" | "WATCH";
+export type OpportunityType =
+  | "COIN_SETUP"
+  | "NARRATIVE_SETUP"
+  | "WATCH"
+  // SQ-MOVERS: per-coin daily top-mover recap (không qua opportunity-engine —
+  // chỉ dùng chung bảng square_opportunities + publisher flow).
+  | "MOVERS_SETUP";
 
 /** SQ-DIR: derived trade direction for setup framing ("LONG" | "SHORT"). */
 export type SetupDirection = "LONG" | "SHORT";

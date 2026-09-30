@@ -5,7 +5,7 @@
 > phân tích, đưa LLM viết bài tăng tương tác (rớt về template nếu LLM lỗi),
 > đăng lên Binance Square.
 
-**Status:** SPECIFIED — NOT STARTED
+**Status:** IMPLEMENTED — pending deploy (Phase 1–3 code + tests xong; admin card Phase 4 sẽ làm riêng)
 **Date:** 2026-09-30
 **Nguồn yêu cầu:** Owner — mở rộng Binance Square monetization bằng luồng
 "market movers" hằng ngày, độc lập với luồng opportunity-engine hiện có.
@@ -41,30 +41,30 @@
 
 ### 1.3 Content strategy (khung bài viết)
 
-Bài post gộp cả 2 nhóm trong 1 bài (không đăng 2 bài — tiết kiệm quota, nội
-dung "thị trường hôm nay" đúng nghĩa 1 recap):
+**Cập nhật theo owner: KHÔNG gộp — tách thành 6 bài riêng lẻ, post lần lượt.**
+Mỗi coin mover là 1 bài độc lập (3 gainers + 3 losers). Lý do:
+- **Tăng tương tác**: mỗi bài 1 cashtag duy nhất → Binance Square render
+  chart widget riêng cho từng coin; 6 bài chiếm 6 slot trên feed của
+  follower thay vì 1, xác suất hiển thị/click cao hơn hẳn.
+- **Vẫn an toàn quota**: hard cap 100 bài/ngày → 6 bài = 6% quota; luồng
+  setup hiện có chỉ dùng trung bình 0–2 bài.
+- **Cô lập lỗi**: 1 bài LLM/publish lỗi không ảnh hưởng 5 bài còn lại.
+- **Post lần lượt với stagger 90s** (env `SQUARE_PUBLISH_STAGGER_MS`, tái
+  dùng pattern của pipeline setup) → tránh 429 rate-limit của Binance.
+
+Khung mỗi bài (1 coin):
 
 ```
-[HOOK 2-3 câu] Thị trường 24h qua: bên tăng dẫn dắt bởi X (context: BTC
-đang thế nào), bên giảm nặng nhất là Y — chênh lệch khiến tiền đang xoay
-từ đâu sang đâu.
+[HOOK 2-3 câu] $XYZ +12.4% trong 24h qua — làm được điều đó khi
+[thị trường đang thế nào] là [tín hiệu gì].
 
-🟢 TOP GAIN (24h)
-1. $XYZ +12.4% — giá $1.23, volume 24h $45M (×3.2 so với TB 7 ngày),
-   funding +0.02% → thấy short vẫn phải trả phí giữ vị thế.
-2. ...
-3. ...
+• Giá: $1.23 (+12.4% / 24h)
+• Volume 24h: $45M — 3.2× TB 7 ngày (dòng tiền vào thật / thiếu xác nhận)
+• Funding +0.02% — dài đông, cẩn thận squeeze
 
-🔴 TOP LOSS (24h)
-1. $ABC −8.1% — giá $0.98, volume đột biến, funding −0.01% (âm nhẹ →
-   dài bám giá, chưa paníc)...
-2. ...
-3. ...
+[1 câu WATCH] Giữ được vùng giá hiện tại thì đà còn tiếp, mất nó là fake-out.
 
-[1 câu insight tổng] Dòng tiền đang nghiêng về nhóm [ngành/tính chất]
-— chú ý [1 tín hiệu cụ thể cần theo dõi hôm nay].
-
-❓ Câu hỏi tương tác: "Bạn đang nắm coin nào trong top movers hôm nay?"
+❓ Bạn đang nắm $XYZ trong đợt này không? 👇
 
 ⚠️ Data-driven analysis, not financial advice. DYOR.
 ```
@@ -72,8 +72,8 @@ từ đâu sang đâu.
 Nguyên tắc content (kế thừa SQ-LLM prompt rules hiện có):
 - Chỉ dùng số liệu thật trong brief — không bịa số.
 - Không dùng "BUY/SELL" như mệnh lệnh; không nhắc internal scores.
-- 900–1300 ký tự, hook tối thiểu 2 câu.
-- Cashtag `$SYMBOL` cho cả 6 coin.
+- 500–900 ký tự mỗi bài (punchy), cashtag `$SYMBOL` xuất hiện 1–2 lần.
+- Validator bắt buộc %24h xuất hiện trong bài (chống LLM bỏ số cốt lõi).
 
 ---
 
@@ -103,12 +103,15 @@ lặp từng symbol. Không cần API key (endpoint public).
    vẫn đăng nếu mỗi bên ≥ 1 coin; nếu < 1 coin → hủy cycle, log FAILED
    (không đăng bài rỗng).
 
-### 2.3 Bối cảnh đa dạng (anti-repetition)
+### 2.3 Anti-repetition / idempotency (6 bài riêng lẻ)
 
-- **Fingerprint**: mỗi post có fingerprint = `movers:{date}:{sorted
-  symbols}` — đưa qua `square_fingerprints` như luồng hiện có, chống đăng
-  trùng trong ngày (VD: restart pipeline 7h15 hai lần).
-- Chỉ 1 post/ngày vì fingerprint chặn theo `data_as_of` (business date).
+- **Idempotency per-coin-per-day**: fingerprint = `MOVERS|{kind}|{symbol}|{business_date}`.
+  Coin đã PUBLISHED hôm nay → skip bài đó, 5 bài còn lại vẫn đăng. Restart
+  pm2 / trigger tay không bao giờ đăng trùng.
+- **Second layer**: publisher vẫn chạy fingerprint riêng theo opportunityId
+  (như luồng setup) + thesis-stable check. Mỗi bài = 1 row
+  `square_opportunities` type `MOVERS_SETUP`.
+- Chỉ chạy 1 lần/ngày (cron 07:15).
 
 ---
 
@@ -117,19 +120,19 @@ lặp từng symbol. Không cần API key (endpoint public).
 ```
 FastAPI APScheduler (backend/scheduler.py)          [07:15 VN hằng ngày]
   └── POST http://localhost:3000/api/square/movers  [endpoint mới]
-        ├── 1. Guard: fingerprint của hôm nay đã publish? → SKIP (idempotent)
-        ├── 2. Guard: quota postsRemaining <= 0? → SKIP + log
-        ├── 3. Collect: ticker 24hr → lọc/rank → enrich (klines, funding)
-        ├── 4. Build brief: TopMoversBrief (kiểu riêng, không qua
-        │       opportunity-engine — vì không phải "opportunity")
-        ├── 5. Content: generateMoversContent(brief)
-        │       ├── LLM chain google pool → Groq → OpenRouter (chung
-        │       │   generateWithLLM infra — prompt mới riêng cho movers)
-        │       └── fallback: template movers (xác định, đủ số liệu)
-        ├── 6. Publish: persistOpportunity (type MOVERS_RECAP) →
-        │       publishContent (chung quota + fingerprint + Apify)
-        └── 7. Log: square_pipeline_executions (triggerType MOVERS_CRON)
-                + scheduler_logs (job_name 'movers_cron_trigger')
+        ├── 1. Guard: quota postsRemaining <= 0? → SKIP + log
+        ├── 2. Collect: ticker 24hr → lọc/rank → enrich (klines, funding)
+        ├── 3. Với MỖI coin (3 gainers + 3 losers, theo thứ tự):
+        │     a. Guard per-coin: đã PUBLISHED hôm nay? → DUPLICATE, skip
+        │     b. Guard quota còn lại? → QUOTA_BLOCKED, dừng queue
+        │     c. Stagger 90s giữa các bài (SQ_TEST_MODE=1 → tắt)
+        │     d. Content: generateMoversContent(subject)
+        │        ├── LLM chain google pool → Groq → OpenRouter (gateway
+n        │        │   generateMoversWithLLM — prompt riêng format recap)
+        │        └── fallback: template movers (xác định, đủ số liệu)
+        │     e. Persist opportunity (type MOVERS_SETUP) → publishContent
+        │        (chung quota + fingerprint + Apify)
+        └── 4. Trả result tổng hợp theo bài (published/failed/deduped/blocked)
 ```
 
 ### 3.1 Thành phần MỚI
@@ -138,13 +141,15 @@ FastAPI APScheduler (backend/scheduler.py)          [07:15 VN hằng ngày]
 |---|---|
 | `src/lib/square/movers/collector.ts` | `fetchFuturesMovers()`: ticker 24hr → lọc → rank → enrich (klines 7d, funding). Pure-ish, có type `MoversSnapshot` |
 | `src/lib/square/movers/brief.ts` | `buildMoversBrief(snapshot)`: tạo brief văn bản + numbers đã format (tái dùng style `SquareContentBrief`) |
-| `src/lib/square/movers/content.ts` | `generateMoversContent(brief)`: prompt LLM riêng cho recap format + `buildMoversTemplate(brief)` fallback |
-| `src/lib/square/movers/pipeline.ts` | `runMoversPipeline()`: orchestration 7 bước trên, trả `MoversPipelineResult` |
-| `src/app/api/square/movers/route.ts` | POST endpoint (Next.js), guard bằng admin secret? — không: chỉ localhost gọi (giống `/api/refresh` hiện tại, không public exposure vì Next chỉ bind localhost qua pm2 + nginx site config) |
-| `backend/scheduler.py` | thêm job cron 07:15 `movers_cron` → POST endpoint mới (pattern y như `_run_refresh`) |
-| `backend/config.py` | `scheduler_movers_enabled: bool = True` |
-| `src/app/admin/page.tsx` | Tab Square/Analytics: card "Top Movers Pipeline" — nút chạy thử (SQ_TEST_MODE), status lần chạy cuối |
-| `src/lib/square/movers/__tests__/` | unit tests collector (lọc/rank từ fixture), template (snapshot), pipeline (mock) |
+| `src/lib/square/movers/content.ts` | `generateMoversContent(subject)`: prompt LLM riêng cho recap per-coin + `buildMoversTemplate` fallback |
+| `src/lib/square/movers/pipeline.ts` | `runMoversPipeline()`: orchestration per-coin (guards, stagger, persist, publish), trả `MoversPipelineResult` theo bài |
+| `src/app/api/square/movers/route.ts` | POST endpoint (Next.js) — chỉ localhost gọi (giống `/api/refresh`; Next bind qua pm2 + nginx không expose path này) |
+| `backend/scheduler.py` | thêm job cron 07:15 `movers_cron` → POST endpoint mới (pattern như `_run_p3_execution`), timeout ≥ 900s |
+| `backend/config.py` | `scheduler_movers_enabled/hour/minute` |
+| `src/lib/square/content-generator.ts` | export gateway `generateMoversWithLLM(prompt, validate, source)` — chuỗi LLM dùng chung, không copy |
+| `src/lib/llm/monitor.ts` | `LlmSource` thêm `"movers"` (LLM Monitor hiển thị riêng, không filter cứng cần sửa) |
+| `src/lib/square/opportunity-engine.ts` | `OpportunityType` thêm `"MOVERS_SETUP"` |
+| `src/lib/square/movers/__tests__/` | 29 tests: collector (12 — rank/filter/enrich), content (10 — format/template/fallback), pipeline (7 — orchestration mock toàn phần) |
 
 ### 3.2 Thành phần TÁI DỤNG (không sửa / sửa rất ít)
 
@@ -252,7 +257,9 @@ không đăng trùng.
 
 ### Chỉ số thành công (sau 2 tuần)
 
-- ≥ 13/14 ngày có đúng 1 post movers (không miss, không trùng).
-- Tương tác (views/reactions từ square-analytics) của movers post ≥ trung
-  vị luồng setup (movers được kỳ vọng vượt nhờ hook sẵn).
+- ≥ 13/14 ngày chạy pipeline; mỗi ngày 5–6 bài (trừ lỗi nguồn).
+- Tương tác (views/reactions từ square-analytics) của movers posts ≥ trung
+  vị luồng setup (movers được kỳ vọng vượt nhờ hook sẵn + chart widget
+  per-coin).
 - LLM-used rate ≥ 70% (template chỉ là phao).
+- 0 bài trùng (idempotency per-coin-per-day hoạt động).

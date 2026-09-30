@@ -79,6 +79,27 @@ class DataRefreshScheduler:
             )
             print(f"Scheduler started - will run daily at {settings.scheduler_hour:02d}:{settings.scheduler_minute:02d} Vietnam time")
 
+        # SQ-MOVERS: Daily Top Movers Square post — 07:15 VN (after the 07:00
+        # refresh so it never contends with the refresh lock or the setup
+        # pipeline's LLM quota). Posts 3 top gainers + 3 top losers as 6
+        # separate Square posts via POST /api/square/movers.
+        if settings.scheduler_movers_enabled:
+            self.scheduler.add_job(
+                self._run_movers_pipeline,
+                trigger=CronTrigger(
+                    hour=settings.scheduler_movers_hour,
+                    minute=settings.scheduler_movers_minute,
+                    timezone=self.vietnam_tz
+                ),
+                id='movers_cron',
+                name='Daily Top Movers Square Post',
+                args=[],
+                replace_existing=True
+            )
+            print(f"Movers scheduler started - will run daily at {settings.scheduler_movers_hour:02d}:{settings.scheduler_movers_minute:02d} Vietnam time")
+        else:
+            print("Movers scheduler disabled in config")
+
         # P3 Historical Execution Loop (P3-15)
         # Every scheduler_p3_interval_hours (default 48h = 2 days), or daily after
         # the main refresh when interval is 0. The endpoint is idempotent.
@@ -134,6 +155,10 @@ class DataRefreshScheduler:
                 pass
             try:
                 self.scheduler.remove_job('p3_execution_loop')
+            except:
+                pass
+            try:
+                self.scheduler.remove_job('movers_cron')
             except:
                 pass
             self.scheduler.shutdown()
@@ -263,6 +288,55 @@ class DataRefreshScheduler:
                 logger.error("Scheduled refresh failed: %s", error_message)
             else:
                 logger.info("Scheduled refresh completed in %ds: %s", duration, result_message)
+
+    async def _run_movers_pipeline(self):
+        """Run the daily Top Movers Square pipeline via the Next.js API."""
+        started_at = datetime.now(self.vietnam_tz)
+        # 6 bài × stagger 90s + LLM calls → cần timeout dài hơn refresh.
+        timeout = max(settings.scheduler_timeout, 900)
+        error_message = None
+        result_message = None
+        completed_at = datetime.now(self.vietnam_tz)
+
+        logger.info(
+            "Movers pipeline fired at %s; endpoint=http://localhost:3000/api/square/movers",
+            started_at.isoformat(),
+        )
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "http://localhost:3000/api/square/movers",
+                    json={},
+                    timeout=timeout,
+                )
+                if response.status_code == 200:
+                    data = response.json().get('data', {})
+                    skipped = data.get('skipped')
+                    result_message = (
+                        f"published={data.get('postsPublished')} failed={data.get('postsFailed')} "
+                        f"deduped={data.get('postsDeduped')} quotaBlocked={data.get('postsQuotaBlocked')}"
+                        + (f" skipped={skipped}" if skipped else "")
+                    )
+                    print(f"Movers pipeline completed: {result_message}")
+                else:
+                    error_message = f"Movers API returned status {response.status_code}: {response.text}"
+                    print(error_message)
+        except ConnectError as e:
+            error_message = f"Movers API connection failed: {e}"
+            print(error_message)
+        except TimeoutException as e:
+            error_message = f"Movers API timeout: {e}"
+            print(error_message)
+        except Exception as e:
+            error_message = f"Movers API error: {e}"
+            print(error_message)
+
+        duration = int((completed_at - started_at).total_seconds())
+        if error_message:
+            logger.error("Movers pipeline failed: %s", error_message)
+        else:
+            logger.info("Movers pipeline completed in %ds: %s", duration, result_message)
 
     async def _run_p3_execution(self):
         """Run the P3 historical execution loop via the Next.js API."""

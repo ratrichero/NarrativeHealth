@@ -21,6 +21,9 @@ const MAX_TEXT_LENGTH = 1400;
 
 // ─── Types ─────────────────────────────────────────────
 
+/** SQ-MOVERS: "movers" là source thứ ba — LLM Monitor hiển thị riêng. */
+export type LlmSource = "square" | "chat" | "movers";
+
 export interface GeneratedContent {
   text: string;
   title?: string;
@@ -118,7 +121,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 async function callOpenAICompatible(
   provider: LLMProviderConfig,
   messages: ChatMessage[],
-  source: "square" | "chat" = "square"
+  source: LlmSource = "square"
 ): Promise<string | null> {
   // SQ-DIAG: free/on-demand Groq tiers enforce small OTPM budgets — a 429
   // here is usually "Please try again in N s", not a hard failure. Retry a
@@ -212,7 +215,7 @@ function maskKeyHint(key: string): string {
 
 async function generateWithLLM(
   brief: SquareContentBrief,
-  source: "square" | "chat" = "square"
+  source: LlmSource = "square"
 ): Promise<GeneratedContent | null> {
   // SQ-LLM-FLAG: SQUARE_LLM_ENABLED=false turns the LLM chain off entirely
   // (template-only posting). Unset or any other value keeps the LLM on —
@@ -763,12 +766,66 @@ function generateFromBrief(
   };
 }
 
+// ─── SQ-MOVERS: LLM chain gateway (reusable core) ──────
+
+/**
+ * SQ-MOVERS gateway: chạy một prompt qua đúng chuỗi provider hiện có
+ * (google pool → primary → fallback1 → fallback2) với repair loop tối giản.
+ * Movers tự validate output bằng callback riêng — chain không biết gì về
+ * format movers, chỉ lo transport + provider fallback + LLM Monitor.
+ *
+ * Trả null khi toàn bộ chain lỗi hoặc SQUARE_LLM_ENABLED=false → caller
+ * rớt về template của nó (cùng triết lý fallback với generateContent).
+ */
+export async function generateMoversWithLLM(
+  prompt: string,
+  validate: (text: string) => string | null,
+  source: LlmSource = "square"
+): Promise<{ text: string; provider: string } | null> {
+  if (String(process.env.SQUARE_LLM_ENABLED).toLowerCase() === "false") {
+    return null;
+  }
+
+  const chain = resolveProviderChain();
+  if (chain.length === 0) {
+    console.warn("[SQ-LLM] No LLM provider configured — movers will use template.");
+    return null;
+  }
+
+  for (const provider of chain) {
+    try {
+      const rawText = await callOpenAICompatible(
+        provider,
+        [{ role: "user", content: prompt }],
+        source
+      );
+      if (!rawText) continue;
+
+      const generatedText = rawText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+      const validated = validate(generatedText);
+      if (validated) {
+        return { text: validated, provider: provider.name };
+      }
+      console.warn(
+        `[SQ-LLM] ${provider.name} movers output failed validation (len=${generatedText.length}) — trying next provider.`
+      );
+    } catch (error) {
+      console.warn(
+        `[SQ-LLM] ${provider.name} movers request failed (${error instanceof Error ? error.message : String(error)}) — trying next provider.`
+      );
+    }
+  }
+
+  console.warn("[SQ-LLM] All LLM providers failed for movers — template fallback.");
+  return null;
+}
+
 // ─── Main Generator ────────────────────────────────────
 
 export async function generateContent(
   brief: SquareContentBrief,
   config: ContentGenerationConfig = DEFAULT_CONTENT_CONFIG,
-  source: "square" | "chat" = "square"
+  source: LlmSource = "square"
 ): Promise<GeneratedContent> {
   if (config.useLLM) {
     const llmResult = await generateWithLLM(brief, source);

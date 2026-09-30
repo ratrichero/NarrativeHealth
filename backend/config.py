@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     scheduler_p3_enabled: bool = True
     scheduler_p3_interval_hours: int = 48  # Every 2 days (0 = run daily after refresh)
 
+    # SQ-MOVERS: Daily Top Movers Square post (6 per-coin posts)
+    scheduler_movers_enabled: bool = True
+    scheduler_movers_hour: int = 7
+    scheduler_movers_minute: int = 15
+
     class Config:
         env_file = ".env"
         extra = "ignore"

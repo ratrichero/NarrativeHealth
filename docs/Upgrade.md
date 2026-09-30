@@ -4,6 +4,64 @@
 
 ---
 
+## SQ-MOVERS-09-2026 — Luồng post Top Movers 7h15: 6 bài riêng lẻ (2026-09-30)
+
+### Yêu cầu
+
+Hàng ngày lúc 07:15 (giờ VN) lấy **3 coin Top Gain + 3 coin Top Loss** trên
+Binance Futures 24h, phân tích, LLM viết bài tăng tương tác (template fallback
+khi LLM lỗi), đăng Binance Square. Owner chốt: **tách 6 bài riêng lẻ, post
+lần lượt** (không gộp 1 bài recap) — mỗi bài 1 cashtag → chart widget riêng
++ 6 slot feed; vẫn an toàn quota (6% hard cap 100/ngày).
+
+### Dữ liệu
+
+- `fapi.binance.com/fapi/v1/ticker/24hr` không cần symbol → 1 request toàn market.
+- Lọc: perpetual `*USDT` (bỏ quarterly/stable pair) + `quoteVolume ≥ $5M` (chặn coin mỏng %change đốt).
+- Rank top 3 gain/loss, tie-break theo volume. Enrich: volume ratio vs TB 7 ngày (klines 1d ×8, so nến hôm nay với 7 nến đóng) + funding rate hiện tại. Enrichment null-safe — lỗi nguồn không hủy cycle.
+- Chạy được khi mỗi bên ≥ 1 coin; nguồn lỗi/toàn market trũng → skip có log.
+
+### Content
+
+- Prompt LLM riêng (recap per-coin: hook %24h → data reads → watch → question), 500–900 ký tự, validator bắt buộc %24h + cashtag + disclaimer + cấm BUY/SELL/ORDER/EXECUTE + cấm internal jargon.
+- **Gateway `generateMoversWithLLM`** export từ `content-generator.ts` — dùng đúng chuỗi google pool → Groq → fallbacks hiện có (multi-key rotation, cooldown, LLM Monitor `source: "movers"`), không copy code.
+- Fallback template xác định đủ số liệu — LLM lỗi toàn chuỗi vẫn đăng đúng format.
+
+### Pipeline & lịch
+
+- `runMoversPipeline()`: quota guard → collect → per-coin loop: idempotency per-coin-per-day (fingerprint `MOVERS|kind|symbol|business_date`) → quota check → **stagger 90s** (`SQUARE_PUBLISH_STAGGER_MS`, `SQ_TEST_MODE=1` tắt) → persist type `MOVERS_SETUP` → `publishContent` (Apify + retry + failure classification dùng chung). Một bài lỗi không chặn các bài còn lại; result tổng hợp theo bài.
+- `POST /api/square/movers` (localhost-only như `/api/refresh`, maxDuration 800).
+- FastAPI scheduler thêm job cron **07:15** (`scheduler_movers_enabled/hour/minute`), timeout ≥ 900s — sau refresh 07:00 15 phút để không đụng SchedulerLog lock, không tranh LLM quota với luồng setup, snapshot 24h chốt đúng khung giờ độc giả sáng.
+- `OpportunityType` thêm `"MOVERS_SETUP"`; `LlmSource` thêm `"movers"`. Không cần migration (bảng dùng VARCHAR).
+
+### Verify
+
+- Jest **163/163** (29 movers mới: collector 12, content 10, pipeline 7) — không regression Square.
+- `tsc --noEmit` sạch; Python syntax scheduler/config OK.
+- Dry-run thật đợi deploy VPS (`git up`) — sandbox bị Binance geo-block không test network được.
+
+### Files changed
+
+```
+src/lib/square/movers/collector.ts — fetch/rank/enrich movers (mới)
+src/lib/square/movers/content.ts — LLM prompt + template fallback per-coin (mới)
+src/lib/square/movers/pipeline.ts — orchestration 6 bài, guards, stagger (mới)
+src/lib/square/movers/__tests__/ — 29 tests (mới)
+src/lib/square/content-generator.ts — gateway generateMoversWithLLM + LlmSource
+src/lib/square/opportunity-engine.ts — OpportunityType + MOVERS_SETUP
+src/lib/llm/monitor.ts — source "movers"
+src/app/api/square/movers/route.ts — POST endpoint (mới)
+backend/scheduler.py — job movers_cron 07:15 + _run_movers_pipeline
+backend/config.py — scheduler_movers_* settings
+docs/Binance_Square_Upgrade/SQ-MOVERS-01_PLAN.md — chiến lược + kế hoạch (mới)
+```
+
+### Đang mở (Phase 4)
+
+Admin card "Top Movers Pipeline" (status lần chạy cuối + nút chạy thử dry-run) — làm sau khi luồng đã chạy ổn trên VPS vài ngày.
+
+---
+
 ## COIN-02-09-2026 — Swap narrative cho 19 coin mới (2026-09-30)
 
 ### Yêu cầu

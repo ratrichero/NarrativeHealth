@@ -18,8 +18,8 @@ export interface LlmCallOutcome {
   provider: string;
   /** Model id as configured for that tier. */
   model: string;
-  /** Which consumer made the call: square | chat. */
-  source: "square" | "chat";
+  /** Which consumer made the call: square | chat | movers (SQ-MOVERS). */
+  source: "square" | "chat" | "movers";
   ok: boolean;
   /** HTTP status, or 0 for transport errors (timeout, DNS, unreachable). */
   status: number;
