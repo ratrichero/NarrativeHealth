@@ -4,6 +4,38 @@
 
 ---
 
+## COIN-02-09-2026 — Swap narrative cho 19 coin mới (2026-09-30)
+
+### Yêu cầu
+
+Điều chỉnh mapping narrative cho các coin vừa thêm ở COIN-01:
+- Majors & L1 (BNB, ADA, AVAX, TON, DOT, ATOM, SUI, APT, SEI, HBAR, INJ, TIA): FAVORITE → **TOPMC**.
+- Memecoin (DOGE, SHIB, PEPE, WIF, BONK, FLOKI, TRUMP): TOPMC → **FAVORITE**.
+
+### Migration `0035_swap_narrative_mapping.sql`
+
+- Pattern an toàn: INSERT mapping mới trước (điều kiện `NOT EXISTS` chống dual-membership) → DELETE mapping cũ (điều kiện `EXISTS` mới mapping) — coin không bao giờ nằm 2 narrative cùng lúc, kể cả giữa 2 statement.
+- Idempotent hoàn toàn (chạy lại không đổi gì); join narrative theo TÊN, chỉ đụng coin `is_active = true`.
+- Dry-run production sequence 0034 → 0035 trong 1 transaction: 100 coin active, cả 19 coin đúng nhóm mới, mỗi coin đúng 1 membership.
+
+### Đổi narrative sau này — có ảnh hưởng gì?
+
+Không mất dữ liệu lịch sử: `coin_narratives` chỉ là mapping hiện tại; health score/recommendation/pick theo **coin** là bất biến. Ảnh hưởng chỉ nằm ở tầng tổng hợp:
+
+1. **`narrative_health` (history không viết lại)** — các row cũ giữ nguyên: narrative cũ giữ số liệu những ngày coin còn ở đó. Từ ngày đổi, coin được tính vào narrative mới, narrative cũ thiếu member. Config `narrative_health` đặt `min_coins_required: 2` → narrative còn < 2 coin sẽ **không có narrative_health mới** (dashboard ngưng cập nhật narrative đó cho tới khi đủ lại).
+2. **P3 Intelligence & membership ledger** — thành viên narrative được chụp qua `narrative_membership_snapshots` (ledger `narrative_membership_events` append-only + trigger immutability). Đổi mapping bằng SQL thẳng (như migration này) đi vòng quanh ledger; hệ thống P3 tự điều chỉnh ở snapshot chu kỳ kế (P3 recomputes từ membership hiện tại), lịch sử leadership/intelligence của narrative cũ giữ nguyên.
+3. **Backtest picks / signal quality** — pick gắn `coin_id`, không gắn narrative → kết quả đã lưu không đổi; sau khi đổi, coin mới thuộc narrative mới chỉ ảnh hưởng CÁCH nhóm hiển thị.
+4. **Cách đúng chuẩn để đổi sau này**: `PUT /api/coins/[id]` với `narrativeIds` — API xóa toàn bộ `coin_narratives` của coin rồi insert lại với danh sách mới (`isPrimary` = phần tử đầu). Đổi qua admin UI nếu có; tránh dual-membership bằng cách luôn gửi danh sách đầy đủ.
+
+### Files changed
+
+```
+drizzle/migrations/0035_swap_narrative_mapping.sql — swap 19 coin giữa TOPMC ↔ FAVORITE (mới)
+docs/Upgrade.md — entry này
+```
+
+---
+
 ## COIN-01-09-2026 — Mở rộng universe 49 → 100 coin (2026-09-30)
 
 ### Yêu cầu
