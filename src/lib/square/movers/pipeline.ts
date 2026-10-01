@@ -14,7 +14,11 @@
 // Lưu ý quota: hard cap 100 posts/ngày → 6 bài movers chiếm tối đa 6% quota.
 
 import { db } from "@/db";
-import { squareOpportunities, squarePublications } from "@/db/schema";
+import {
+  squareOpportunities,
+  squarePublications,
+  squarePipelineExecutions,
+} from "@/db/schema";
 import { and, eq, desc } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { getBusinessDate } from "@/lib/utils";
@@ -36,7 +40,8 @@ export type MoverPostResult =
   | "PUBLISHED"
   | "FAILED"
   | "DUPLICATE"
-  | "QUOTA_BLOCKED";
+  | "QUOTA_BLOCKED"
+  | "DRY_RUN"; // chỉ ở dry-run: "sẽ đăng nếu chạy thật"
 
 export interface MoverPostDetail {
   symbol: string;
@@ -46,10 +51,20 @@ export interface MoverPostDetail {
   llmUsed: boolean;
   errorCode?: string;
   externalPostId?: string;
+  /** Chỉ có ở dry-run: nội dung sẽ được đăng (chưa persist/publish). */
+  preview?: { title: string; text: string };
+}
+
+export interface MoversPipelineOptions {
+  /** SCHEDULED = cron 07:15 (ghi MOVERS_CRON), MANUAL = trigger tay admin (ghi MOVERS_MANUAL). */
+  trigger?: "SCHEDULED" | "MANUAL";
+  /** Dry-run: chạy đủ collect + sinh content, KHÔNG persist/publish/ghi execution. */
+  dryRun?: boolean;
 }
 
 export interface MoversPipelineResult {
   ok: boolean;
+  dryRun: boolean;
   skipped?: "ALREADY_PUBLISHED" | "NO_DATA" | "QUOTA_EXHAUSTED";
   postsPublished: number;
   postsFailed: number;
@@ -135,10 +150,62 @@ function buildSubjects(snapshot: MoversSnapshot): MoversSubjectBrief[] {
 }
 
 /**
+ * Ghi 1 dòng execution vào square_pipeline_executions (triggerType MOVERS_*)
+ * — nguồn dữ liệu cho card "Top Movers Pipeline" trong admin tab Analytics.
+ * Lỗi ghi log không bao giờ làm fail pipeline.
+ */
+async function recordMoversExecution(f: {
+  trigger: "SCHEDULED" | "MANUAL";
+  startedAt: number;
+  quotaRemainingStart: number;
+  quotaWarning: boolean;
+  llmUsedCount: number;
+  templateFallbackCount: number;
+  evaluated: number;
+  qualified: number;
+  published: number;
+  failed: number;
+  deduplicated: number;
+  quotaBlocked: number;
+  errors: string[];
+}): Promise<void> {
+  try {
+    await db.insert(squarePipelineExecutions).values({
+      startedAt: new Date(f.startedAt),
+      completedAt: new Date(),
+      triggerType: f.trigger === "MANUAL" ? "MOVERS_MANUAL" : "MOVERS_CRON",
+      evaluated: f.evaluated,
+      qualified: f.qualified,
+      published: f.published,
+      failed: f.failed,
+      deduplicated: f.deduplicated,
+      quotaBlocked: f.quotaBlocked,
+      retryPending: 0,
+      contentGenerationFailed: 0,
+      llmUsedCount: f.llmUsedCount,
+      templateFallbackCount: f.templateFallbackCount,
+      durationMs: Date.now() - f.startedAt,
+      quotaRemainingStart: f.quotaRemainingStart,
+      quotaRemainingEnd: Math.max(0, f.quotaRemainingStart - f.published),
+      quotaWarning: f.quotaWarning,
+      errorSummary: f.errors.length > 0 ? { errors: f.errors, error_count: f.errors.length } : null,
+    });
+  } catch (err) {
+    console.error("[SQ-MOVERS] Failed to record execution:", err);
+  }
+}
+
+/**
  * Chạy pipeline movers: collect → 6 bài content → post lần lượt.
  * Không bao giờ throw — mọi lỗi đi vào result.errors/details.
+ * Dry-run (dryRun: true): chỉ collect + sinh content để xem trước, không đăng.
  */
-export async function runMoversPipeline(): Promise<MoversPipelineResult> {
+export async function runMoversPipeline(
+  options: MoversPipelineOptions = {}
+): Promise<MoversPipelineResult> {
+  const dryRun = options.dryRun === true;
+  const trigger = options.trigger ?? "SCHEDULED";
+  const startedAt = Date.now();
   const errors: string[] = [];
   const details: MoverPostDetail[] = [];
   let postsPublished = 0;
@@ -152,8 +219,26 @@ export async function runMoversPipeline(): Promise<MoversPipelineResult> {
   // Guard 2: quota
   const quota = await getQuotaStatus();
   if (quota.postsRemaining <= 0) {
+    if (!dryRun) {
+      await recordMoversExecution({
+        trigger,
+        startedAt,
+        quotaRemainingStart: 0,
+        quotaWarning: quota.warningThreshold,
+        llmUsedCount: 0,
+        templateFallbackCount: 0,
+        evaluated: 0,
+        qualified: 0,
+        published: 0,
+        failed: 0,
+        deduplicated: 0,
+        quotaBlocked: 0,
+        errors: ["QUOTA_EXHAUSTED: Daily post quota exhausted"],
+      });
+    }
     return {
       ok: false,
+      dryRun,
       skipped: "QUOTA_EXHAUSTED",
       postsPublished: 0,
       postsFailed: 0,
@@ -168,8 +253,26 @@ export async function runMoversPipeline(): Promise<MoversPipelineResult> {
   // Collect snapshot
   const snapshot = await fetchMoversSnapshot();
   if (!snapshot) {
+    if (!dryRun) {
+      await recordMoversExecution({
+        trigger,
+        startedAt,
+        quotaRemainingStart: quota.postsRemaining,
+        quotaWarning: quota.warningThreshold,
+        llmUsedCount: 0,
+        templateFallbackCount: 0,
+        evaluated: 0,
+        qualified: 0,
+        published: 0,
+        failed: 0,
+        deduplicated: 0,
+        quotaBlocked: 0,
+        errors: ["NO_DATA: Movers snapshot unavailable (source error or insufficient movers)"],
+      });
+    }
     return {
       ok: false,
+      dryRun,
       skipped: "NO_DATA",
       postsPublished: 0,
       postsFailed: 0,
@@ -212,14 +315,22 @@ export async function runMoversPipeline(): Promise<MoversPipelineResult> {
         continue;
       }
 
-      // Stagger giữa các bài (trừ bài đầu)
-      if (idx > 0 && PUBLISH_STAGGER_MS > 0) {
+      // Stagger giữa các bài (trừ bài đầu) — dry-run không đăng nên không cần
+      if (!dryRun && idx > 0 && PUBLISH_STAGGER_MS > 0) {
         await new Promise((r) => setTimeout(r, PUBLISH_STAGGER_MS));
       }
 
       // Content (LLM → template)
       const generated = await generateMoversContent(subject, snapshot.marketCount);
       detail.llmUsed = generated.llmUsed;
+
+      // Dry-run: dừng ở đây — trả preview, không persist/publish
+      if (dryRun) {
+        detail.result = "DRY_RUN";
+        detail.preview = { title: generated.title ?? "", text: generated.text };
+        details.push(detail);
+        continue;
+      }
 
       // Persist opportunity + publish
       const opportunityId = await persistMoverOpportunity(subject, today, snapshot.marketCount);
@@ -262,8 +373,28 @@ export async function runMoversPipeline(): Promise<MoversPipelineResult> {
     details.push(detail);
   }
 
+  const llmUsedCount = details.filter((d) => d.llmUsed).length;
+  if (!dryRun) {
+    await recordMoversExecution({
+      trigger,
+      startedAt,
+      quotaRemainingStart: quota.postsRemaining,
+      quotaWarning: quota.warningThreshold,
+      llmUsedCount,
+      templateFallbackCount: details.length - llmUsedCount,
+      evaluated: subjects.length,
+      qualified: subjects.length,
+      published: postsPublished,
+      failed: postsFailed,
+      deduplicated: postsDeduped,
+      quotaBlocked: postsQuotaBlocked,
+      errors,
+    });
+  }
+
   return {
     ok: postsPublished > 0 || (postsFailed === 0 && postsDeduped === postsPublished + postsDeduped),
+    dryRun,
     postsPublished,
     postsFailed,
     postsDeduped,

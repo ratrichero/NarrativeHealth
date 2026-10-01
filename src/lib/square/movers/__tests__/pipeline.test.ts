@@ -15,17 +15,20 @@ jest.mock("@/db", () => {
   const select = jest.fn(() => ({ from }));
   const returning = jest.fn().mockResolvedValue([{ id: 999 }]);
   const values = jest.fn(() => ({ returning }));
+  const insert = jest.fn(() => ({ values }));
   return {
     db: {
       select,
-      insert: jest.fn(() => ({ values })),
-      __mock: { limit },
+      insert,
+      __mock: { limit, insert, values },
     },
   };
 });
 
 const { db } = require("@/db");
 const mockLimit = db.__mock.limit as jest.Mock;
+const mockValues = db.__mock.values as jest.Mock;
+const mockInsert = db.__mock.insert as jest.Mock;
 
 // Idempotency query: mặc định KHÔNG tìm thấy publication cũ
 mockLimit.mockResolvedValue([]);
@@ -112,6 +115,9 @@ describe("runMoversPipeline", () => {
     mockedSnapshot.mockReset();
     mockLimit.mockReset();
     mockLimit.mockResolvedValue([]); // không có publication cũ
+    // values/insert chỉ clear history (giữ implementation { returning })
+    mockValues.mockClear();
+    mockInsert.mockClear();
     mockedQuota.mockResolvedValue({
       status: "OK",
       postsPublished: 0,
@@ -203,5 +209,87 @@ describe("runMoversPipeline", () => {
     expect(result.postsPublished).toBe(2);
     expect(result.postsQuotaBlocked).toBe(4);
     expect(result.details.slice(2).every((d) => d.result === "QUOTA_BLOCKED")).toBe(true);
+  });
+
+  // ── Phase 4: dry-run + execution recording ──
+
+  it("dry-run: sinh content cho cả 6 coin nhưng không đăng và không ghi DB", async () => {
+    mockedSnapshot.mockResolvedValue(snapshot());
+
+    const result = await runMoversPipeline({ dryRun: true, trigger: "MANUAL" });
+    expect(result.dryRun).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.postsPublished).toBe(0);
+    expect(mockedPublish).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled(); // không persist opportunity, không ghi execution
+    expect(result.details).toHaveLength(6);
+    expect(result.details.every((d) => d.result === "DRY_RUN")).toBe(true);
+    expect(result.details.every((d) => !!d.preview && d.preview.text.length > 0)).toBe(true);
+  });
+
+  it("dry-run vẫn đánh dấu DUPLICATE cho coin đã đăng hôm nay", async () => {
+    mockedSnapshot.mockResolvedValue(snapshot());
+    mockLimit.mockResolvedValueOnce([{ id: 42 }]);
+
+    const result = await runMoversPipeline({ dryRun: true });
+    expect(result.details[0].result).toBe("DUPLICATE");
+    expect(result.details.slice(1).every((d) => d.result === "DRY_RUN")).toBe(true);
+  });
+
+  it("ghi 1 dòng execution MOVERS_CRON sau khi chạy thật", async () => {
+    mockedSnapshot.mockResolvedValue(snapshot());
+
+    await runMoversPipeline(); // mặc định SCHEDULED
+    const execRows = mockValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => typeof v.triggerType === "string");
+    expect(execRows).toHaveLength(1);
+    const row = execRows[0];
+    expect(row.triggerType).toBe("MOVERS_CRON");
+    expect(row.published).toBe(6);
+    expect(row.failed).toBe(0);
+    // LLM gateway bị mock → null → toàn template
+    expect(row.llmUsedCount).toBe(0);
+    expect(row.templateFallbackCount).toBe(6);
+    expect(row.errorSummary).toBeNull();
+  });
+
+  it("ghi execution MOVERS_MANUAL khi trigger tay, kèm errorSummary khi có lỗi", async () => {
+    mockedSnapshot.mockResolvedValue(snapshot());
+    mockedPublish
+      .mockResolvedValueOnce({ success: false, errorCode: "BINANCE_500", errorMessage: "boom", retryCount: 0 })
+      .mockResolvedValue({ success: true, externalPostId: "ok", retryCount: 0 });
+
+    await runMoversPipeline({ trigger: "MANUAL" });
+    const execRows = mockValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => typeof v.triggerType === "string");
+    expect(execRows).toHaveLength(1);
+    expect(execRows[0].triggerType).toBe("MOVERS_MANUAL");
+    expect(execRows[0].published).toBe(5);
+    expect(execRows[0].failed).toBe(1);
+    const summary = execRows[0].errorSummary as { errors: string[]; error_count: number };
+    expect(summary.error_count).toBe(1);
+    expect(summary.errors[0]).toContain("AAA");
+  });
+
+  it("ghi execution với lý do skip khi quota cạn (để card admin hiển thị)", async () => {
+    mockedSnapshot.mockResolvedValue(snapshot());
+    mockedQuota.mockResolvedValue({
+      status: "EXHAUSTED",
+      postsPublished: 100,
+      postsRemaining: 0,
+      warningThreshold: true,
+    });
+
+    const result = await runMoversPipeline();
+    expect(result.skipped).toBe("QUOTA_EXHAUSTED");
+    const execRows = mockValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => typeof v.triggerType === "string");
+    expect(execRows).toHaveLength(1);
+    expect(execRows[0].published).toBe(0);
+    const summary = execRows[0].errorSummary as { errors: string[]; error_count: number };
+    expect(summary.errors[0]).toContain("QUOTA_EXHAUSTED");
   });
 });

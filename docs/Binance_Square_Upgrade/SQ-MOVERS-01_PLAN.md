@@ -5,7 +5,7 @@
 > phân tích, đưa LLM viết bài tăng tương tác (rớt về template nếu LLM lỗi),
 > đăng lên Binance Square.
 
-**Status:** IMPLEMENTED — pending deploy (Phase 1–3 code + tests xong; admin card Phase 4 sẽ làm riêng)
+**Status:** IMPLEMENTED (đầy đủ Phase 1–4: pipeline + scheduler + admin card + tests; pending deploy `git up`)
 **Date:** 2026-09-30
 **Nguồn yêu cầu:** Owner — mở rộng Binance Square monetization bằng luồng
 "market movers" hằng ngày, độc lập với luồng opportunity-engine hiện có.
@@ -237,10 +237,12 @@ không đăng trùng.
     trên sandbox → log pipeline + publication record DRAFT/PUBLISHED đúng;
     chạy lần 2 → `skipped: true`.
 
-### Phase 4 — Admin UI + Docs + Deploy (nửa buổi)
+### Phase 4 — Admin UI + Docs + Deploy (nửa buổi) ✅ DONE (2026-10-01)
 11. Card trong tab Square/Analytics admin: status lần chạy cuối (từ
-    `square_pipeline_executions`), nút chạy thử dry-run, badge LLM-used vs
-    template.
+    `square_pipeline_executions` — movers ghi execution `MOVERS_CRON` /
+    `MOVERS_MANUAL` riêng), nút chạy thử dry-run (`?dryRun=1` + preview nội
+    dung per-coin), badge LLM-used vs template. Xem `docs/Upgrade.md`
+    entry SQ-MOVERS-09-2026, section Phase 4.
 12. `docs/Upgrade.md` entry `SQ-MOVERS-09-2026` + section này vào
     `docs/Binance_Square_Upgrade/` (nếu owner muốn spec riêng).
 13. Deploy qua `git up` (migration không cần) — theo dõi pm2 log ngày đầu.

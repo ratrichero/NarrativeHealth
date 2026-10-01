@@ -56,9 +56,37 @@ backend/config.py — scheduler_movers_* settings
 docs/Binance_Square_Upgrade/SQ-MOVERS-01_PLAN.md — chiến lược + kế hoạch (mới)
 ```
 
-### Đang mở (Phase 4)
+### Phase 4 — Admin card "Top Movers Pipeline" (2026-10-01)
 
-Admin card "Top Movers Pipeline" (status lần chạy cuối + nút chạy thử dry-run) — làm sau khi luồng đã chạy ổn trên VPS vài ngày.
+Card trong **Admin → Vận hành → Analytics** (đầu tab):
+
+- **Status lần chạy cuối** đọc từ `square_pipeline_executions` — movers pipeline
+  giờ ghi 1 dòng execution sau MỖI lần chạy thật với `triggerType` riêng:
+  `MOVERS_CRON` (scheduler 07:15) / `MOVERS_MANUAL` (trigger tay admin). Ghi cả
+  các lần skip (QUOTA_EXHAUSTED / NO_DATA) kèm `errorSummary` → card hiện rõ
+  lý do, không đăng lén. Dry-run không ghi execution (read-only).
+- Tile: đã đăng hôm nay (/6), published/failed lần cuối, quota còn lại
+  (/100 + warning), LLM vs Template count. Kèm chips bài đã đăng hôm nay
+  (symbol, ▲/▼, status, LLM/Template, errorCode).
+- **Nút "Chạy thử (dry-run)"**: `POST /api/square/movers?dryRun=1&trigger=manual`
+  — chạy đủ collect + sinh content, hiển thị per-coin "SẼ ĐĂNG / TRÙNG / QUOTA"
+  + preview nội dung (title + text, LLM or Template), KHÔNG persist/publish.
+- **Nút "Chạy thật"** (confirm): `POST /api/square/movers?trigger=manual` —
+  idempotent per-coin (coin đã đăng hôm nay tự bị bỏ qua), xong invalidate
+  status query.
+- `GET /api/square/movers` (mới): status cho card — lastExecution + bài hôm nay
+  (JOIN publications ⋈ opportunities type MOVERS_SETUP, dataAsOf hôm nay) +
+  quota hiện tại + cron movers từ env (`SCHEDULER_MOVERS_*`, mặc định 07:15).
+- Pipeline signature: `runMoversPipeline({ trigger, dryRun })` — mặc định
+  SCHEDULED như trước, scheduler FastAPI không cần đổi gì.
+- Tests: +5 pipeline (dry-run không ghi DB, DUPLICATE trong dry-run, ghi
+  execution MOVERS_CRON/MANUAL + errorSummary, ghi execution khi skip quota)
+  → **168/168** Square (34 movers). `tsc --noEmit` sạch.
+
+Files added/changed: `src/app/admin/page.tsx` (component
+`MoversPipelineSection`), `src/app/api/square/movers/route.ts` (GET + POST
+params), `src/lib/square/movers/pipeline.ts`,
+`src/lib/square/movers/__tests__/pipeline.test.ts`.
 
 ---
 

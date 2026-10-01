@@ -35,6 +35,7 @@ import {
   LogOut,
   Users,
   Activity,
+  TrendingUp,
 } from "lucide-react";
 import type { AdminNarrative, AdminCoin, ConfigItem } from "@/types";
 import type { RecommendationRule, RuleCondition } from "@/lib/types/recommendation-rule";
@@ -1296,6 +1297,283 @@ function BacktestSection() {
             Quy tắc bảo thủ: một ngày giá chạm cả TP và SL → tính THUA (SL). Win rate = (TP1+TP2) / (TP1+TP2+SL) — NO_HIT không tính thua. Kết quả chốt 1 lần và lưu DB, xem lại bất cứ lúc nào.
           </p>
         </>
+      )}
+    </div>
+  );
+}
+
+// ─── SQ-MOVERS Phase 4: card "Top Movers Pipeline" (tab Analytics, module OPS) ───
+// Status lần chạy cuối đọc từ square_pipeline_executions (trigger MOVERS_CRON /
+// MOVERS_MANUAL — do movers pipeline ghi riêng, không lẫn với luồng setup).
+// Nút dry-run chỉ collect + sinh content xem trước (không persist/publish);
+// nút chạy thật vẫn idempotent per-coin (coin đã đăng hôm nay → bỏ qua).
+
+interface MoversStatusPost {
+  id: number;
+  symbol: string | null;
+  kind: "GAINER" | "LOSER";
+  status: string;
+  llmUsed: boolean;
+  publishedAt: string | null;
+  externalPostId: string | null;
+  errorCode: string | null;
+}
+
+interface MoversStatusData {
+  lastExecution: {
+    id: number;
+    startedAt: string;
+    completedAt: string | null;
+    triggerType: string;
+    durationMs: number | null;
+    published: number;
+    failed: number;
+    deduplicated: number;
+    quotaBlocked: number;
+    llmUsedCount: number;
+    templateFallbackCount: number;
+    quotaRemainingStart: number | null;
+    quotaRemainingEnd: number | null;
+    errorSummary: { errors: string[]; error_count: number } | null;
+  } | null;
+  today: {
+    date: string;
+    publishedCount: number;
+    failedCount: number;
+    posts: MoversStatusPost[];
+  };
+  quota: { postsPublished: number; postsRemaining: number; dailyHardCap: number; warningThreshold: boolean };
+  scheduler: { enabled: boolean; hour: number; minute: number };
+}
+
+interface MoversRunDetail {
+  symbol: string;
+  kind: "GAINER" | "LOSER";
+  rank: number;
+  result: string;
+  llmUsed: boolean;
+  errorCode?: string;
+  preview?: { title: string; text: string };
+}
+
+interface MoversRunResult {
+  ok: boolean;
+  dryRun: boolean;
+  skipped?: string;
+  postsPublished: number;
+  postsFailed: number;
+  postsDeduped: number;
+  postsQuotaBlocked: number;
+  details: MoversRunDetail[];
+  errors: string[];
+}
+
+function MoversPipelineSection() {
+  const queryClientMP = useQueryClient();
+  const [dryRunResult, setDryRunResult] = useState<MoversRunResult | null>(null);
+
+  const statusQuery = useQuery({
+    queryKey: ["admin", "square-movers", "status"],
+    queryFn: async () => {
+      const res = await fetch("/api/square/movers");
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as MoversStatusData;
+    },
+    refetchInterval: 60_000,
+  });
+
+  const dryRunMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/square/movers?dryRun=1&trigger=manual", { method: "POST" });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as MoversRunResult;
+    },
+    onSuccess: (data) => setDryRunResult(data),
+  });
+
+  const runMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/square/movers?trigger=manual", { method: "POST" });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as MoversRunResult;
+    },
+    onSuccess: () => {
+      setDryRunResult(null);
+      queryClientMP.invalidateQueries({ queryKey: ["admin", "square-movers", "status"] });
+    },
+  });
+
+  const data = statusQuery.data;
+  const last = data?.lastExecution ?? null;
+  const busy = dryRunMutation.isPending || runMutation.isPending;
+
+  const fmtTime = (iso: string | null | undefined) =>
+    iso ? new Date(iso).toLocaleString("vi-VN", { hour12: false, timeZone: "Asia/Ho_Chi_Minh" }) : "—";
+
+  const resultBadge = (r: string) => {
+    if (r === "PUBLISHED") return <Badge variant="success">ĐÃ ĐĂNG</Badge>;
+    if (r === "DRY_RUN") return <Badge variant="default">SẼ ĐĂNG</Badge>;
+    if (r === "DUPLICATE") return <Badge variant="warning">TRÙNG</Badge>;
+    if (r === "QUOTA_BLOCKED") return <Badge variant="warning">QUOTA</Badge>;
+    return <Badge variant="danger">LỖI</Badge>;
+  };
+
+  const stat = (label: string, value: string, cls: string) => (
+    <div className="bg-slate-900/60 border border-slate-700 rounded p-3">
+      <p className="text-xs text-slate-500 mb-1">{label}</p>
+      <p className={`text-lg font-semibold ${cls}`}>{value}</p>
+    </div>
+  );
+
+  return (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <TrendingUp className="h-5 w-5 text-cyan-400" />
+          <h3 className="text-base font-semibold text-white">Top Movers Pipeline</h3>
+          {data?.scheduler.enabled ? (
+            <Badge variant="default">
+              Cron {String(data.scheduler.hour).padStart(2, "0")}:{String(data.scheduler.minute).padStart(2, "0")}
+            </Badge>
+          ) : (
+            <Badge variant="neutral">Scheduler tắt</Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={() => dryRunMutation.mutate()} disabled={busy}>
+            {dryRunMutation.isPending ? "Đang chạy thử…" : "Chạy thử (dry-run)"}
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => {
+              if (
+                window.confirm(
+                  "Đăng thật các bài Top Movers lên Binance Square? Coin đã đăng hôm nay sẽ tự bị bỏ qua (idempotency)."
+                )
+              )
+                runMutation.mutate();
+            }}
+            disabled={busy}
+          >
+            {runMutation.isPending ? "Đang đăng…" : "Chạy thật"}
+          </Button>
+        </div>
+      </div>
+
+      {statusQuery.isLoading ? (
+        <div className="py-6 text-center">
+          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {stat("Đã đăng hôm nay", `${data?.today.publishedCount ?? 0}/6`, "text-green-400")}
+            {stat("Lần chạy cuối: đăng", `${last?.published ?? 0} · lỗi ${last?.failed ?? 0}`, "text-white")}
+            {stat(
+              "Quota còn lại",
+              `${data?.quota.postsRemaining ?? "—"}/${data?.quota.dailyHardCap ?? 100}`,
+              data?.quota.warningThreshold ? "text-yellow-400" : "text-white"
+            )}
+            {stat("LLM / Template (lần cuối)", last ? `${last.llmUsedCount}/${last.templateFallbackCount}` : "—", "text-cyan-400")}
+          </div>
+          <p className="text-xs text-slate-500">
+            {last
+              ? `Lần chạy cuối: ${fmtTime(last.startedAt)} · ${
+                  last.triggerType === "MOVERS_MANUAL" ? "trigger tay" : "cron"
+                } · ${last.durationMs != null ? `${(last.durationMs / 1000).toFixed(1)}s` : "?"}`
+              : "Chưa có lần chạy nào được ghi nhận."}
+          </p>
+          {last?.errorSummary?.errors && last.errorSummary.errors.length > 0 && (
+            <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded p-2 space-y-0.5">
+              {last.errorSummary.errors.slice(0, 5).map((e, i) => (
+                <div key={i}>{e}</div>
+              ))}
+            </div>
+          )}
+          {data && data.today.posts.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {data.today.posts.map((p) => (
+                <span
+                  key={p.id}
+                  className={`text-xs px-2 py-1 rounded border ${
+                    p.status === "PUBLISHED"
+                      ? "border-green-500/40 bg-green-500/10 text-green-300"
+                      : p.status === "FAILED"
+                      ? "border-red-500/40 bg-red-500/10 text-red-300"
+                      : "border-slate-600 bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  ${p.symbol ?? "?"} {p.kind === "GAINER" ? "▲" : "▼"} · {p.status} · {p.llmUsed ? "LLM" : "Template"}
+                  {p.errorCode ? ` · ${p.errorCode}` : ""}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {dryRunResult && (
+        <div className="border border-cyan-500/30 bg-cyan-500/5 rounded p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-white">Kết quả dry-run (không đăng thật)</h4>
+            <Button variant="ghost" size="sm" onClick={() => setDryRunResult(null)}>
+              Ẩn
+            </Button>
+          </div>
+          {dryRunResult.skipped && (
+            <p className="text-xs text-yellow-400">Bỏ qua: {dryRunResult.skipped}</p>
+          )}
+          <p className="text-xs text-slate-400">
+            Sẽ đăng: {dryRunResult.details.filter((d) => d.result === "DRY_RUN").length} · trùng hôm nay:{" "}
+            {dryRunResult.postsDeduped} · quota chặn: {dryRunResult.postsQuotaBlocked}
+          </p>
+          <div className="space-y-1">
+            {dryRunResult.details.map((d) => (
+              <div key={`${d.kind}-${d.symbol}`} className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-mono text-slate-200">${d.symbol}</span>
+                <span className={d.kind === "GAINER" ? "text-green-400" : "text-red-400"}>
+                  {d.kind === "GAINER" ? "▲" : "▼"} #{d.rank}
+                </span>
+                {resultBadge(d.result)}
+                <Badge variant={d.llmUsed ? "default" : "neutral"}>{d.llmUsed ? "LLM" : "Template"}</Badge>
+                {d.errorCode && <span className="text-red-400">{d.errorCode}</span>}
+                {d.preview && (
+                  <details className="w-full">
+                    <summary className="cursor-pointer text-cyan-400">Xem trước nội dung</summary>
+                    <p className="whitespace-pre-wrap text-slate-300 bg-slate-900/60 border border-slate-700 rounded p-2 mt-1">
+                      <strong className="text-white">{d.preview.title}</strong>
+                      {"\n"}
+                      {d.preview.text}
+                    </p>
+                  </details>
+                )}
+              </div>
+            ))}
+          </div>
+          {dryRunResult.errors.length > 0 && (
+            <div className="text-xs text-red-300">
+              {dryRunResult.errors.map((e, i) => (
+                <div key={i}>{e}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {(dryRunMutation.isError || runMutation.isError || statusQuery.isError) && (
+        <p className="text-xs text-red-400">
+          Lỗi: {((dryRunMutation.error ?? runMutation.error ?? statusQuery.error) as Error | null)?.message}
+        </p>
+      )}
+      {runMutation.data && (
+        <p className="text-xs text-slate-400">
+          Chạy thật vừa xong: đăng {runMutation.data.postsPublished} · lỗi {runMutation.data.postsFailed} · trùng{" "}
+          {runMutation.data.postsDeduped}
+          {runMutation.data.skipped ? ` · skip: ${runMutation.data.skipped}` : ""}
+        </p>
       )}
     </div>
   );
@@ -4318,6 +4596,7 @@ export default function AdminPage() {
 
           {activeTab === "analytics" && (
             <div className="space-y-6">
+              <MoversPipelineSection />
               <div>
                 <h2 className="text-lg font-semibold text-white mb-4">Rule Effectiveness</h2>
                 {ruleEffectivenessLoading ? (
