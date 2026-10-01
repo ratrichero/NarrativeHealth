@@ -233,9 +233,19 @@ export function aggregateOutcomes(group: string, outcomes: PickOutcome[]): Group
 /**
  * BT-04 — Same-episode test: a re-render is a REPEAT of an earlier pick when
  * coin, direction, setup-availability and all setup levels are (nearly)
- * unchanged. Levels use a 1% relative tolerance — small drift between close
+ * unchanged. Levels use a relative tolerance — small drift between close
  * refreshes is market noise, not a new setup.
+ *
+ * Crypto dao động mạnh nên tolerance mặc định là 3% (không phải 1%): altcoin
+ * chạy 3–5% trong vài giờ vẫn là “cùng setup” nếu cấu trúc entry/TP/SL không
+ * đổi. Tinh chỉnh qua env BT_EPISODE_TOLERANCE_PCT (%, mặc định 3, kẹp 0.5–20)
+ * mà không cần sửa code.
  */
+function episodeTolerance(): number {
+  const pct = Number(process.env.BT_EPISODE_TOLERANCE_PCT ?? 3);
+  const clamped = Number.isFinite(pct) ? Math.min(20, Math.max(0.5, pct)) : 3;
+  return clamped / 100;
+}
 export function isSameSetupEpisode(
   prev: {
     direction: string;
@@ -267,7 +277,7 @@ export function isSameSetupEpisode(
     const av = Number(a);
     const bv = Number(b);
     if (!Number.isFinite(av) || !Number.isFinite(bv) || av <= 0) return false;
-    return Math.abs(av - bv) / av <= 0.01; // 1% relative tolerance
+    return Math.abs(av - bv) / av <= episodeTolerance(); // default 3% (env BT_EPISODE_TOLERANCE_PCT)
   };
 
   return (

@@ -4,6 +4,31 @@
 
 ---
 
+## BT-05-10-2026 — Nới ngưỡng episode dedup 1% → 3% (2026-10-01)
+
+### Vấn đề
+
+Owner nhận xét: tolerance 1% là **quá nhỏ với crypto** — altcoin chạy 3–5%
+trong vài giờ là bình thường, nên 2 refresh cách nhau vài tiếng với giá dịch
+1–2% bị tính là setup mới dù cấu trúc entry/TP/SL thực chất không đổi → sinh
+row backtest trùng lặp.
+
+### Thay đổi
+
+- `isSameSetupEpisode` dùng tolerance tương đối **mặc định 3%** (trước: 1%) —
+  drift dưới 3% giữa các refresh coi là noise thị trường, cùng episode.
+- **Cấu hình được qua env `BT_EPISODE_TOLERANCE_PCT`** (đơn vị %, mặc định 3,
+  kẹp 0.5–20) — chỉnh trên VPS không cần sửa code.
+- Tests +2: drift ~2% vẫn cùng episode; env override mở rộng/thu hẹp biên +
+  clamp tối thiểu 0.5%. Tổng engine tests 12 (7 cũ + 2 mới + 3 biên có sẵn).
+
+### Không đổi
+
+- Cửa sổ episode vẫn 7 ngày; pick EXPIRED/SKIPPED vẫn kết thúc episode;
+  đổi hướng / null↔có giá trị vẫn là episode mới.
+
+---
+
 ## SQ-MOVERS-09-2026 — Luồng post Top Movers 7h15: 6 bài riêng lẻ (2026-09-30)
 
 ### Yêu cầu
@@ -160,7 +185,7 @@ docs/Upgrade.md — entry này
 ### Episode dedup (migration `0033_pick_episode_dedup.sql`)
 
 - Cột mới: `repeat_count` (mặc định 1), `last_repeat_at`.
-- `isSameSetupEpisode` (pure engine, 5 tests): pick mới là LẶP LẠI của pick gần nhất khi cùng coin + cùng hướng + cùng tình trạng setup, và (khi có setup) mọi levels gần như không đổi (tolerance 1% theo giá — dao động nhẹ giữa 2 refresh là noise, không phải setup mới).
+- `isSameSetupEpisode` (pure engine, 5 tests): pick mới là LẶP LẠI của pick gần nhất khi cùng coin + cùng hướng + cùng tình trạng setup, và (khi có setup) mọi levels gần như không đổi (tolerance theo giá — dao động nhẹ giữa 2 refresh là noise, không phải setup mới; **BT-05-10-2026: mặc định 3%, env `BT_EPISODE_TOLERANCE_PCT`**).
 - `persistTopPicks`: trùng episode → **KHÔNG insert**, chỉ bump `repeat_count` + `last_repeat_at` trên row gốc — backtest dùng `data_date` của lần ĐẦU, các lần lặp không tạo bản ghi. Episode kết thúc khi pick EXPIRED/SKIPPED hoặc quá 7 ngày (window tránh bump vô hạn trên row cổ).
 - Bảng "Kết quả đã lưu" hiển thị cột **Lặp (×N)** — biết setup xuất hiện bao nhiêu lần liên tiếp (signal bền hay just noise).
 

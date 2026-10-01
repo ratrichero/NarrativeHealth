@@ -172,6 +172,39 @@ describe("BT-04 — isSameSetupEpisode", () => {
     ).toBe(false);
   });
 
+  it("tolerance mặc định 3%: drift ~2% vẫn là cùng episode (crypto noise)", () => {
+    // tp1 115 → 117 (1.74%), entryMid 100 → 102 (2%), SL 85 → 83.5 (1.76%)
+    expect(
+      isSameSetupEpisode(prevSetup, {
+        ...nextSetup,
+        entryMid: 102,
+        tp1: 117,
+        stopLoss: 83.5,
+      })
+    ).toBe(true);
+  });
+
+  it("env BT_EPISODE_TOLERANCE_PCT mở rộng/thu hẹp biên mà không cần sửa code", () => {
+    const prev = process.env.BT_EPISODE_TOLERANCE_PCT;
+    try {
+      // 10% → tp1 115 → 124 (7.83%) vẫn cùng episode
+      process.env.BT_EPISODE_TOLERANCE_PCT = "10";
+      expect(isSameSetupEpisode(prevSetup, { ...nextSetup, tp1: 124 })).toBe(true);
+
+      // Kẹp tối thiểu 0.5%: nextSetup gốc (drift lớn nhất 0.43%) vẫn cùng episode
+      process.env.BT_EPISODE_TOLERANCE_PCT = "0.1";
+      expect(isSameSetupEpisode(prevSetup, nextSetup)).toBe(true);
+
+      // 0.5% → tp1 115 → 116.2 (1.04%) là episode mới
+      process.env.BT_EPISODE_TOLERANCE_PCT = "0.5";
+      expect(isSameSetupEpisode(prevSetup, { ...nextSetup, tp1: 116.2 })).toBe(false);
+    } finally {
+      // không để env leak sang test khác (test pollution guard)
+      if (prev === undefined) delete process.env.BT_EPISODE_TOLERANCE_PCT;
+      else process.env.BT_EPISODE_TOLERANCE_PCT = prev;
+    }
+  });
+
   it("no-setup picks repeat when direction matches", () => {
     expect(
       isSameSetupEpisode(
