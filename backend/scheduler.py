@@ -305,9 +305,17 @@ class DataRefreshScheduler:
 
         try:
             async with httpx.AsyncClient() as client:
+                # Khóa endpoint phía Next: cùng giá trị với env
+                # SCHEDULER_MOVERS_TOKEN. Chưa config → không gửi header
+                # (Next cho qua với warning — giữ cron không bị vỡ).
+                headers = {}
+                token = (settings.scheduler_movers_token or "").strip()
+                if token:
+                    headers["X-Scheduler-Token"] = token
                 response = await client.post(
                     "http://localhost:3000/api/square/movers",
                     json={},
+                    headers=headers,
                     timeout=timeout,
                 )
                 if response.status_code == 200:

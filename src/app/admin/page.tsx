@@ -1375,7 +1375,7 @@ function MoversPipelineSection() {
   const statusQuery = useQuery({
     queryKey: ["admin", "square-movers", "status"],
     queryFn: async () => {
-      const res = await fetch("/api/square/movers");
+      const res = await fetch("/api/admin/square/movers");
       const json = await res.json();
       if (!json.success) throw new Error(json.error);
       return json.data as MoversStatusData;
@@ -1385,7 +1385,7 @@ function MoversPipelineSection() {
 
   const dryRunMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/square/movers?dryRun=1&trigger=manual", { method: "POST" });
+      const res = await fetch("/api/admin/square/movers?dryRun=1&trigger=manual", { method: "POST" });
       const json = await res.json();
       if (!json.success) throw new Error(json.error);
       return json.data as MoversRunResult;
@@ -1395,7 +1395,7 @@ function MoversPipelineSection() {
 
   const runMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/square/movers?trigger=manual", { method: "POST" });
+      const res = await fetch("/api/admin/square/movers?trigger=manual", { method: "POST" });
       const json = await res.json();
       if (!json.success) throw new Error(json.error);
       return json.data as MoversRunResult;

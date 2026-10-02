@@ -286,6 +286,9 @@ export async function runMoversPipeline(
 
   const subjects = buildSubjects(snapshot);
   let quotaRemaining = quota.postsRemaining;
+  // Số detail đã thật sự qua bước generate content — dedup/quota-blocked
+  // dừng TRƯỚC generate nên KHÔNG được tính là template fallback.
+  let generatedCount = 0;
 
   for (const [idx, subject] of subjects.entries()) {
     const symbol = subject.coin.symbol;
@@ -323,6 +326,7 @@ export async function runMoversPipeline(
       // Content (LLM → template)
       const generated = await generateMoversContent(subject, snapshot.marketCount);
       detail.llmUsed = generated.llmUsed;
+      generatedCount++;
 
       // Dry-run: dừng ở đây — trả preview, không persist/publish
       if (dryRun) {
@@ -381,7 +385,9 @@ export async function runMoversPipeline(
       quotaRemainingStart: quota.postsRemaining,
       quotaWarning: quota.warningThreshold,
       llmUsedCount,
-      templateFallbackCount: details.length - llmUsedCount,
+      // Chỉ tính detail đã generate (PUBLISHED/FAILED post-generate) — không
+      // đếm DUPLICATE/QUOTA_BLOCKED dừng trước generate vào "template".
+      templateFallbackCount: Math.max(0, generatedCount - llmUsedCount),
       evaluated: subjects.length,
       qualified: subjects.length,
       published: postsPublished,

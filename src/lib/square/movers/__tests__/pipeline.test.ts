@@ -180,6 +180,16 @@ describe("runMoversPipeline", () => {
     expect(result.postsPublished).toBe(5);
     expect(result.details[0]).toMatchObject({ symbol: "AAA", result: "DUPLICATE" });
     expect(mockedPublish).toHaveBeenCalledTimes(5);
+
+    // Dup dừng TRƯỚC generate content → không được tính là "template fallback"
+    const execRows = mockValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => typeof v.triggerType === "string");
+    expect(execRows).toHaveLength(1);
+    expect(execRows[0].deduplicated).toBe(1);
+    expect(execRows[0].published).toBe(5);
+    expect(execRows[0].llmUsedCount).toBe(0);
+    expect(execRows[0].templateFallbackCount).toBe(5); // 5 detail đã generate, KHÔNG gồm dup
   });
 
   it("counts a publish failure without aborting the rest", async () => {
@@ -271,6 +281,23 @@ describe("runMoversPipeline", () => {
     const summary = execRows[0].errorSummary as { errors: string[]; error_count: number };
     expect(summary.error_count).toBe(1);
     expect(summary.errors[0]).toContain("AAA");
+  });
+
+  it("recordMoversExecution insert lỗi → pipeline vẫn thành công (không throw)", async () => {
+    mockedSnapshot.mockResolvedValue(snapshot());
+    // Lần gọi insert đầu tiên là persist opportunity → throw db down giữa chừng;
+    // recordMoversExecution phải nuốt lỗi (try/catch) thay vì fail pipeline.
+    mockInsert.mockImplementationOnce(() => {
+      throw new Error("db down");
+    });
+
+    const result = await runMoversPipeline();
+    // persist throw ở article đầu → 1 FAILED, 5 còn lại vẫn đăng
+    expect(result.ok).toBe(true);
+    expect(result.postsFailed).toBe(1);
+    expect(result.postsPublished).toBe(5);
+    // Lần insert thứ 2+ vẫn chạy → execution row ghi được (hoặc lỗi được nuốt)
+    expect(mockInsert.mock.calls.length).toBeGreaterThan(1);
   });
 
   it("ghi execution với lý do skip khi quota cạn (để card admin hiển thị)", async () => {

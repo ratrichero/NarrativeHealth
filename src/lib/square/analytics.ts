@@ -10,7 +10,14 @@ import {
   squarePipelineExecutions,
   narratives,
 } from "@/db/schema";
-import { eq, and, gte, desc, sql, count } from "drizzle-orm";
+import { eq, and, gte, desc, sql, count, notLike } from "drizzle-orm";
+
+// SQ-MOVERS Phase 4 ghi thêm dòng MOVERS_CRON/MOVERS_MANUAL vào cùng bảng
+// square_pipeline_executions (nguồn cho card Top Movers Pipeline). Các số liệu
+// analytics luồng setup (overview/funnel/trend/history) PHẢI loại các dòng này,
+// không thì avgDuration/avgEvaluated/successRate bị lẫn số movers (stagger ~450s,
+// evaluated=6) và lệch khỏi pipeline setup thật.
+const notMoversExecution = notLike(squarePipelineExecutions.triggerType, "MOVERS_%");
 import { explainPipelineError, describeFailureCategory } from "./error-explainer";
 
 /**
@@ -232,7 +239,7 @@ export async function getOverview(range: TimeRange): Promise<OverviewAnalytics> 
       avgQualified: sql<number>`coalesce(avg(${squarePipelineExecutions.qualified}), 0)::int`,
     })
     .from(squarePipelineExecutions)
-    .where(gte(squarePipelineExecutions.startedAt, new Date(dateStr)));
+    .where(and(gte(squarePipelineExecutions.startedAt, new Date(dateStr)), notMoversExecution));
 
   const total = result.totalPublished + result.totalFailed;
   const successRate = total > 0 ? (result.totalPublished / total) * 100 : 0;
@@ -263,7 +270,7 @@ export async function getPublicationFunnel(range: TimeRange): Promise<Publicatio
       quotaBlocked: sql<number>`coalesce(sum(${squarePipelineExecutions.quotaBlocked}), 0)::int`,
     })
     .from(squarePipelineExecutions)
-    .where(gte(squarePipelineExecutions.startedAt, new Date(dateStr)));
+    .where(and(gte(squarePipelineExecutions.startedAt, new Date(dateStr)), notMoversExecution));
 
   return {
     evaluated: result.evaluated,
@@ -523,7 +530,7 @@ export async function getSuccessRateTrend(range: TimeRange): Promise<SuccessRate
       failed: sql<number>`coalesce(sum(${squarePipelineExecutions.failed}), 0)::int`,
     })
     .from(squarePipelineExecutions)
-    .where(gte(squarePipelineExecutions.startedAt, new Date(dateStr)))
+    .where(and(gte(squarePipelineExecutions.startedAt, new Date(dateStr)), notMoversExecution))
     .groupBy(sql`date(${squarePipelineExecutions.startedAt})`)
     .orderBy(desc(sql`date(${squarePipelineExecutions.startedAt})`));
 
@@ -556,7 +563,7 @@ export async function getExecutionHistory(range: TimeRange, limit = 20): Promise
   const results = await db
     .select()
     .from(squarePipelineExecutions)
-    .where(gte(squarePipelineExecutions.startedAt, new Date(dateStr)))
+    .where(and(gte(squarePipelineExecutions.startedAt, new Date(dateStr)), notMoversExecution))
     .orderBy(desc(squarePipelineExecutions.startedAt))
     .limit(limit);
 

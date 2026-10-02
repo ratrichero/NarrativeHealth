@@ -205,6 +205,42 @@ describe("BT-04 — isSameSetupEpisode", () => {
     }
   });
 
+  it("env rỗng/whitespace hoặc không hợp lệ → fallback default 3% (không phải 0.5%)", () => {
+    const prev = process.env.BT_EPISODE_TOLERANCE_PCT;
+    try {
+      // Number("") === 0 → clamp về 0.5% là bug; phải về default 3%.
+      // tp1 115 → 117.5 = 2.17%: dưới 3% (true) nhưng trên 0.5%.
+      process.env.BT_EPISODE_TOLERANCE_PCT = "";
+      expect(isSameSetupEpisode(prevSetup, { ...nextSetup, tp1: 117.5 })).toBe(true);
+
+      process.env.BT_EPISODE_TOLERANCE_PCT = "   ";
+      expect(isSameSetupEpisode(prevSetup, { ...nextSetup, tp1: 117.5 })).toBe(true);
+
+      // Không phải số → default 3%: 2.17% vẫn cùng episode,
+      // 4.35% (tp1 120) vẫn là episode mới.
+      process.env.BT_EPISODE_TOLERANCE_PCT = "abc";
+      expect(isSameSetupEpisode(prevSetup, { ...nextSetup, tp1: 117.5 })).toBe(true);
+      expect(isSameSetupEpisode(prevSetup, { ...nextSetup, tp1: 120 })).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.BT_EPISODE_TOLERANCE_PCT;
+      else process.env.BT_EPISODE_TOLERANCE_PCT = prev;
+    }
+  });
+
+  it("env clamp tối đa 20%: giá trị lớn hơn bị kẹp về 20%", () => {
+    const prev = process.env.BT_EPISODE_TOLERANCE_PCT;
+    try {
+      process.env.BT_EPISODE_TOLERANCE_PCT = "100"; // clamp → 20%
+      // tp1 115 → 132 = 14.8% < 20% → cùng episode
+      expect(isSameSetupEpisode(prevSetup, { ...nextSetup, tp1: 132 })).toBe(true);
+      // tp1 115 → 140 = 21.7% > 20% → episode mới (nếu không clamp sẽ true)
+      expect(isSameSetupEpisode(prevSetup, { ...nextSetup, tp1: 140 })).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.BT_EPISODE_TOLERANCE_PCT;
+      else process.env.BT_EPISODE_TOLERANCE_PCT = prev;
+    }
+  });
+
   it("no-setup picks repeat when direction matches", () => {
     expect(
       isSameSetupEpisode(

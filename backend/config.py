@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     scheduler_movers_enabled: bool = True
     scheduler_movers_hour: int = 7
     scheduler_movers_minute: int = 15
+    # Token chung xác thực POST /api/square/movers (Next.js đọc env
+    # SCHEDULER_MOVERS_TOKEN). Để trống = không gửi header (giữ hành vi cũ).
+    scheduler_movers_token: str = ""
 
     class Config:
         env_file = ".env"

@@ -1,6 +1,74 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-09-30
+## Ngày cập nhật: 2026-10-01
+
+---
+
+## REVIEW-01-10-2026 — Fix review: auth movers, analytics tách MOVERS_*, metric/tolerance edge cases (2026-10-01)
+
+Review batch sau Phase 4 + BT-05 tìm ra 1 high / 1 medium / 3 low — đã fix đủ:
+
+### 1. HIGH — Endpoint movers không có auth (correctness/security)
+
+- Trước: `GET/POST /api/square/movers` không nằm dưới `/api/admin/*` → middleware
+  AUTH-01 không phủ; card admin lại fetch từ browser → path phải public → ai cũng
+  đăng thật / spam dry-run (burn LLM) / đọc status, quota, error summary.
+- **Fix**: tách `GET status` + `POST dry-run/manual` sang
+  **`/api/admin/square/movers`** (middleware admin guard fail-closed), card admin
+  đổi fetch sang đây. `POST /api/square/movers` giữ riêng cho scheduler 07:15 với
+  2 lớp chặn: (a) reject query `dryRun`/`trigger` → 00 (manual bắt buộc qua
+  admin route); (b) token chung opt-in `SCHEDULER_MOVERS_TOKEN` (Next) /
+  `scheduler_movers_token` (FastAPI `settings`) — khi set ở cả 2 side thì
+  FastAPI gửi header `X-Scheduler-Token` và Next verify timing-safe; chưa set →
+  cho qua với warning (cùng posture `/api/refresh` để cron không vỡ).
+- **Action trên VPS**: đặt `SCHEDULER_MOVERS_TOKEN=<ngẫu nhiên>` vào `.env`
+  (Next) + `scheduler_movers_token=<cùng giá trị>` (FastAPI đọc cùng `.env`),
+  restart pm2 để khóa hẳn endpoint scheduler.
+- `backend/scheduler.py` gửi header khi token config; `backend/config.py` thêm
+  field `scheduler_movers_token` (default "").
+
+### 2. MEDIUM — Square Analytics setup bị lẫn số MOVERS_* (regression)
+
+- `getOverview` / `getPublicationFunnel` / `getSuccessRateTrend` /
+  `getExecutionHistory` filter **chỉ theo `startedAt`** → dòng MOVERS_CRON/
+  MANUAL (evaluated=6, duration ~450s stagger) làm lệch avgDuration, avgEvaluated,
+  successRate, history của luồng setup.
+- **Fix**: `analytics.ts` — thêm `notLike(triggerType, "MOVERS_%")` vào cả 4
+  query (`notMoversExecution`). Card Top Movers vẫn tự đọc MOVERS_* qua GET admin.
+
+### 3. LOW — `templateFallbackCount` inflate
+
+- `details.length - llmUsedCount` đếm cả DUPLICATE/QUOTA_BLOCKED (dừng TRƯỚC
+  generate) là "template" → tile LLM/Template sai khi có coin trùng.
+- **Fix**: pipeline đếm `generatedCount` ngay sau `generateMoversContent`;
+  `templateFallbackCount = max(0, generatedCount - llmUsedCount)`.
+
+### 4. LOW — BT-05: env rỗng → tolerance 0.5% thay vì 3%
+
+- `Number(env ?? 3)` không bắt `""` (`Number("") === 0` → clamp 0.5%).
+- **Fix**: coi rỗng/whitespace như chưa set → default 3%; invalid (`"abc"`) vẫn 3%.
+
+### 5. LOW — Card cron lệch config FastAPI
+
+- GET status đọc `SCHEDULER_MOVERS_*` exact-case, pydantic-settings đọc
+  case-insensitive → card có thể hiển default 07:15 dù `.env` ghi lowercase.
+- **Fix**: helper `envVar`/`envBool`/`envInt` trong route admin — đọc cả 2 case,
+  parse bool kiểu pydantic (`false/0/no/off`), Number không hợp lệ → default,
+  clamp hour 0–23 / minute 0–59.
+
+### Tests (+4)
+
+- Engine BT-05: env rỗng/whitespace/"abc" → 3%; clamp cao "100" → 20%.
+- Pipeline: dup KHÔNG tính template fallback (`templateFallbackCount=5` khi 1 dup);
+  `recordMoversExecution`/persist insert throw → pipeline vẫn ok (nuốt lỗi).
+- `tsc --noEmit` sạch; jest square + backtest pass.
+
+Files: `src/app/api/square/movers/route.ts` (scheduler-only),
+`src/app/api/admin/square/movers/route.ts` (mới: GET + POST admin),
+`src/lib/square/movers/trigger.ts` (mới: handler dùng chung),
+`src/app/admin/page.tsx`, `src/lib/square/analytics.ts`,
+`src/lib/square/movers/pipeline.ts`, `src/lib/backtest/engine.ts`,
+`backend/config.py`, `backend/scheduler.py` + 2 file test.
 
 ---
 
@@ -93,15 +161,17 @@ Card trong **Admin → Vận hành → Analytics** (đầu tab):
 - Tile: đã đăng hôm nay (/6), published/failed lần cuối, quota còn lại
   (/100 + warning), LLM vs Template count. Kèm chips bài đã đăng hôm nay
   (symbol, ▲/▼, status, LLM/Template, errorCode).
-- **Nút "Chạy thử (dry-run)"**: `POST /api/square/movers?dryRun=1&trigger=manual`
+- **Nút "Chạy thử (dry-run)"**: `POST /api/admin/square/movers?dryRun=1&trigger=manual`
   — chạy đủ collect + sinh content, hiển thị per-coin "SẼ ĐĂNG / TRÙNG / QUOTA"
   + preview nội dung (title + text, LLM or Template), KHÔNG persist/publish.
-- **Nút "Chạy thật"** (confirm): `POST /api/square/movers?trigger=manual` —
+- **Nút "Chạy thật"** (confirm): `POST /api/admin/square/movers?trigger=manual` —
   idempotent per-coin (coin đã đăng hôm nay tự bị bỏ qua), xong invalidate
   status query.
-- `GET /api/square/movers` (mới): status cho card — lastExecution + bài hôm nay
+- `GET /api/admin/square/movers` (mới): status cho card — lastExecution + bài hôm nay
   (JOIN publications ⋈ opportunities type MOVERS_SETUP, dataAsOf hôm nay) +
   quota hiện tại + cron movers từ env (`SCHEDULER_MOVERS_*`, mặc định 07:15).
+  **REVIEW-01**: GET + trigger tay chuyển từ `/api/square/movers` sang
+  `/api/admin/square/movers` để được middleware admin guard.
 - Pipeline signature: `runMoversPipeline({ trigger, dryRun })` — mặc định
   SCHEDULED như trước, scheduler FastAPI không cần đổi gì.
 - Tests: +5 pipeline (dry-run không ghi DB, DUPLICATE trong dry-run, ghi
@@ -109,8 +179,9 @@ Card trong **Admin → Vận hành → Analytics** (đầu tab):
   → **168/168** Square (34 movers). `tsc --noEmit` sạch.
 
 Files added/changed: `src/app/admin/page.tsx` (component
-`MoversPipelineSection`), `src/app/api/square/movers/route.ts` (GET + POST
-params), `src/lib/square/movers/pipeline.ts`,
+`MoversPipelineSection`), `src/app/api/square/movers/route.ts` (POST — nay
+scheduler-only), `src/app/api/admin/square/movers/route.ts` (GET + POST admin,
+REVIEW-01), `src/lib/square/movers/pipeline.ts`,
 `src/lib/square/movers/__tests__/pipeline.test.ts`.
 
 ---

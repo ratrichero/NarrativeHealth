@@ -242,7 +242,11 @@ export function aggregateOutcomes(group: string, outcomes: PickOutcome[]): Group
  * mà không cần sửa code.
  */
 function episodeTolerance(): number {
-  const pct = Number(process.env.BT_EPISODE_TOLERANCE_PCT ?? 3);
+  // `?? 3` không bắt được env rỗng ("" là giá trị hợp lệ của process.env),
+  // mà Number("") === 0 → clamp về 0.5% (chặt hơn bản cũ). Coi rỗng/whitespace
+  // như chưa set để luôn về default 3%.
+  const raw = process.env.BT_EPISODE_TOLERANCE_PCT;
+  const pct = raw == null || raw.trim() === "" ? 3 : Number(raw);
   const clamped = Number.isFinite(pct) ? Math.min(20, Math.max(0.5, pct)) : 3;
   return clamped / 100;
 }
