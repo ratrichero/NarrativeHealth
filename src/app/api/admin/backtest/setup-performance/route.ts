@@ -14,9 +14,10 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { topRecommendationPicks } from "@/db/schema";
-import { gte } from "drizzle-orm";
-import { aggregateOutcomes, type PickOutcome } from "@/lib/backtest/engine";
+import { topRecommendationPicks, coins, marketPriceDaily } from "@/db/schema";
+import { and, asc, eq, gte, lte } from "drizzle-orm";
+import { addDaysIso, aggregateOutcomes, type PickOutcome } from "@/lib/backtest/engine";
+import { readFeeConfig, computeCostR, computeNetR } from "@/lib/backtest/metrics";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,10 @@ export async function GET(req: NextRequest) {
     const includeAll = url.searchParams.get("all") === "1";
     const cutoff = url.searchParams.get("from") ?? "2026-01-01";
 
+    // BT-07b: chi phí round-trip (phí taker + slippage, env-configurable) —
+    // tính NET R lúc đọc, song song với gross R đã lưu (không ghi đè DB).
+    const fee = readFeeConfig();
+
     const rows = await db
       .select({
         pickId: topRecommendationPicks.id,
@@ -45,6 +50,8 @@ export async function GET(req: NextRequest) {
         healthScore: topRecommendationPicks.healthScore,
         pickKind: topRecommendationPicks.pickKind,
         hasSetup: topRecommendationPicks.hasSetup,
+        entryMid: topRecommendationPicks.entryMid,
+        stopLoss: topRecommendationPicks.stopLoss,
         backtestStatus: topRecommendationPicks.backtestStatus,
         backtestOutcome: topRecommendationPicks.backtestOutcome,
         backtestExitR: topRecommendationPicks.backtestExitR,
@@ -88,6 +95,64 @@ export async function GET(req: NextRequest) {
       entryFilled: p.backtestEntryFilled,
     }));
 
+    // ── BT-07c: benchmark BTC buy-hold cùng window với các lệnh đã chốt ──
+    // Không biết strategy có beat mua & hold BTC cùng kỳ không là lỗ hổng
+    // lớn nhất của dashboard: window = [min dataDate, max(dataDate + horizon)].
+    let benchmark: {
+      from: string;
+      to: string;
+      startClose: number;
+      endClose: number;
+      returnPct: number;
+    } | null = null;
+    const traded = finalized.filter((p) => p.backtestStatus !== "SKIPPED");
+    if (traded.length > 0) {
+      try {
+        const from = traded.reduce(
+          (m, p) => (p.dataDate < m ? p.dataDate : m),
+          traded[0].dataDate
+        );
+        const to = traded.reduce((m, p) => {
+          const end = addDaysIso(p.dataDate, p.backtestHorizonDays ?? 0);
+          return end > m ? end : m;
+        }, "0000-01-01");
+        const [btc] = await db
+          .select({ id: coins.id })
+          .from(coins)
+          .where(eq(coins.symbol, "BTC"))
+          .limit(1);
+        if (btc) {
+          const closes = await db
+            .select({ date: marketPriceDaily.date, close: marketPriceDaily.close })
+            .from(marketPriceDaily)
+            .where(
+              and(
+                eq(marketPriceDaily.coinId, btc.id),
+                gte(marketPriceDaily.date, from),
+                lte(marketPriceDaily.date, to)
+              )
+            )
+            .orderBy(asc(marketPriceDaily.date))
+            .limit(500);
+          if (closes.length >= 2) {
+            const start = Number(closes[0].close);
+            const end = Number(closes[closes.length - 1].close);
+            if (start > 0 && end > 0) {
+              benchmark = {
+                from: closes[0].date,
+                to: closes[closes.length - 1].date,
+                startClose: +start.toFixed(2),
+                endClose: +end.toFixed(2),
+                returnPct: +(((end - start) / start) * 100).toFixed(2),
+              };
+            }
+          }
+        }
+      } catch (benchError) {
+        console.error("[BT-BENCH] BTC benchmark failed (non-blocking):", benchError);
+      }
+    }
+
     // ── Grouping (same as BT-02) ──
     const byDirection = new Map<string, PickOutcome[]>();
     const bySignal = new Map<string, PickOutcome[]>();
@@ -111,7 +176,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       data: {
-        params: { includeAll, cutoff },
+        params: {
+          includeAll,
+          cutoff,
+          feeBps: fee.feeBps,
+          slippageBps: fee.slippageBps,
+        },
+        benchmark,
         totalPicks: eligible.length,
         evaluatedCount: finalized.length,
         pendingCount,
@@ -125,7 +196,9 @@ export async function GET(req: NextRequest) {
         bySignal: group(bySignal),
         byHealthBand: group(byBand),
         byPickKind: group(byPickKind),
-        picks: finalized.map((p) => ({
+        picks: finalized.map((p) => {
+          const costR = computeCostR(p.entryMid, p.stopLoss, fee.roundTripBps);
+          return {
           pickId: p.pickId,
           dataDate: p.dataDate,
           symbol: p.symbol,
@@ -136,6 +209,8 @@ export async function GET(req: NextRequest) {
           status: p.backtestStatus,
           outcome: p.backtestOutcome,
           exitR: p.backtestExitR,
+          costR,
+          exitRNet: computeNetR(p.backtestExitR, costR),
           hitDay: p.backtestHitDay,
           mfePct: p.backtestMfePct,
           maePct: p.backtestMaePct,
@@ -143,7 +218,8 @@ export async function GET(req: NextRequest) {
           horizonDays: p.backtestHorizonDays,
           evaluatedAt: p.backtestEvaluatedAt,
           repeatCount: p.repeatCount,
-        })),
+          };
+        }),
       },
     });
   } catch (error) {

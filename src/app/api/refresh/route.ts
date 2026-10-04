@@ -748,6 +748,42 @@ export async function POST(request: NextRequest) {
       console.error("Alert evaluation error (non-blocking):", alertError);
     }
 
+    // -----------------------------------------------------------------------
+    // BT-06: Auto-settle backtest (non-blocking)
+    // -----------------------------------------------------------------------
+    // Chốt pick PENDING đã đóng cửa sổ horizon (mặc định 14d) NGAY sau khi
+    // data mới về — tab Backtest không còn phụ thuộc bấm nút tay. Idempotent:
+    // chỉ đụng pick PENDING, kết quả đã chốt bất biến. Lỗi không phá refresh.
+    try {
+      const { runBacktestSettlement, DEFAULT_HORIZON } = await import(
+        "@/lib/backtest/settlement"
+      );
+      const bt = await runBacktestSettlement({ horizon: DEFAULT_HORIZON });
+      console.log(
+        bt.dryRun
+          ? "[BT-AUTO] unexpected dry-run result"
+          : `[BT-AUTO] horizon=${bt.horizon} evaluated=${bt.evaluated} expired=${bt.expired} skipped=${bt.skipped} stillOpen=${bt.stillOpen} noData=${bt.noData} errors=${bt.errors}`
+      );
+    } catch (btError) {
+      console.error("Backtest auto-settle error (non-blocking):", btError);
+    }
+
+    // -----------------------------------------------------------------------
+    // BT-08: Daily backtest digest (non-blocking)
+    // -----------------------------------------------------------------------
+    // Một tin nhắn/ngày qua kênh alert sẵn có (Telegram/Webhook/Resend):
+    // "hôm nay chốt N · win rate 7d X% · còn M PENDING". Guard trong app_settings
+    // nên refresh nhiều lần trong ngày không gửi trùng. Lỗi không phá refresh.
+    try {
+      const { maybeSendBacktestDigest } = await import("@/lib/backtest/digest");
+      const digest = await maybeSendBacktestDigest();
+      if (digest.sent) {
+        console.log(`[BT-DIGEST] sent via ${digest.channels} channel(s)`);
+      }
+    } catch (digestError) {
+      console.error("Backtest digest error (non-blocking):", digestError);
+    }
+
     return NextResponse.json({
       success: true,
       data: {

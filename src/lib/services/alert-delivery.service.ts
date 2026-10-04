@@ -63,7 +63,10 @@ async function sendTelegram(text: string): Promise<boolean> {
   }
 }
 
-async function sendWebhook(payload: AlertDeliveryPayload): Promise<boolean> {
+async function sendWebhook(
+  payload: AlertDeliveryPayload,
+  text: string = formatAlertText(payload)
+): Promise<boolean> {
   const url = process.env.ALERT_WEBHOOK_URL;
   if (!url) return false;
 
@@ -76,7 +79,7 @@ async function sendWebhook(payload: AlertDeliveryPayload): Promise<boolean> {
           ? { "X-Webhook-Secret": process.env.ALERT_WEBHOOK_SECRET }
           : {}),
       },
-      body: JSON.stringify({ rule: payload.ruleName, alert: payload, text: formatAlertText(payload) }),
+      body: JSON.stringify({ rule: payload.ruleName, alert: payload, text }),
       signal: AbortSignal.timeout(8000),
     });
     return res.ok;
@@ -86,7 +89,10 @@ async function sendWebhook(payload: AlertDeliveryPayload): Promise<boolean> {
   }
 }
 
-async function sendEmail(payload: AlertDeliveryPayload): Promise<boolean> {
+async function sendEmail(
+  payload: AlertDeliveryPayload,
+  text: string = formatAlertText(payload)
+): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.ALERT_EMAIL_FROM;
   const to = process.env.ALERT_EMAIL_TO;
@@ -103,7 +109,7 @@ async function sendEmail(payload: AlertDeliveryPayload): Promise<boolean> {
         from,
         to: to.split(",").map((s) => s.trim()).filter(Boolean),
         subject: `🚨 Alert: ${payload.ruleName}${payload.coinSymbol ? ` — ${payload.coinSymbol}` : ""}`,
-        text: formatAlertText(payload),
+        text,
       }),
       signal: AbortSignal.timeout(8000),
     });
@@ -136,5 +142,24 @@ export async function dispatchAlert(
 
   const text = formatAlertText(payload);
   const results = await Promise.all([sendTelegram(text), sendWebhook(payload), sendEmail(payload)]);
+  return results.filter(Boolean).length;
+}
+
+/**
+ * BT-08 — Gửi một message tùy ý (không qua alert rule) đến mọi kênh đã cấu hình.
+ * Dùng cho daily backtest digest. Trả về số kênh nhận được — 0 nghĩa là chưa
+ * cấu hình kênh nào (caller không nên đánh dấu "đã gửi").
+ */
+export async function dispatchCustomText(label: string, text: string): Promise<number> {
+  const payload: AlertDeliveryPayload = {
+    ruleId: 0,
+    ruleName: label,
+    triggerType: "DAILY_DIGEST",
+  };
+  const results = await Promise.all([
+    sendTelegram(text),
+    sendWebhook(payload, text),
+    sendEmail(payload, text),
+  ]);
   return results.filter(Boolean).length;
 }

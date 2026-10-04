@@ -1,6 +1,149 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-10-01
+## Ngày cập nhật: 2026-10-02
+
+---
+
+## BT-07-10-2026 — Backtest: data-gap guard + net R + risk depth + benchmark + daily digest (2026-10-02)
+
+Tiếp BT-06 theo đề xuất “làm đáng tin số liệu trước, rồi báo cáo”. Kèm việc
+khai báo các biến optional vào `.env.local` (BT_EPISODE_TOLERANCE_PCT,
+SCHEDULER_MOVERS_ENABLED/HOUR/MINUTE, nhóm TELEGRAM_*/ALERT_WEBHOOK_*/
+RESEND_API_KEY… — tên biến, giá trị secret do user điền).
+
+### A — BT-07a: Chốt trên dữ liệu đầy đủ (data-gap guard)
+
+- **Bug tiềm ẩn fix**: `computePickOutcome` trước BT-07 trả OPEN khi thiếu nến
+  → pick kẹt PENDING vĩnh viễn, auto-settle quay mỗi phiên mà chip không về 0.
+- **Window tính theo lịch** (`(dataDate, dataDate+horizon]`) thay vì
+  `slice(0, horizon)`: nến thiếu ngày không còn làm nến vượt horizon (15 ngày
+  cho horizon 14); `hitDay` + cửa sổ entry-fill tính theo **ngày thật**
+  (`daysBetween`) — đầy đủ nến thì kết quả GIỐNG hệt cũ.
+- **`windowCoverage()`** (engine, thuần): % ngày có nến trong window.
+  `minCandleCoveragePct()` (settlement, env `BT_MIN_CANDLE_COVERAGE`, mặc
+  định 100, kẹp 1–100) — coverage dưới ngưỡng → **KHÔNG chốt**, giữ PENDING
+  chờ collector backfill (kết quả lưu 1 lần là bất biến, chốt trên dữ liệu
+  thiếu là ghi sai vĩnh viễn).
+- **Kết quả phân loại riêng**: run trả `noData` / dry-run `willNoData`; status
+  trả `noDataByHorizon` — pick thiếu nến KHÔNG tính vào `readyByHorizon` nữa
+  (chip “sẵn sàng chốt” + auto-settle không còn lừa).
+- **UI**: chip vàng “⚠ N thiếu nến (chưa thể chốt)”, dòng PENDING kèm
+  “· thiếu nến: N”, KPI “Sẵn sàng chốt” sub hiện N thiếu nến, run-result
+  (cả dry/real) hiện số thiếu nến.
+- **Nến load TRONG dry-run** (cần để đếm `willNoData`).
+
+### B — BT-07b: NET R (phí + slippage) song song GROSS
+
+- **`src/lib/backtest/metrics.ts` (mới, thuần)**: `readFeeConfig()` (env
+  `BT_FEE_BPS`=5 taker, `BT_SLIPPAGE_BPS`=2 mỗi bên → round-trip 14bps),
+  `computeCostR(entryMid, stopLoss, roundTripBps)` (chi phí / |entry−SL|),
+  `computeNetR(exitR, costR)`.
+- **Route `setup-performance`**: đọc `entryMid/stopLoss` → mỗi pick trả
+  thêm `costR` + `exitRNet`; `params` echo `feeBps/slippageBps`. **DB vẫn lưu
+  GROSS** — net tính lúc đọc, đổi env là dashboard đổi theo, không ghi đè.
+- **UI toggle `R: NET/GROSS`** (localStorage `bt_r_mode`, mặc định **NET**):
+  KPI Avg R/expectancy, equity curve, 4 bảng nhóm, insights, sort cột R, ô R
+  trong bảng (hover hiện gross/net/phí), CSV (2 cột `costR`/`exitRNet`), footer
+  chú thích — tất cả qua 1 helper `rOf()`.
+
+### C — Stats depth (sống được với hệ thống hay không)
+
+- **Wilson 95% CI** cho win rate ngay trên KPI tile (`wilsonInterval`) — mẫu
+  15 mà khoe “70%” là tự lừa; CI cho thấy khoảng thật.
+- **Risk strip** dưới KPI: **Max drawdown (R)**, **Profit factor**, **chuỗi
+  thua liên tiếp dài nhất** (`maxDrawdownR`/`profitFactor`/`longestLosingStreak`).
+- **BT-07c — Benchmark BTC**: route tính BTC buy-hold % cùng window với các
+  lệnh đã chốt (`[min dataDate, max(dataDate+horizon)]`, coin BTC) → strip hiện
+  “BTC buy-hold +X% · strategy +Y% (giả định rủi ro 1% vốn/lệnh)”.
+
+### D — BT-08: Daily backtest digest (kênh alert sẵn có, không service mới)
+
+- **`src/lib/backtest/digest.ts` (mới)**: `buildDailyDigest()` (pure, test
+  được) + `maybeSendBacktestDigest()` — guard `app_settings['bt_digest_last_sent']`
+  = business date → mỗi ngày tối đa 1 tin. Nội dung: hôm nay chốt N pick
+  (T/L/hết hạn/bỏ qua) · win rate 7 ngày · còn PENDING / sẵn sàng chốt /
+  thiếu nến · lần chốt cuối.
+- **`dispatchCustomText(label, text)`** mới trong `alert-delivery.service.ts`:
+  gửi message tùy ý (không qua alert rule) đến Telegram/Webhook/Email —
+  `sendWebhook`/`sendEmail` nhận thêm param `text` override.
+- Chưa cấu hình kênh nào → dispatch = 0 → **không đánh dấu đã gửi** (cấu hình
+  xong là gửi được ngay). Env `BT_DIGEST_ENABLED` (mặc định ON).
+- **Hook** cuối `POST /api/refresh` (dynamic import, non-blocking, log
+  `[BT-DIGEST]`); `[BT-AUTO]` log thêm `noData=`.
+
+### Tests (→ 233 pass trong `src/lib/backtest` + `src/lib/square`, 14 suites)
+
+- `settlement.test.ts` mở rộng (+data-gap: dry `willNoData=1`, real `noData=1`
+  không update gì; status `noDataByHorizon`; fixtures full-window coverage).
+- `metrics.test.ts` (mới, 13): fee env override/clamp, costR (kể cả decimal
+  string), netR, Wilson (null/đối xung/kẹp), maxDD, PF, streak.
+- `digest.test.ts` (mới, 4): builder text đủ 4 khối, noData, fallback, ngày 0.
+- Typecheck `npx tsc --noEmit` clean.
+
+### Env (khai báo trong `.env.local`, secret do user điền ở Settings)
+
+- Đã set tên: `BT_EPISODE_TOLERANCE_PCT`, `SCHEDULER_MOVERS_ENABLED/HOUR/MINUTE`,
+  `BT_FEE_BPS`, `BT_SLIPPAGE_BPS`, `BT_MIN_CANDLE_COVERAGE`, `BT_DIGEST_ENABLED`,
+  `TELEGRAM_BOT_TOKEN/CHAT_ID`, `ALERT_WEBHOOK_URL/SECRET`, `RESEND_API_KEY`,
+  `ALERT_EMAIL_FROM/TO` (nhóm secret đang trống — điền giá trị thật).
+- `.env.example` platform chặn edit trực tiếp → block mẫu đã đưa user tự paste.
+
+---
+
+## BT-06-10-2026 — Backtest: auto-settle + dashboard tương tác + settlement lib (2026-10-02)
+
+Scope **Full A+B+C** cho tab Backtest (admin):
+
+### A — Chạy backtest thông minh
+
+- **Status chip sẵn sàng chốt**: `GET /api/admin/backtest/run` (mới) trả
+  `readyByHorizon` / `stillOpenByHorizon` / `skippable` / `lastEvaluatedAt` →
+  UI hiện chip “● N pick sẵn sàng chốt” cạnh dropdown horizon, tính theo
+  horizon đang chọn.
+- **Auto-settle khi mở tab**: nếu có pick đã đóng window và toggle bật → tự
+  gọi POST run 1 lần/phiên (guard `autoRanRef` chống lặp), invalidate cả
+  status + perf query. Dòng “Lần chốt cuối … còn N PENDING … còn window M”.
+- **Toggle localStorage** key `bt_auto_settle` (mặc định BẬT), nút
+  “Tự chốt: BẬT/TẮT” ở header tab.
+
+### B — Dashboard tương tác
+
+- **KPI tiles (5)**: Đã chốt view · Win rate · Avg R + expectancy · NO_HIT% ·
+  Sẵn sàng chốt — tính client theo filter hiện tại.
+- **Insights deterministic** (`src/lib/backtest/insights.ts`): 7 rule có guard
+  mẫu (mẫu<30 → warning, mixed-horizon warning, LONG/SHORT gap ≥10pp, band
+  avgR ≥+0.3 / mọi band âm, win rate 2 tháng gap ≥10pp, NO_HIT share ≥40%,
+  signal best gap ≥10pp; fallback info “số liệu cân bằng”). Không LLM, test
+  được.
+- **4 charts (recharts)**: equity curve (cumR), win rate theo tháng, phân bố
+  outcome (TP1/TP2/SL/NO_HIT), health band — mỗi chart có empty state.
+- **Bảng pick**: filter (view horizon / status / outcome / direction / signal /
+  search coin) + sort mọi cột + pagination 50/trang + **CSV export** đúng bộ
+  filter (16 cột, escape chuẩn).
+- **Stats tách view horizon**: 4 bảng nhóm (direction/signal/band/pick-kind)
+  tính client qua `aggregateOutcomes` trên `toEnginePick` — **loại NO_SETUP**
+  khỏi win rate (fix bug stats server trước đây tính NO_SETUP thành win).
+- UI cleanup: Health Power + Signal Quality gói `<details>` (mặc định đóng),
+  header gọn hơn.
+
+### C — Backend
+
+- **`src/lib/backtest/settlement.ts` (mới)**: extract evaluator từ run route
+  (BT-03) — `runBacktestSettlement({horizon?, dryRun?})` (union real/dry-run)
+  + `getBacktestStatus()` + `BACKTEST_HORIZONS`/`DEFAULT_HORIZON`. Ngữ nghĩa
+  giữ nguyên: chỉ PENDING được đụng, kết quả bất biến sau chốt.
+- **Run route viết lại** mỏng: POST → settlement, GET → status (cả 2 dưới
+  admin middleware AUTH-01).
+- **Auto-settle hook** cuối `POST /api/refresh`: dynamic import settlement,
+  chạy `horizon=DEFAULT_HORIZON`, log `[BT-AUTO]`, lỗi không chặn refresh.
+
+### Tests (+16 → tổng 214 pass trong `src/lib/backtest` + `src/lib/square`)
+
+- `insights.test.ts` (11): guard mẫu, mixedHorizon, direction gap, band,
+  monthly trend, NO_HIT share, fallback, loại NO_SETUP, max cap, custom guard.
+- `settlement.test.ts` (5, mock `@/db`): normalize horizon, dryRun không ghi,
+  SKIPPED + TP1 EVALUATED, NO_HIT → EXPIRED, status ready/stillOpen/skippable.
+- Typecheck `npx tsc --noEmit` clean.
 
 ---
 

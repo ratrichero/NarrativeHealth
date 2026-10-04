@@ -9,6 +9,8 @@ dist/
 
 # Environments
 .env
+.env.local
+.env*.local
 .venv
 ENV/
 .kilo/

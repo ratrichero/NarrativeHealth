@@ -120,10 +120,15 @@ export function computePickOutcome(
   const slDist = Math.abs(entryMid - pick.stopLoss);
   if (slDist <= 0) return base;
 
-  // Forward candles strictly after the pick's data date, up to horizon.
-  const forward = priceRows
-    .filter((r) => r.date > pick.dataDate)
-    .slice(0, horizonDays);
+  // Forward candles strictly after the pick's data date, within the CALENDAR
+  // window (dataDate, dataDate + horizon]. BT-07: bỏ slice(0, horizon) — với
+  // nến thiếu ngày, slice sẽ lấy nến vượt quá horizon (15 ngày cho horizon 14)
+  // và hitDay thành index ảo. Calendar-bounded + hitDay tính theo ngày thật
+  // → kết quả GIỐNG hệt khi coverage đầy đủ (nhất quán với BT-03).
+  const windowEnd = addDaysIso(pick.dataDate, horizonDays);
+  const forward = priceRows.filter(
+    (r) => r.date > pick.dataDate && r.date <= windowEnd
+  );
   if (forward.length === 0) {
     return { ...base, outcome: "OPEN" };
   }
@@ -140,8 +145,13 @@ export function computePickOutcome(
     if (favMove > mfe) mfe = favMove;
     if (advMove > mae) mae = advMove;
 
-    // Entry-zone fill: price traded back into [entryLow, entryHigh].
-    if (!entryFilled && entryExtreme != null && i < 3) {
+    // BT-07: ngày thật của nến trong window — với nến đầy đủ liên tiếp thì
+    // dayNo === i + 1 (giống hệt hành vi cũ), nhưng khi thiếu ngày giữa chừng
+    // index sẽ nói dối (hitDay=3 trong khi thực tế là ngày 5).
+    const dayNo = daysBetween(pick.dataDate, row.date);
+
+    // Entry-zone fill: price traded back into [entryLow, entryHigh] within 3 days.
+    if (!entryFilled && entryExtreme != null && dayNo <= 3) {
       entryFilled = bullish ? row.low <= entryExtreme : row.high >= entryExtreme;
     }
 
@@ -155,7 +165,7 @@ export function computePickOutcome(
         ...base,
         outcome: "SL_LOSS",
         exitR: -1,
-        hitDay: i + 1,
+        hitDay: dayNo,
         mfePct: +((mfe / entryMid) * 100).toFixed(2),
         maePct: +((mae / entryMid) * 100).toFixed(2),
         entryFilled,
@@ -166,7 +176,7 @@ export function computePickOutcome(
         ...base,
         outcome: "TP2_WIN",
         exitR: +(tp2Dist / slDist).toFixed(2),
-        hitDay: i + 1,
+        hitDay: dayNo,
         mfePct: +((mfe / entryMid) * 100).toFixed(2),
         maePct: +((mae / entryMid) * 100).toFixed(2),
         entryFilled,
@@ -177,7 +187,7 @@ export function computePickOutcome(
         ...base,
         outcome: "TP1_WIN",
         exitR: +(tp1Dist / slDist).toFixed(2),
-        hitDay: i + 1,
+        hitDay: dayNo,
         mfePct: +((mfe / entryMid) * 100).toFixed(2),
         maePct: +((mae / entryMid) * 100).toFixed(2),
         entryFilled,
@@ -200,8 +210,15 @@ export function computePickOutcome(
 
 /** Aggregate a list of outcomes into one stats row. */
 export function aggregateOutcomes(group: string, outcomes: PickOutcome[]): GroupStats {
-  const resolved = outcomes.filter((o) => o.outcome !== "OPEN" && o.outcome !== "INVALID" && o.outcome !== "NO_HIT");
-  const wins = resolved.filter((o) => o.outcome !== "SL_LOSS");
+  // BT-07: NO_SETUP / NO_DATA không phải trade — trước đây chúng lọt vào
+  // `wins` (outcome !== "SL_LOSS") làm win rate ảo khi group có pick SKIPPED.
+  // So sánh qua string vì storage-level outcomes (NO_SETUP/NO_DATA) nằm ngoài
+  // union BacktestOutcome nhưng vẫn lọt vào bảng qua route đọc kết quả.
+  const NON_TRADE = new Set(["OPEN", "INVALID", "NO_HIT", "NO_SETUP", "NO_DATA"]);
+  const resolved = outcomes.filter((o) => !NON_TRADE.has(o.outcome as string));
+  const wins = resolved.filter(
+    (o) => o.outcome === "TP1_WIN" || o.outcome === "TP2_WIN"
+  );
   const losses = resolved.filter((o) => o.outcome === "SL_LOSS");
   const fills = outcomes.map((o) => o.entryFilled).filter((f): f is boolean => f != null);
   const mfes = outcomes.map((o) => o.mfePct).filter((v): v is number => v != null);
@@ -304,6 +321,42 @@ export function isHorizonClosed(dataDate: string, horizonDays: number, today: st
   const d = new Date(dataDate + "T00:00:00Z").getTime();
   if (!Number.isFinite(t) || !Number.isFinite(d)) return false;
   return t - d >= horizonDays * 86400_000;
+}
+
+/** ISO date (YYYY-MM-DD) + n ngày lịch (UTC). Trả về input nếu date hỏng. */
+export function addDaysIso(date: string, days: number): string {
+  const t = new Date(date + "T00:00:00Z").getTime();
+  if (!Number.isFinite(t)) return date;
+  return new Date(t + days * 86400_000).toISOString().slice(0, 10);
+}
+
+/** Số ngày lịch từ a → b (UTC, âm khi b trước a). */
+export function daysBetween(a: string, b: string): number {
+  const ta = new Date(a + "T00:00:00Z").getTime();
+  const tb = new Date(b + "T00:00:00Z").getTime();
+  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return 0;
+  return Math.round((tb - ta) / 86400_000);
+}
+
+/**
+ * BT-07 — Coverage % của cửa sổ nến (dataDate, dataDate + horizon].
+ * 1 = đủ từng ngày (không thiếu nến nào); 0 = không có nến nào trong window.
+ * Dùng để chắn data-gap: pick đã đóng window nhưng thiếu nến thì KHÔNG được
+ * chốt — kết quả lưu 1 lần là bất biến, chốt trên dữ liệu thiếu là ghi sai
+ * vĩnh viễn (pick sẽ mãi kẹt OPEN/PENDING nếu để yên).
+ */
+export function windowCoverage(
+  priceRows: { date: string }[],
+  dataDate: string,
+  horizonDays: number
+): number {
+  if (horizonDays <= 0) return 0;
+  const end = addDaysIso(dataDate, horizonDays);
+  const seen = new Set<string>();
+  for (const r of priceRows) {
+    if (r.date > dataDate && r.date <= end) seen.add(r.date);
+  }
+  return Math.min(1, seen.size / horizonDays);
 }
 
 /** Pearson correlation between two parallel sample arrays; null when degenerate. */
