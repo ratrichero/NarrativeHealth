@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Layers, Coins, Star, Settings, BarChart3, Menu, X, LogIn, LogOut } from "lucide-react";
+import { LayoutDashboard, Layers, Coins, Star, Settings, BarChart3, LineChart, Menu, X, LogIn, LogOut } from "lucide-react";
 
 interface AuthStatusData {
   session: { sub: "admin" | "user"; username?: string; displayName?: string } | null;
@@ -13,6 +13,7 @@ interface AuthStatusData {
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/track-record", label: "Track Record", icon: LineChart },
   { href: "/watchlist", label: "Watchlist", icon: Star },
   { href: "/square-analytics", label: "Square Analytics", icon: BarChart3 },
 ];

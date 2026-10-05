@@ -10,7 +10,7 @@ import { HealthBadge } from "@/components/HealthBadge";
 import { ScoreChange } from "@/components/ScoreChange";
 import { formatDateTime, getHealthStatus } from "@/lib/utils";
 import { coinUrl } from "@/lib/seo-urls";
-import { TrendingUp, TrendingDown, AlertCircle } from "lucide-react";
+import { TrendingUp, TrendingDown, AlertCircle, Activity } from "lucide-react";
 import Link from "next/link";
 import type { DashboardData } from "@/types";
 
@@ -84,6 +84,27 @@ export default function DashboardPage() {
 
       {/* SQ-TOP-REC — Top 3 best-trend coins with actionable setups */}
       <TopRecommendations />
+
+      {/* TRACK-01 — public, verifiable track record */}
+      <Link href="/track-record" className="group block">
+        <Card hover className="border-cyan-900/50 bg-gradient-to-r from-cyan-950/40 to-slate-900/40">
+          <CardContent className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-5">
+            <div className="flex items-start gap-3">
+              <Activity className="h-5 w-5 text-cyan-400 mt-0.5 shrink-0" />
+              <div>
+                <div className="font-semibold text-white">Track Record công khai</div>
+                <p className="text-sm text-slate-400">
+                  Hiệu quả thật của các pick đã chốt — net R sau phí &amp; slippage, win rate kèm khoảng
+                  tin cậy 95%, max drawdown và so với BTC buy &amp; hold.
+                </p>
+              </div>
+            </div>
+            <span className="text-cyan-400 text-sm font-medium group-hover:text-cyan-300 whitespace-nowrap shrink-0">
+              Xem track record →
+            </span>
+          </CardContent>
+        </Card>
+      </Link>
 
       {/* Narratives Grid */}
       <section>

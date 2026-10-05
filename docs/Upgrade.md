@@ -1,6 +1,53 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-10-02
+## Ngày cập nhật: 2026-10-04
+
+---
+
+## TRACK-01-10-2026 — Track Record công khai: khép vòng lặp backtest (2026-10-04)
+
+BT-01→08 đã dựng được số liệu backtest **đáng tin** (net R, Wilson CI, drawdown,
+benchmark BTC). Nhưng toàn bộ nằm sau auth admin → không có bằng chứng công khai
+nào về hiệu quả hệ thống. TRACK-01 đưa chính những con số đó ra công khai.
+
+### Backend
+
+- **`src/app/api/track-record/route.ts` (mới, public, read-only)**: đọc
+  `top_recommendation_picks` đã chốt — chỉ `pickKind='GENUINE' AND has_setup`
+  (loại FILL_* lấp chỗ, để pick không được trade không thổi phồng win rate).
+  Không recompute outcome; chỉ map cột đã lưu → DTO + tính `exitRNet` lúc đọc
+  (`computeCostR`/`computeNetR`). Kèm benchmark BTC buy-hold cùng cửa sổ.
+- **`src/lib/backtest/track-record.ts` (mới, thuần)**: `buildTrackRecord()`
+  tái dùng `engine.aggregateOutcomes` + `metrics.*` → win rate + Wilson 95% CI,
+  avg/total net R (kèm avg gross), max drawdown, profit factor, chuỗi thua dài
+  nhất, equity curve, bảng theo hướng + theo tháng. NO_HIT/SKIPPED **không**
+  tính là trade; mẫu rỗng trả về "chưa có gì" chứ không bịa số.
+  `TRACK_RECORD_METRICS_VERSION = "track-record-v1"`.
+
+### Frontend
+
+- **`/track-record`** (public): `page.tsx` (tải dữ liệu) + `track-record-view.tsx`
+  (render thuần, test được). KPI tiles (win rate + CI, avg net R kèm gross, total
+  net R, max drawdown, profit factor, losing streak), equity curve (recharts),
+  thẻ so sánh **Strategy vs BTC buy & hold**, bảng theo hướng/tháng, kết quả gần
+  đây, và mục **"Phương pháp & tính trung thực"** (nguồn pick, chốt-một-lần,
+  net R có phí/slippage, ý nghĩa CI, giả định rủi ro 1%/lệnh, disclaimer không
+  phải lời khuyên đầu tư).
+- Empty state trung thực "Track record đang tích lũy" khi chưa có lệnh nào chốt.
+- **Nav**: thêm mục "Track Record". **Homepage**: banner CTA dẫn vào trang.
+- **SEO**: `layout.tsx` export `metadata` + `openGraph`.
+
+### Tests
+
+- `src/lib/backtest/__tests__/track-record.test.ts` (8): rỗng, loại NO_HIT/
+  SKIPPED khỏi win rate, net vs gross, equity/drawdown theo thứ tự chốt, chuỗi
+  thua, profit factor hai phía, breakdown hướng/tháng, first/last date.
+- `src/app/track-record/__tests__/track-record-view.test.tsx` (2,
+  `renderToStaticMarkup`): nhánh có dữ liệu (KPI/benchmark/bảng + disclosure)
+  và nhánh đang tích lũy.
+- `npx tsc --noEmit` clean; `jest src/lib/backtest src/lib/square src/app/track-record`
+  = **16 suites / 243 pass**. Runtime: `/api/track-record` và `/track-record`
+  đều trả HTTP 200 trên preview (DB hiện 15 pick đều PENDING → empty state).
 
 ---
 
