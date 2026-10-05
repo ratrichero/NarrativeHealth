@@ -244,33 +244,41 @@ export async function GET() {
           WHERE cn.coin_id = ${coins.id} AND n.is_active = true
           ORDER BY cn.is_primary DESC LIMIT 1
         )`,
+        // TOP-REC-DATE-FALLBACK: giá và chỉ báo PHẢI lấy bản ghi mới nhất
+        // có ngày ≤ dataDate, KHÔNG được ghim cứng "= dataDate".
+        // market_price_daily cố ý loại bỏ nến ngày đang chạy dở
+        // (P6-DATA-02), nên nến gần nhất luôn là hôm qua trong khi
+        // health/recommendations đã mang ngày hôm nay → nếu ghim `= dataDate`
+        // thì currentPrice luôn NULL → mọi card mất setup và báo "không có dữ
+        // liệu giá". Lấy DESC LIMIT 1 theo từng coin để chịu được cả case coin
+        // thiếu nến riêng lẻ.
         closePrice: sql<string | null>`(
           SELECT p.close FROM market_price_daily p
-          WHERE p.coin_id = ${coins.id} AND p.date = ${dataDate}
-          LIMIT 1
+          WHERE p.coin_id = ${coins.id} AND p.date <= ${dataDate}
+          ORDER BY p.date DESC LIMIT 1
         )`,
         atr14: sql<string | null>`(
           SELECT i.indicator_value FROM indicators i
-          WHERE i.coin_id = ${coins.id} AND i.date = ${dataDate}
+          WHERE i.coin_id = ${coins.id} AND i.date <= ${dataDate}
             AND i.timeframe = '1d' AND i.indicator_type = 'ATR_14'
-          LIMIT 1
+          ORDER BY i.date DESC LIMIT 1
         )`,
         ema20: sql<string | null>`(
           SELECT i.indicator_value FROM indicators i
-          WHERE i.coin_id = ${coins.id} AND i.date = ${dataDate}
+          WHERE i.coin_id = ${coins.id} AND i.date <= ${dataDate}
             AND i.timeframe = '1d' AND i.indicator_type = 'EMA_20'
-          LIMIT 1
+          ORDER BY i.date DESC LIMIT 1
         )`,
         rsi14: sql<string | null>`(
           SELECT i.indicator_value FROM indicators i
-          WHERE i.coin_id = ${coins.id} AND i.date = ${dataDate}
+          WHERE i.coin_id = ${coins.id} AND i.date <= ${dataDate}
             AND i.timeframe = '1d' AND i.indicator_type = 'RSI_14'
-          LIMIT 1
+          ORDER BY i.date DESC LIMIT 1
         )`,
         fundingRate: sql<string | null>`(
           SELECT cm.funding_rate FROM coin_metrics cm
-          WHERE cm.coin_id = ${coins.id} AND cm.date = ${dataDate}
-          LIMIT 1
+          WHERE cm.coin_id = ${coins.id} AND cm.date <= ${dataDate}
+          ORDER BY cm.date DESC LIMIT 1
         )`,
       })
       .from(healthScores)
