@@ -154,6 +154,14 @@ export function ChatWidget() {
               copy[copy.length - 1] = { role: "assistant", content: copy[copy.length - 1].content + data.text };
               return copy;
             });
+          else if (event === "reset")
+            // The provider that was streaming died; the next one restarts the
+            // answer from scratch — clear what was already rendered.
+            setTurns((prev) => {
+              const copy = [...prev];
+              copy[copy.length - 1] = { role: "assistant", content: "" };
+              return copy;
+            });
           else if (event === "done") {
             setLastMeta(data);
             setStatus(null);

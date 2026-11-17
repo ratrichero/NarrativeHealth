@@ -7,6 +7,11 @@ import { chatSessions, chatMessages } from "@/db/schema";
 import { eq, asc, sql } from "drizzle-orm";
 import { chatCompletion, chatCompletionStream, type ChatMessage } from "./llm";
 import { CHAT_TOOLS, CHAT_TOOLS_OPENAI_FORMAT, executeChatTool } from "./tools";
+import {
+  accumulateToolCallDeltas,
+  normalizeToolArguments,
+  type ToolCallAccum,
+} from "./tool-call-accum";
 
 const MAX_TOOL_ROUNDS = 4;
 const HISTORY_LIMIT = 12; // last N messages sent to LLM as context
@@ -88,10 +93,29 @@ async function persistAssistantMessage(
 
 // ─── Tool-calling loop (non-streaming, used as fallback) ──
 
-interface ToolCallAccum {
-  id: string;
-  name: string;
-  args: string;
+/**
+ * Runs one tool call for both loops: malformed arguments are never executed —
+ * the model gets a tool result asking it to retry with valid JSON.
+ */
+async function runToolCall(
+  name: string,
+  rawArgs: string
+): Promise<{ content: string; executed: { name: string; latencyMs: number } | null }> {
+  const { json, malformed } = normalizeToolArguments(rawArgs);
+  if (malformed) {
+    return {
+      content: JSON.stringify({
+        error: "Malformed tool arguments; call the tool again with valid JSON.",
+      }),
+      executed: null,
+    };
+  }
+  const started = Date.now();
+  const result = await executeChatTool(name, JSON.parse(json) as Record<string, unknown>);
+  return {
+    content: JSON.stringify(result).slice(0, 4000), // cap tool payload in context
+    executed: { name, latencyMs: Date.now() - started },
+  };
 }
 
 export async function runChatTurn(
@@ -121,20 +145,9 @@ export async function runChatTurn(
     // Execute tools, append assistant + tool messages
     messages.push(message);
     for (const tc of message.tool_calls) {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(tc.function.arguments || "{}");
-      } catch {
-        // malformed args → empty
-      }
-      const started = Date.now();
-      const toolResult = await executeChatTool(tc.function.name, args);
-      executedTools.push({ name: tc.function.name, latencyMs: Date.now() - started });
-      messages.push({
-        role: "tool",
-        tool_call_id: tc.id,
-        content: JSON.stringify(toolResult).slice(0, 4000), // cap tool payload in context
-      });
+      const { content, executed } = await runToolCall(tc.function.name, tc.function.arguments);
+      if (executed) executedTools.push(executed);
+      messages.push({ role: "tool", tool_call_id: tc.id, content });
     }
   }
 
@@ -151,6 +164,7 @@ export async function runChatTurn(
 export interface StreamTurnEvents {
   onStatus: (status: string) => void; // e.g. "Đang tra cứu giá Binance..."
   onDelta: (text: string) => void;
+  onReset: () => void; // drop streamed text of a provider that died mid-answer
   onDone: (meta: { provider: string; toolCalls: { name: string; latencyMs: number }[] }) => void;
   onError: (message: string) => void;
 }
@@ -209,14 +223,14 @@ export async function runChatTurnStream(
             contentBuf += text;
             events.onDelta(text);
           },
-          onToolCallDelta: (frags) => {
-            for (const f of frags) {
-              const acc = toolAccums.get(f.index) ?? { id: "", name: "", args: "" };
-              if (f.id) acc.id = f.id;
-              if (f.name) acc.name = f.name;
-              acc.args += f.argsDelta;
-              toolAccums.set(f.index, acc);
-            }
+          onToolCallDelta: (frags) => accumulateToolCallDeltas(toolAccums, frags),
+          onReset: () => {
+            // SQ-CHAT-RESET: the provider failed mid-stream. Clear the buffer
+            // (and any partial tool fragments) so the next provider's answer
+            // replaces it instead of being concatenated onto it.
+            contentBuf = "";
+            toolAccums.clear();
+            events.onReset();
           },
         }
       );
@@ -238,30 +252,22 @@ export async function runChatTurnStream(
       const assistantMsg: ChatMessage = {
         role: "assistant",
         content: contentBuf || null,
+        // Valid JSON on the wire is guaranteed once, in messagesForProvider;
+        // Gemini's signature must survive the replay, so carry it along.
         tool_calls: [...toolAccums.values()].map((a) => ({
           id: a.id || `call_${a.name}_${round}`,
           type: "function" as const,
           function: { name: a.name, arguments: a.args || "{}" },
+          ...(a.extraContent ? { extra_content: a.extraContent } : {}),
         })),
       };
       messages.push(assistantMsg);
 
       for (const acc of toolAccums.values()) {
         events.onStatus(TOOL_STATUS_VI[acc.name] ?? `Đang gọi ${acc.name}...`);
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(acc.args || "{}");
-        } catch {
-          // malformed args
-        }
-        const started = Date.now();
-        const toolResult = await executeChatTool(acc.name, args);
-        executedTools.push({ name: acc.name, latencyMs: Date.now() - started });
-        messages.push({
-          role: "tool",
-          tool_call_id: acc.id || `call_${acc.name}_${round}`,
-          content: JSON.stringify(toolResult).slice(0, 4000),
-        });
+        const { content, executed } = await runToolCall(acc.name, acc.args);
+        if (executed) executedTools.push(executed);
+        messages.push({ role: "tool", tool_call_id: acc.id || `call_${acc.name}_${round}`, content });
       }
     }
 

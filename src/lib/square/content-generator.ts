@@ -4,8 +4,16 @@
 import type { SquareContentBrief } from "./opportunity-engine";
 import { buildChartCta as buildChartCtaFromEngine } from "./opportunity-engine";
 import { orderTpsForDisplay } from "./tp-order";
-import { resolveGooglePool, reportGoogleKeyOutcome, GOOGLE_POOL_BASE_URL, type GooglePooledProvider } from "@/lib/llm/google-key-pool";
+import { reportGoogleKeyOutcome, GOOGLE_POOL_BASE_URL } from "@/lib/llm/google-key-pool";
+import { keyHint, resolveProviderChain, type LlmProvider } from "@/lib/llm/provider-chain";
 import { recordLlmOutcome } from "@/lib/llm/monitor";
+import {
+  llmMaxHttpAttempts,
+  llmRequestTimeoutMs,
+  llmTemperature,
+  retryDelayMs,
+  sleep,
+} from "@/lib/llm/config";
 
 // ─── Template Version ──────────────────────────────────
 
@@ -47,128 +55,80 @@ export const DEFAULT_CONTENT_CONFIG: ContentGenerationConfig = {
 
 // ─── LLM Integration (OpenAI-compatible, multi-tier fallback) ──
 
-// Provider chain, resolved once from env. SQ-LLM-GOOGLE-ORDER (2026-09-29):
-// google → primary → fallback 1 → fallback 2. The google tier is a POOL of
-// Gemini OpenAI-compatible keys (GOOGLE_AI_API_KEYS="k1,k2,…", or the legacy
-// single GOOGLE_AI_API_KEY) rotated round-robin with per-key cooldowns
-// (GKEY-01); Groq primary and the OpenAI-compatible fallbacks back it up.
-interface LLMProviderConfig {
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-}
+// The provider chain (google pool -> primary -> fallback1 -> fallback2) is
+// shared with the chat chain — see @/lib/llm/provider-chain.
 
-function resolveProviderChain(): LLMProviderConfig[] {
-  const chain: LLMProviderConfig[] = [];
-
-  // SQ-LLM-GOOGLE: tried FIRST. Model defaults to gemini-2.5-flash-lite
-  // (fast, non-thinking, passes post validation); override via
-  // GOOGLE_AI_MODEL_NAME. Supports a multi-key pool (GKEY-01): every unused
-  // google project key expands into its own chain entry so a 429 on one key
-  // flows to the next key BEFORE leaving the google tier.
-  const googleModel =
-    process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite";
-  const googleEntries = resolveGooglePool(googleModel);
-  chain.push(
-    ...googleEntries.map(
-      (p: GooglePooledProvider): LLMProviderConfig => ({
-        name: p.name,
-        baseUrl: p.baseUrl,
-        apiKey: p.apiKey,
-        model: p.model,
-      })
-    )
-  );
-
-  const primaryKey = process.env.OPENAI_API_KEY;
-  if (primaryKey) {
-    chain.push({
-      name: "primary",
-      baseUrl: (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
-      apiKey: primaryKey,
-      model: process.env.MODEL_NAME || "gpt-4o-mini",
-    });
-  }
-
-  const fallbackKey = process.env.FALLBACK_OPENAI_API_KEY;
-  if (fallbackKey && process.env.FALLBACK_MODEL_NAME) {
-    chain.push({
-      name: "fallback1",
-      baseUrl: (process.env.FALLBACK_OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
-      apiKey: fallbackKey,
-      model: process.env.FALLBACK_MODEL_NAME,
-    });
-  }
-
-  const fallback2Key = process.env.FALLBACK2_OPENAI_API_KEY;
-  if (fallback2Key && process.env.FALLBACK2_MODEL_NAME) {
-    chain.push({
-      name: "fallback2",
-      baseUrl: (process.env.FALLBACK2_OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
-      apiKey: fallback2Key,
-      model: process.env.FALLBACK2_MODEL_NAME,
-    });
-  }
-
-  return chain;
-}
+type LLMProviderConfig = LlmProvider;
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** One successful HTTP attempt: raw text plus what the monitor needs. */
+interface LlmCallResult {
+  text: string;
+  status: number;
+  durationMs: number;
+}
 
 async function callOpenAICompatible(
   provider: LLMProviderConfig,
   messages: ChatMessage[],
   source: LlmSource = "square"
-): Promise<string | null> {
+): Promise<LlmCallResult | null> {
   // SQ-DIAG: free/on-demand Groq tiers enforce small OTPM budgets — a 429
   // here is usually "Please try again in N s", not a hard failure. Retry a
   // couple of times with backoff before moving on to the next provider.
-  const maxHttpAttempts = 3;
+  const maxHttpAttempts = llmMaxHttpAttempts();
   const startedAt = Date.now();
   let response: Response | null = null;
 
   for (let attempt = 1; attempt <= maxHttpAttempts; attempt++) {
-    response = await fetch(`${provider.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${provider.apiKey}`,
-      },
-      body: JSON.stringify({
+    try {
+      response = await fetch(`${provider.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${provider.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: provider.model,
+          messages,
+          temperature: llmTemperature(0.3),
+          max_tokens: MAX_LLM_OUTPUT_TOKENS,
+        }),
+        // SQ-DIAG: reasoning fallbacks (DeepSeek-V4, qwen3 via OpenRouter) can
+        // take 4-30s because reasoning tokens count before any output. 20s was
+        // too tight — healthy providers were being skipped as "timed out".
+        signal: AbortSignal.timeout(llmRequestTimeoutMs()),
+      });
+    } catch (error) {
+      // SQ-LLM-TRANSPORT: timeout / DNS / connection reset has no HTTP status,
+      // so the outcome must be reported here — otherwise a hanging google key
+      // never enters cooldown and is retried first on every following post.
+      if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+        reportGoogleKeyOutcome(provider.apiKey, false, undefined);
+      }
+      recordLlmOutcome({
+        provider: provider.name,
         model: provider.model,
-        messages,
-        temperature: 0.3,
-        max_tokens: MAX_LLM_OUTPUT_TOKENS,
-      }),
-      // SQ-DIAG: reasoning fallbacks (DeepSeek-V4, qwen3 via OpenRouter) can
-      // take 4-30s because reasoning tokens count before any output. 20s was
-      // too tight — healthy providers were being skipped as "timed out".
-      signal: AbortSignal.timeout(30000),
-    });
+        source,
+        ok: false,
+        status: 0,
+        durationMs: Date.now() - startedAt,
+        keyHint: keyHint(provider.apiKey),
+        error: (error instanceof Error ? error.message : String(error)).slice(0, 200),
+      });
+      return null;
+    }
 
     if (response.ok) break;
     // SQ-LLM-GOOGLE: 503 from Gemini ("high demand — usually temporary") is
     // transient just like a 429 — retry it instead of burning the tier.
     if ((response.status !== 429 && response.status !== 503) || attempt === maxHttpAttempts) break;
 
-    // Honor Retry-After header when present, else simple backoff.
-    const retryAfter = Number(response.headers.get("retry-after"));
-    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-      ? Math.min(retryAfter * 1000, 10000)
-      : 2000 * attempt;
-    await sleep(waitMs);
+    await sleep(retryDelayMs(response, attempt));
   }
 
-  if (!response) {
-    // Transport error (timeout/unreachable) — pool also needs to know.
-    if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
-      reportGoogleKeyOutcome(provider.apiKey, false, undefined);
-    }
-    return null;
-  }
+  if (!response) return null; // unreachable: every attempt returns or throws above
 
   // GKEY-01: feed the outcome back to the google key pool so cooldowns stay
   // accurate (200 clears; 401/403 long cooldown; 429/5xx short cooldown).
@@ -188,29 +148,31 @@ async function callOpenAICompatible(
       ok: false,
       status: response.status,
       durationMs: Date.now() - startedAt,
-      keyHint: maskKeyHint(provider.apiKey),
+      keyHint: keyHint(provider.apiKey),
       error: `HTTP ${response.status}: ${errBody.slice(0, 120)}`,
     });
     return null;
   }
 
+  // SQ-LLM-MONITOR: the caller records the final outcome once validation has
+  // run, so one HTTP attempt => exactly one monitor entry (previously a
+  // rejected post was logged as "ok" because only the HTTP status was known).
   const data = await response.json();
   const text = data.choices?.[0]?.message?.content;
-  recordLlmOutcome({
-    provider: provider.name,
-    model: provider.model,
-    source,
-    ok: typeof text === "string" && text.length > 0,
-    status: response.status,
-    durationMs: Date.now() - startedAt,
-    keyHint: maskKeyHint(provider.apiKey),
-    error: typeof text === "string" && text.length > 0 ? undefined : "empty content",
-  });
-  return typeof text === "string" && text.length > 0 ? text : null;
-}
-
-function maskKeyHint(key: string): string {
-  return key.length > 10 ? `…${key.slice(-4)}` : "…";
+  if (typeof text !== "string" || text.length === 0) {
+    recordLlmOutcome({
+      provider: provider.name,
+      model: provider.model,
+      source,
+      ok: false,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      keyHint: keyHint(provider.apiKey),
+      error: "empty content",
+    });
+    return null;
+  }
+  return { text, status: response.status, durationMs: Date.now() - startedAt };
 }
 
 async function generateWithLLM(
@@ -244,23 +206,33 @@ async function generateWithLLM(
 
       while (attempts < maxAttempts) {
         attempts++;
-        const rawText = await callOpenAICompatible(provider, conversation, source);
+        const call = await callOpenAICompatible(provider, conversation, source);
 
-        if (!rawText) {
+        if (!call) {
+          // Nothing to validate (HTTP failure, empty body or transport error —
+          // already recorded) → move on to the next provider.
           if (attempts === 1) {
-            console.warn(`[SQ-LLM] ${provider.name} returned empty content — trying next provider.`);
-            break;
+            console.warn(`[SQ-LLM] ${provider.name} returned no content — trying next provider.`);
           }
-          break; // repair attempt produced nothing — give up on this provider
+          break;
         }
 
         // SQ-DIAG: reasoning models (e.g. qwen3) emit <think>…</think> blocks
         // before the answer. Strip them before validation — the post is the
         // text after the think block, not the reasoning itself.
-        const generatedText = rawText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+        const generatedText = call.text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 
         const validated = validateLLMOutput(generatedText, brief);
         if (validated) {
+          recordLlmOutcome({
+            provider: provider.name,
+            model: provider.model,
+            source,
+            ok: true,
+            status: call.status,
+            durationMs: call.durationMs,
+            keyHint: keyHint(provider.apiKey),
+          });
           return {
             text: validated,
             llmUsed: true,
@@ -270,9 +242,9 @@ async function generateWithLLM(
         }
 
         // Diagnose why validation failed and decide whether a repair round
-        // can plausibly fix it (banned word / missing cashtag / missing
-        // Direction line / missing WHY NOW or INVALIDATION keyword = all
-        // repairable by instruction).
+        // can plausibly fix it (over-length / banned word / missing cashtag /
+        // missing Direction line / missing WHY NOW or INVALIDATION keyword =
+        // all repairable by instruction).
         const bannedMatch = generatedText.match(/\b(BUY|SELL|ORDER|EXECUTE)\b/i);
         const missingTag = brief.cashtags.find((t) => !generatedText.includes(t));
         const missingDirection =
@@ -281,17 +253,49 @@ async function generateWithLLM(
           brief.whyNowFacts != null && brief.whyNowFacts.length > 0 && !generatedText.includes("WHY NOW");
         const missingInvalidation =
           brief.invalidation && !generatedText.includes("INVALIDATION") && !generatedText.includes("invalidates");
+        // SQ-LLM-LENGTH: over-length is the most common rejection — models
+        // routinely return ~1500 chars against the 1400 cap. It is repairable
+        // by instruction (trim wording, keep the numbers), so it must not skip
+        // straight to the next provider the way a hard violation does.
+        const tooLong = generatedText.length > MAX_TEXT_LENGTH;
         const repairable =
-          bannedMatch != null || missingTag != null || missingDirection || missingWhyNow || missingInvalidation;
+          tooLong || bannedMatch != null || missingTag != null || missingDirection || missingWhyNow || missingInvalidation;
 
         console.warn(
           `[SQ-LLM] ${provider.name} output failed validation (attempt ${attempts}/${maxAttempts}) ` +
-          `(len=${generatedText.length}, ` +
+          `(len=${generatedText.length}, tooLong=${tooLong}, ` +
           `bannedWord=${bannedMatch ? `"${bannedMatch[0]}"` : "none"}, ` +
           `missingCashtag=${missingTag ?? "none"}, missingDirection=${missingDirection}, ` +
           `missingWhyNow=${missingWhyNow}, missingInvalidation=${missingInvalidation})` +
           (repairable && attempts < maxAttempts ? " — requesting repair." : " — trying next provider.")
         );
+
+        // Every rejected generation is its own monitor entry — this is the only
+        // signal that reveals why posts fall back to the template.
+        recordLlmOutcome({
+          provider: provider.name,
+          model: provider.model,
+          source,
+          ok: false,
+          status: call.status,
+          durationMs: call.durationMs,
+          keyHint: keyHint(provider.apiKey),
+          error: `validation:${
+            tooLong
+              ? "too_long"
+              : bannedMatch
+                ? "banned_word"
+                : missingTag
+                  ? "missing_cashtag"
+                  : missingDirection
+                    ? "missing_direction"
+                    : missingWhyNow
+                      ? "missing_why_now"
+                      : missingInvalidation
+                        ? "missing_invalidation"
+                        : "rejected"
+          }`,
+        });
 
         if (!repairable || attempts >= maxAttempts) break;
 
@@ -303,6 +307,9 @@ async function generateWithLLM(
             role: "user",
             content:
               `Your post was rejected. Fix it and output ONLY the corrected post text:\n` +
+              (tooLong
+                ? `- The post is ${generatedText.length} characters; the hard limit is ${MAX_TEXT_LENGTH}. Cut it down while keeping every cashtag, every level, WHY NOW, INVALIDATION, the chart line and the closing disclaimer.\n`
+                : "") +
               (bannedMatch
                 ? `- The word "${bannedMatch[0]}" is forbidden (trading-command language). Replace it with neutral analysis wording (e.g. "buyers", "sellers" are fine, but never the standalone word).\n`
                 : "") +
@@ -794,18 +801,37 @@ export async function generateMoversWithLLM(
 
   for (const provider of chain) {
     try {
-      const rawText = await callOpenAICompatible(
+      const call = await callOpenAICompatible(
         provider,
         [{ role: "user", content: prompt }],
         source
       );
-      if (!rawText) continue;
+      if (!call) continue;
 
-      const generatedText = rawText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+      const generatedText = call.text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
       const validated = validate(generatedText);
       if (validated) {
+        recordLlmOutcome({
+          provider: provider.name,
+          model: provider.model,
+          source,
+          ok: true,
+          status: call.status,
+          durationMs: call.durationMs,
+          keyHint: keyHint(provider.apiKey),
+        });
         return { text: validated, provider: provider.name };
       }
+      recordLlmOutcome({
+        provider: provider.name,
+        model: provider.model,
+        source,
+        ok: false,
+        status: call.status,
+        durationMs: call.durationMs,
+        keyHint: keyHint(provider.apiKey),
+        error: "validation:movers_format",
+      });
       console.warn(
         `[SQ-LLM] ${provider.name} movers output failed validation (len=${generatedText.length}) — trying next provider.`
       );

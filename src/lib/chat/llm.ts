@@ -3,70 +3,113 @@
 // with native tool calling and SSE streaming support. The google tier is a
 // multi-key pool (GKEY-01) shared with the Square chain.
 
-import {
-  resolveGooglePool,
-  reportGoogleKeyOutcome,
-  GOOGLE_POOL_BASE_URL,
-  type GooglePooledProvider,
-} from "@/lib/llm/google-key-pool";
+import { reportGoogleKeyOutcome, GOOGLE_POOL_BASE_URL } from "@/lib/llm/google-key-pool";
+import { keyHint, resolveProviderChain, type LlmProvider } from "@/lib/llm/provider-chain";
+import { normalizeToolArguments } from "./tool-call-accum";
 import { recordLlmOutcome } from "@/lib/llm/monitor";
+import {
+  llmMaxHttpAttempts,
+  llmRequestTimeoutMs,
+  llmTemperature,
+  retryDelayMs,
+  sleep,
+} from "@/lib/llm/config";
 
-export interface ChatLLMProvider {
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
+// CHAT-LLM-BUDGET: the chat output cap stays at/below the smallest provider
+// OTPM. Groq's qwen tier enforces 1000 output tokens/minute and rejects a
+// request whose max_tokens exceeds it with an instant HTTP 429 before any
+// generation happens (same limit documented in square/content-generator.ts).
+// Callers may ask for less, never for more.
+const MAX_CHAT_OUTPUT_TOKENS = 900;
+
+// CHAT-LLM-RETRY: 429 (rate limit) and 503 ("high demand") are transient, so
+// they are retried with backoff before the tier is dropped. Attempt count,
+// timeout and temperature come from @/lib/llm/config (LLM_* env vars).
+
+function chatOutputTokenBudget(requested?: number): number {
+  return Math.min(requested ?? MAX_CHAT_OUTPUT_TOKENS, MAX_CHAT_OUTPUT_TOKENS);
 }
 
-export function resolveChatProviderChain(): ChatLLMProvider[] {
-  const chain: ChatLLMProvider[] = [];
-
-  // CHAT-LLM-GOOGLE: tried FIRST, mirroring the Square chain order
-  // (google → primary → fallback1 → fallback2). Multi-key pool (GKEY-01):
-  // every available google project key becomes its own chain entry.
-  const googleModel =
-    process.env.GOOGLE_AI_MODEL_NAME || "gemini-2.5-flash-lite";
-  const googleEntries = resolveGooglePool(googleModel);
-  chain.push(
-    ...googleEntries.map(
-      (p: GooglePooledProvider): ChatLLMProvider => ({
-        name: p.name,
-        baseUrl: p.baseUrl,
-        apiKey: p.apiKey,
-        model: p.model,
-      })
-    )
-  );
-
-  const primaryKey = process.env.OPENAI_API_KEY;
-  if (primaryKey) {
-    chain.push({
-      name: "primary",
-      baseUrl: (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
-      apiKey: primaryKey,
-      model: process.env.MODEL_NAME || "gpt-4o-mini",
-    });
-  }
-  const fb1 = process.env.FALLBACK_OPENAI_API_KEY;
-  if (fb1 && process.env.FALLBACK_MODEL_NAME) {
-    chain.push({
-      name: "fallback1",
-      baseUrl: (process.env.FALLBACK_OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
-      apiKey: fb1,
-      model: process.env.FALLBACK_MODEL_NAME,
-    });
-  }
-  const fb2 = process.env.FALLBACK2_OPENAI_API_KEY;
-  if (fb2 && process.env.FALLBACK2_MODEL_NAME) {
-    chain.push({
-      name: "fallback2",
-      baseUrl: (process.env.FALLBACK2_OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
-      apiKey: fb2,
-      model: process.env.FALLBACK2_MODEL_NAME,
-    });
-  }
-  return chain;
+/**
+ * Per-provider view of the conversation. A replayed assistant tool call needs
+ * valid JSON arguments for every provider, plus Gemini's thought_signature for
+ * Google — while other providers reject the unknown `extra_content` field.
+ */
+function messagesForProvider(
+  provider: ChatLLMProvider,
+  messages: ChatMessage[]
+): ChatMessage[] {
+  const keepExtras = provider.baseUrl === GOOGLE_POOL_BASE_URL;
+  return messages.map((message) => {
+    if (!message.tool_calls?.length) return message;
+    return {
+      ...message,
+      tool_calls: message.tool_calls.map((call) => {
+        const base = {
+          id: call.id,
+          type: "function" as const,
+          function: {
+            name: call.function.name,
+            arguments: normalizeToolArguments(call.function.arguments).json,
+          },
+        };
+        return keepExtras && call.extra_content ? { ...base, extra_content: call.extra_content } : base;
+      }),
+    };
+  });
 }
+
+/** One request body shape for both the buffered and the streaming call. */
+function buildChatBody(
+  provider: ChatLLMProvider,
+  opts: LLMCompletionOptions,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    model: provider.model,
+    messages: messagesForProvider(provider, opts.messages),
+    ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools, tool_choice: "auto" } : {}),
+    temperature: llmTemperature(opts.temperature ?? 0.4),
+    max_tokens: chatOutputTokenBudget(opts.maxTokens),
+    ...extra,
+  };
+}
+
+export type ChatLLMProvider = LlmProvider;
+
+/**
+ * POST /chat/completions with retry for transient statuses. Throws on transport
+ * errors (timeout, DNS, connection reset) — callers treat that as tier failure.
+ */
+async function postChatCompletion(
+  provider: ChatLLMProvider,
+  body: Record<string, unknown>,
+  timeoutMs: number
+): Promise<Response> {
+  const maxAttempts = llmMaxHttpAttempts();
+  let response: Response | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    response = await fetch(`${provider.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${provider.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (response.ok) return response;
+    if ((response.status !== 429 && response.status !== 503) || attempt === maxAttempts) {
+      return response;
+    }
+    await sleep(retryDelayMs(response, attempt));
+  }
+  return response as Response;
+}
+
+/** Kept as a named export for the chat chain callers/tests. */
+export const resolveChatProviderChain = resolveProviderChain;
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -75,6 +118,8 @@ export interface ChatMessage {
     id: string;
     type: "function";
     function: { name: string; arguments: string };
+    /** Provider metadata replayed verbatim (Gemini thought_signature). */
+    extra_content?: unknown;
   }[];
   tool_call_id?: string;
 }
@@ -98,22 +143,13 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
   if (chain.length === 0) return null;
 
   for (const provider of chain) {
+    const startedAt = Date.now();
     try {
-      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${provider.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: provider.model,
-          messages: opts.messages,
-          ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools, tool_choice: "auto" } : {}),
-          temperature: opts.temperature ?? 0.4,
-          max_tokens: opts.maxTokens ?? 1200,
-        }),
-        signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
-      });
+      const response = await postChatCompletion(
+        provider,
+        buildChatBody(provider, opts),
+        opts.timeoutMs ?? llmRequestTimeoutMs(30_000)
+      );
 
       if (!response.ok) {
         const errBody = await response.text().catch(() => "");
@@ -127,8 +163,8 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
           source: "chat",
           ok: false,
           status: response.status,
-          durationMs: 0,
-          keyHint: provider.apiKey.length > 10 ? `…${provider.apiKey.slice(-4)}` : "…",
+          durationMs: Date.now() - startedAt,
+          keyHint: keyHint(provider.apiKey),
           error: `HTTP ${response.status}: ${errBody.slice(0, 120)}`,
         });
         continue; // next provider
@@ -149,8 +185,8 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
         source: "chat",
         ok: true,
         status: response.status,
-        durationMs: 0,
-        keyHint: provider.apiKey.length > 10 ? `…${provider.apiKey.slice(-4)}` : "…",
+        durationMs: Date.now() - startedAt,
+        keyHint: keyHint(provider.apiKey),
       });
       return { provider: provider.name, message: msg as ChatMessage };
     } catch (e) {
@@ -164,7 +200,8 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
         source: "chat",
         ok: false,
         status: 0,
-        durationMs: 0,
+        durationMs: Date.now() - startedAt,
+        keyHint: keyHint(provider.apiKey),
         error: String(e).slice(0, 200),
       });
       continue;
@@ -183,31 +220,27 @@ export async function chatCompletionStream(
   opts: LLMCompletionOptions,
   handlers: {
     onContentDelta: (text: string) => void;
-    onToolCallDelta: (fragments: { index: number; id?: string; name?: string; argsDelta: string }[]) => void;
+    onToolCallDelta: (
+      fragments: { index?: number; id?: string; name?: string; argsDelta: string; extraContent?: unknown }[]
+    ) => void;
+    /** Called when a provider died mid-stream after emitting deltas. */
+    onReset?: () => void;
   }
 ): Promise<{ provider: string } | null> {
   const chain = resolveChatProviderChain();
   if (chain.length === 0) return null;
 
   for (const provider of chain) {
+    const startedAt = Date.now();
     let response: Response;
     try {
-      response = await fetch(`${provider.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${provider.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: provider.model,
-          messages: opts.messages,
-          ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools, tool_choice: "auto" } : {}),
-          temperature: opts.temperature ?? 0.4,
-          max_tokens: opts.maxTokens ?? 1200,
-          stream: true,
-        }),
-        signal: AbortSignal.timeout(opts.timeoutMs ?? 60_000),
-      });
+      response = await postChatCompletion(
+        provider,
+        buildChatBody(provider, opts, { stream: true }),
+        // LLM_REQUEST_TIMEOUT is a per-request budget; a streamed answer can
+        // legitimately take longer, so the stream keeps a 60s floor.
+        opts.timeoutMs ?? Math.max(llmRequestTimeoutMs(60_000), 60_000)
+      );
     } catch (e) {
       console.warn(`[CHAT-LLM] ${provider.name} stream failed: ${String(e).slice(0, 150)}`);
       if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
@@ -219,7 +252,8 @@ export async function chatCompletionStream(
         source: "chat",
         ok: false,
         status: 0,
-        durationMs: 0,
+        durationMs: Date.now() - startedAt,
+        keyHint: keyHint(provider.apiKey),
         error: String(e).slice(0, 200),
       });
       continue;
@@ -237,11 +271,17 @@ export async function chatCompletionStream(
         source: "chat",
         ok: false,
         status: response.status,
-        durationMs: 0,
+        durationMs: Date.now() - startedAt,
+        keyHint: keyHint(provider.apiKey),
         error: `stream HTTP ${response.status}: ${errBody.slice(0, 120)}`,
       });
       continue;
     }
+
+    // SQ-CHAT-RESET: tracks whether this provider already pushed deltas to the
+    // client. A failure after that point must trigger onReset, otherwise the
+    // next provider's answer is appended to the dead provider's partial text.
+    let emitted = false;
 
     try {
       const reader = response.body.getReader();
@@ -267,16 +307,26 @@ export async function chatCompletionStream(
             const delta = chunk.choices?.[0]?.delta;
             if (!delta) continue;
             if (typeof delta.content === "string" && delta.content.length > 0) {
+              emitted = true;
               handlers.onContentDelta(delta.content);
             }
             if (Array.isArray(delta.tool_calls)) {
+              emitted = true;
               handlers.onToolCallDelta(
-                delta.tool_calls.map((tc: { index: number; id?: string; function?: { name?: string; arguments?: string } }) => ({
-                  index: tc.index,
-                  id: tc.id,
-                  name: tc.function?.name,
-                  argsDelta: tc.function?.arguments ?? "",
-                }))
+                delta.tool_calls.map(
+                  (tc: {
+                    index?: number;
+                    id?: string;
+                    function?: { name?: string; arguments?: string };
+                    extra_content?: unknown;
+                  }) => ({
+                    index: tc.index,
+                    id: tc.id,
+                    name: tc.function?.name,
+                    argsDelta: tc.function?.arguments ?? "",
+                    extraContent: tc.extra_content,
+                  })
+                )
               );
             }
           } catch {
@@ -284,9 +334,39 @@ export async function chatCompletionStream(
           }
         }
       }
+      // CHAT-LLM-MONITOR: streaming used to return without reporting anything,
+      // so the pool never cleared a cooldown after a successful stream and the
+      // admin LLM Monitor saw the chat tier as all-fail.
+      if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+        reportGoogleKeyOutcome(provider.apiKey, true, response.status);
+      }
+      recordLlmOutcome({
+        provider: provider.name,
+        model: provider.model,
+        source: "chat",
+        ok: true,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        keyHint: keyHint(provider.apiKey),
+      });
       return { provider: provider.name };
     } catch (e) {
       console.warn(`[CHAT-LLM] ${provider.name} stream read failed: ${String(e).slice(0, 150)}`);
+      if (provider.baseUrl === GOOGLE_POOL_BASE_URL) {
+        reportGoogleKeyOutcome(provider.apiKey, false, undefined);
+      }
+      recordLlmOutcome({
+        provider: provider.name,
+        model: provider.model,
+        source: "chat",
+        ok: false,
+        status: 0,
+        durationMs: Date.now() - startedAt,
+        keyHint: keyHint(provider.apiKey),
+        error: String(e).slice(0, 200),
+      });
+      // Partial output was already forwarded — drop it before falling through.
+      if (emitted) handlers.onReset?.();
       continue;
     }
   }

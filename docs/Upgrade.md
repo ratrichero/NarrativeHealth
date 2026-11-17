@@ -1,6 +1,82 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-10-04
+## Ngày cập nhật: 2026-11-17
+
+---
+
+## LLM-17.11.2026 — Hạ tầng LLM dùng chung, ngân sách token và sửa lỗi 400 khi replay tool call (2026-11-17)
+
+Hai consumer LLM (bài Square/Movers và chat) mỗi bên tự resolve provider chain, tự
+viết retry và tự mask key → đã lệch nhau (chat thiếu retry 429/503 và thiếu báo cáo
+pool, monitor ghi trùng một attempt thành hai). Trên production, mọi lượt chat có
+gọi tool đều nhận 400 từ Gemini và Groq.
+
+### Hạ tầng chung
+
+- **`src/lib/llm/provider-chain.ts` (mới)**: `resolveProviderChain()` (google pool →
+  primary → fallback1 → fallback2) + `keyHint()`. Xoá bản copy trong
+  `square/content-generator.ts` và `chat/llm.ts` — nguồn drift.
+- **`src/lib/llm/config.ts` (mới)**: đọc `LLM_MAX_RETRIES` (clamp 1–4 attempts),
+  `LLM_REQUEST_TIMEOUT` (5–120s), `LLM_TEMPERATURE` (0–1.5); `retryDelayMs()` và
+  `sleep()` dùng chung. Trước đây các env này có trong `.env` nhưng code hardcode.
+- **`src/lib/llm/__tests__/llm-env.ts` (mới)**: helper setup/restore env cho test.
+
+### Chat (`src/lib/chat/llm.ts`)
+
+- **`MAX_CHAT_OUTPUT_TOKENS = 900`**: chặn model trả lời dài làm nghẽn stream.
+- **Retry 429/503** qua `postChatCompletion`, honor `retry-after` (cap 10s); không
+  retry 4xx khác.
+- **`buildChatBody()`**: một shape request cho cả buffered và streaming.
+- **Stream giữ timeout sàn 60s**: `LLM_REQUEST_TIMEOUT` chỉ áp cho call thường,
+  tránh cắt câu trả lời dài khi env đặt 30s.
+- **`onReset` khi provider chết giữa stream**: orchestrator xoá `contentBuf` và
+  `toolAccums`, route phát SSE `reset`, `ChatWidget` xoá bubble — câu trả lời của
+  provider kế tiếp không bị nối đôi.
+- **Monitor**: stream báo success + `durationMs` thật (trước im lặng và luôn 0ms).
+
+### Square (`src/lib/square/content-generator.ts`)
+
+- **Transport error** (fetch throw) → `reportGoogleKeyOutcome(key, false)` +
+  `recordLlmOutcome(status 0)`, thay vì im lặng bỏ qua key.
+- **`tooLong` vào diện repairable** + câu repair nêu rõ hard limit 1400 ký tự, nên
+  output quá dài được sửa thay vì bị loại oan.
+- **Một HTTP attempt chỉ ghi một outcome**; output bị validate loại ghi
+  `validation:<reason>` (banned_word, missing_cashtag, too_long...).
+
+### Tool-call replay — nguyên nhân lỗi 400
+
+- Gemini trả `tool_calls[i].extra_content.google.thought_signature`; replay thiếu
+  field này → `400 Function call is missing a thought_signature`. Groq trả
+  `400 invalid JSON in messages[N].tool_calls[0]` khi `arguments` không phải JSON.
+  Gemini stream cả call trong **một delta không có `index`**, nên accumulator cũ
+  gộp args của nhiều call vào một chuỗi → JSON hỏng.
+- **`src/lib/chat/tool-call-accum.ts` (mới)**: gộp delta theo `id` khi thiếu `index`,
+  nối fragment không id vào call gần nhất, giữ `extra_content`;
+  `normalizeToolArguments()` bảo đảm JSON hợp lệ.
+- **`messagesForProvider()`** trong `chat/llm.ts`: chỉ gửi `extra_content` cho
+  Google (provider khác từ chối field lạ), luôn chuẩn hoá `arguments` trên wire.
+- **`runToolCall()`** trong orchestrator: một policy duy nhất cho cả stream và
+  non-stream — args hỏng thì **không chạy tool**, trả tool message yêu cầu gọi lại.
+
+### Test & kiểm chứng
+
+- Test mới: `chat/__tests__/tool-call-accum.test.ts`, `chat/__tests__/llm.test.ts`,
+  `chat/__tests__/orchestrator-non-stream.test.ts`,
+  `square/__tests__/content-generator-transport.test.ts`,
+  `square/__tests__/content-generator-length-repair.test.ts`.
+- `npx tsc --noEmit` sạch; `npx jest src/lib/chat src/lib/square src/lib/llm` =
+  15 suite / 206 test pass (suite live-network `operate-02` flaky sẵn, pass khi chạy riêng).
+- Chat thật trên local (DB local): google 2 vòng tool, primary (Groq) 9 tool call,
+  fallback1 1 tool call — không còn 400 ở cả ba tier.
+
+### Việc cần làm khi deploy
+
+- Production còn key Google đã bị suspend (`projects/1017409226529`, 403) → thay key.
+- fallback1 (tokenharbor free) cần bật "free-model data sharing" trong dashboard,
+  nếu không sẽ 403.
+- Env giờ có tác dụng thật: `LLM_MAX_RETRIES=6` → 4 attempts (do cap),
+  `LLM_TEMPERATURE=0.6` áp cho bài Square (trước hardcode 0.3). Muốn giữ hành vi cũ
+  thì đặt `LLM_MAX_RETRIES=2`, `LLM_TEMPERATURE=0.3`.
 
 ---
 
