@@ -21,10 +21,12 @@ import {
 } from "./google-key-pool";
 import {
   loadLlmRuntimeSettings,
+  type LlmFeatureProfile,
   type LlmTierId,
   type RuntimeLlmSettings,
   type RuntimeTier,
 } from "./settings";
+import { keyOverBudget } from "./budget";
 
 export interface LlmProvider {
   name: string;
@@ -95,7 +97,10 @@ function envTier(
  * tiers that are not configured there. Exported so the admin API can preview a
  * draft config without saving it.
  */
-export function buildChainFromSettings(stored: RuntimeLlmSettings | null): LlmProvider[] {
+export function buildChainFromSettings(
+  stored: RuntimeLlmSettings | null,
+  profile?: LlmFeatureProfile
+): LlmProvider[] {
   const chain: LlmProvider[] = [];
 
   // ─── google pool (tried first) ───
@@ -134,7 +139,35 @@ export function buildChainFromSettings(stored: RuntimeLlmSettings | null): LlmPr
     defaultBaseUrl: "https://api.openai.com/v1",
   });
 
-  return chain;
+  return affordableForBudget(applyProfile(chain, stored, profile));
+}
+
+/**
+ * LLM-PROFILE-01: a feature may pin its own tier order (e.g. chat prefers the
+ * fast Groq tier while Square prefers Google's longer context). Tiers missing
+ * from the profile list are dropped for that feature only.
+ */
+function applyProfile(
+  chain: LlmProvider[],
+  stored: RuntimeLlmSettings | null,
+  profile: LlmFeatureProfile | undefined
+): LlmProvider[] {
+  const order = profile ? stored?.profiles?.[profile] : undefined;
+  if (!order || order.length === 0) return chain;
+  const rank = new Map(order.map((name, index) => [name, index]));
+  return chain
+    .filter((provider) => rank.has(provider.name as LlmTierId))
+    .sort((a, b) => (rank.get(a.name as LlmTierId) ?? 0) - (rank.get(b.name as LlmTierId) ?? 0));
+}
+
+/**
+ * LLM-BUDGET-01: a key that already spent its per-minute token window should
+ * not be tried first (the request would only earn a 429). When every tier is
+ * over budget the chain is returned untouched — the caller may still succeed.
+ */
+function affordableForBudget(chain: LlmProvider[]): LlmProvider[] {
+  const affordable = chain.filter((provider) => !keyOverBudget(provider.apiKey, 800));
+  return affordable.length > 0 ? affordable : chain;
 }
 
 function googleEntries(model: string, row: RuntimeTier | undefined): LlmProvider[] {
@@ -149,6 +182,8 @@ function googleEntries(model: string, row: RuntimeTier | undefined): LlmProvider
   );
 }
 
-export async function resolveProviderChain(): Promise<LlmProvider[]> {
-  return buildChainFromSettings(await loadLlmRuntimeSettings());
+export async function resolveProviderChain(
+  profile?: LlmFeatureProfile
+): Promise<LlmProvider[]> {
+  return buildChainFromSettings(await loadLlmRuntimeSettings(), profile);
 }

@@ -17,9 +17,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { keyHint, buildChainFromSettings, resolveProviderChain } from "@/lib/llm/provider-chain";
 import { resetGooglePoolCooldowns } from "@/lib/llm/google-key-pool";
+import { canarySnapshot, runLlmCanary } from "@/lib/llm/canary";
 import { envForTier, mergeTiers, previewChain, type TierInput } from "@/lib/llm/tier-input";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth/session";
 import {
+  LLM_FEATURE_PROFILES,
   LLM_TIER_IDS,
   clearStoredLlmSettings,
   decryptSecret,
@@ -32,6 +34,7 @@ import {
   readStoredLlmSettings,
   rollbackLlmSettings,
   saveStoredLlmSettings,
+  type LlmFeatureProfile,
   type LlmTierId,
   type RuntimeLlmSettings,
   type RuntimeTier,
@@ -60,6 +63,22 @@ function maskChain(chain: Awaited<ReturnType<typeof resolveProviderChain>>) {
   }));
 }
 
+/** Keep only known tiers, first occurrence wins, and never store an empty list. */
+function sanitizeProfiles(
+  input: Partial<Record<LlmFeatureProfile, LlmTierId[]>>
+): Partial<Record<LlmFeatureProfile, LlmTierId[]>> {
+  const out: Partial<Record<LlmFeatureProfile, LlmTierId[]>> = {};
+  for (const feature of LLM_FEATURE_PROFILES) {
+    const order = input?.[feature];
+    if (!Array.isArray(order)) continue;
+    const clean = order.filter(
+      (tier, index) => LLM_TIER_IDS.includes(tier) && order.indexOf(tier) === index
+    );
+    if (clean.length > 0) out[feature] = clean;
+  }
+  return out;
+}
+
 async function buildView() {
   const [stored, runtime, chain, history] = await Promise.all([
     readStoredLlmSettings(),
@@ -74,6 +93,8 @@ async function buildView() {
     source: stored ? ("db" as const) : ("env" as const),
     updatedAt: stored?.updatedAt ?? null,
     updatedBy: stored?.updatedBy ?? null,
+    profiles: stored?.profiles ?? null,
+    canary: canarySnapshot(),
     tiers: LLM_TIER_IDS.map((tier) => {
       const row = stored?.tiers?.[tier];
       const runtimeTier = runtime?.tiers?.[tier];
@@ -166,10 +187,13 @@ export async function PUT(request: NextRequest) {
   try {
     const body = (await request.json()) as {
       tiers?: Partial<Record<LlmTierId, TierInput>>;
+      profiles?: Partial<Record<LlmFeatureProfile, LlmTierId[]>>;
       dryRun?: boolean;
     };
     const existing = await readStoredLlmSettings();
     const { tiers, errors } = mergeTiers(existing, body.tiers ?? {});
+    const profiles =
+      body.profiles === undefined ? existing?.profiles : sanitizeProfiles(body.profiles);
 
     if (errors.length > 0) {
       return NextResponse.json({ success: false, error: errors.join(" ") }, { status: 400 });
@@ -184,7 +208,7 @@ export async function PUT(request: NextRequest) {
     }
 
     await saveStoredLlmSettings(
-      { version: 1, tiers, updatedAt: new Date().toISOString() },
+      { version: 1, tiers, profiles, updatedAt: new Date().toISOString() },
       { updatedBy: await actor(request) }
     );
 
@@ -255,6 +279,12 @@ export async function POST(request: NextRequest) {
         { updatedBy: who }
       );
       return NextResponse.json({ success: true, data: await buildView() });
+    }
+
+    if (body.action === "verify" || body.action === "canary") {
+      // Verify-on-save: probe every tier in the chain right after a config change.
+      const results = await runLlmCanary();
+      return NextResponse.json({ success: true, data: { results, view: await buildView() } });
     }
 
     if (body.action === "resetCooldown") {

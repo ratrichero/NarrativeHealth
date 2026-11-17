@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/Button";
 
 type TierId = "google" | "primary" | "fallback1" | "fallback2";
 type TierSource = "db" | "env" | "off" | "none";
+type FeatureId = "chat" | "square" | "movers";
 
 interface TierView {
   tier: TierId;
@@ -49,6 +50,7 @@ interface ProvidersView {
   updatedAt: string | null;
   updatedBy: string | null;
   tiers: TierView[];
+  profiles: Partial<Record<FeatureId, TierId[]>> | null;
   effective: ChainEntry[];
   history: {
     updatedAt: string;
@@ -70,6 +72,8 @@ interface LiveStatus {
     available: number;
     perKey: { suffix: string; lastStatus: number | null; cooling: boolean }[];
   };
+  /** Persistent-telemetry storm alerts (LLM-TELEMETRY-01). */
+  alerts?: { provider: string; message: string }[];
 }
 
 interface TestResult {
@@ -91,6 +95,25 @@ interface Draft {
 }
 
 const TIER_ORDER: TierId[] = ["google", "primary", "fallback1", "fallback2"];
+
+const FEATURES: { id: FeatureId; label: string }[] = [
+  { id: "chat", label: "Chat" },
+  { id: "square", label: "Square" },
+  { id: "movers", label: "Movers" },
+];
+
+interface VerifyResult {
+  provider: string;
+  model: string;
+  ok: boolean;
+  status: number;
+  latencyMs: number;
+}
+
+/** Preferred tier first, the remaining tiers keep their default order. */
+function orderFromPreferred(preferred: TierId): TierId[] {
+  return [preferred, ...TIER_ORDER.filter((tier) => tier !== preferred)];
+}
 
 const TIER_META: Record<TierId, { label: string; note: string }> = {
   google: { label: "Google (pool)", note: "Nhiều key, mỗi key một entry; 429 chảy sang key kế." },
@@ -169,6 +192,10 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
   const [tests, setTests] = useState<Partial<Record<TierId, TestResult>>>({});
   const [preview, setPreview] = useState<ChainEntry[] | null>(null);
   const [importJson, setImportJson] = useState("");
+  const [profiles, setProfiles] = useState<Partial<Record<FeatureId, TierId[]>>>(
+    () => initial.profiles ?? {}
+  );
+  const [verify, setVerify] = useState<VerifyResult[] | null>(null);
 
   const { data: live } = useQuery({
     queryKey: ["admin", "llm", "status"],
@@ -183,6 +210,8 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
   );
   const newKeysTyped = dirtyTiers.some((tier) => draft[tier].keys.trim().length > 0);
   const keysBlocked = newKeysTyped && !data.secretConfigured;
+  const profilesDirty =
+    JSON.stringify(profiles) !== JSON.stringify(initial.profiles ?? {});
 
   const payload = () => {
     const tiers: Record<string, unknown> = {};
@@ -203,13 +232,35 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
         timeoutMs: num(entry.timeoutMs),
       };
     }
-    return { tiers };
+    return { tiers, profiles };
   };
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["admin", "llm", "providers"] });
     queryClient.invalidateQueries({ queryKey: ["admin", "llm", "status"] });
   };
+
+  const verifyMutation = useMutation({
+    mutationFn: async (): Promise<{ results: VerifyResult[] }> =>
+      readJson(
+        await fetch("/api/admin/llm/providers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "verify" }),
+        })
+      ),
+    onSuccess: (next) => {
+      setVerify(next.results);
+      const failed = next.results.filter((r) => !r.ok).length;
+      setNotice(
+        failed === 0
+          ? `Verify: ${next.results.length}/${next.results.length} tier OK.`
+          : `Verify: ${failed}/${next.results.length} tier FAIL — xem chi tiết bên dưới.`
+      );
+      refresh();
+    },
+    onError: (err) => setNotice(`Verify lỗi: ${(err as Error).message}`),
+  });
 
   const saveMutation = useMutation({
     mutationFn: async () =>
@@ -224,6 +275,8 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
       setNotice("Đã lưu. Chain mới có hiệu lực ngay (instance khác nhận qua NOTIFY).");
       setPreview(null);
       refresh();
+      // Verify-on-save (LLM-CANARY-01): probe every tier right away.
+      verifyMutation.mutate();
     },
     onError: (err) => setNotice(`Lỗi: ${(err as Error).message}`),
   });
@@ -301,6 +354,7 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
   };
 
   const failingTiers = (live?.tiers ?? []).filter((t) => t.calls > 0 && t.ok === 0);
+  const stormAlerts = live?.alerts ?? [];
 
   return (
     <div className="p-4 md:p-6 space-y-6">
@@ -504,11 +558,19 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
         <Button
           onClick={() => saveMutation.mutate()}
           loading={saveMutation.isPending}
-          disabled={dirtyTiers.length === 0 || keysBlocked}
+          disabled={(dirtyTiers.length === 0 && !profilesDirty) || keysBlocked}
           size="sm"
         >
           <Save className="h-3.5 w-3.5 mr-1" />
           Lưu {dirtyTiers.length > 0 ? `(${dirtyTiers.length} tier thay đổi)` : ""}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => verifyMutation.mutate()}
+          loading={verifyMutation.isPending}
+        >
+          Verify tất cả tier
         </Button>
         <Button
           variant="secondary"
@@ -559,6 +621,68 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
               ))
             )}
           </ol>
+        </div>
+      )}
+
+      <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 space-y-2">
+        <h4 className="text-sm font-semibold text-white">Ưu tiên tier theo feature</h4>
+        <p className="text-[11px] text-slate-500">
+          Mặc định dùng đúng thứ tự chain. Chọn một tier để đưa nó lên đầu cho riêng feature đó
+          (các tier còn lại giữ nguyên thứ tự).
+        </p>
+        <div className="flex flex-wrap gap-3">
+          {FEATURES.map((feature) => (
+            <label key={feature.id} className="text-xs text-slate-400">
+              {feature.label}
+              <select
+                value={profiles[feature.id]?.[0] ?? ""}
+                onChange={(e) => {
+                  const next = { ...profiles };
+                  if (!e.target.value) delete next[feature.id];
+                  else next[feature.id] = orderFromPreferred(e.target.value as TierId);
+                  setProfiles(next);
+                }}
+                className="mt-1 block rounded border border-slate-700 bg-slate-900/70 px-2 py-1.5 text-xs text-slate-200"
+              >
+                <option value="">Mặc định (google → primary → fallback1 → fallback2)</option>
+                {TIER_ORDER.map((tier) => (
+                  <option key={tier} value={tier}>
+                    {tier} trước
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {stormAlerts.length > 0 && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200 space-y-1">
+          <p className="font-semibold">Cảnh báo từ telemetry 15 phút gần nhất</p>
+          {stormAlerts.map((alert) => (
+            <p key={`${alert.provider}-${alert.message}`} className="font-mono">
+              {alert.message}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {verify && (
+        <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 space-y-1">
+          <h4 className="text-sm font-semibold text-white">Kết quả verify (ping 1 token mỗi tier)</h4>
+          {verify.length === 0 ? (
+            <p className="text-xs text-amber-300">Không có tier nào trong chain để verify.</p>
+          ) : (
+            verify.map((result) => (
+              <p
+                key={`${result.provider}-${result.model}`}
+                className={`text-xs font-mono ${result.ok ? "text-green-400" : "text-red-400"}`}
+              >
+                {result.ok ? "OK" : "FAIL"} · {result.provider} · {result.model} · HTTP{" "}
+                {result.status} · {result.latencyMs}ms
+              </p>
+            ))
+          )}
         </div>
       )}
 

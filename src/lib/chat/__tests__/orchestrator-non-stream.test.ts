@@ -86,7 +86,10 @@ describe("runChatTurn tool-argument handling", () => {
 
     expect(toolMock).toHaveBeenCalledWith("get_live_price", { symbol: "BTC" });
     const toolMessage = messagesOfCall(1).find((m) => m.role === "tool");
-    expect(JSON.parse(String(toolMessage!.content))).toEqual({ price: 64000 });
+    // LLM-TOOL-01: tool output is framed as data for the model, with the JSON
+    // payload preserved inside.
+    expect(String(toolMessage!.content)).toContain("DỮ LIỆU TOOL");
+    expect(String(toolMessage!.content)).toContain(JSON.stringify({ price: 64000 }));
     expect(result).toMatchObject({
       reply: "BTC đang ở 64k.",
       toolCalls: [{ name: "get_live_price", latencyMs: expect.any(Number) }],

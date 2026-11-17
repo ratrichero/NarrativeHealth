@@ -16,17 +16,27 @@
 import { NextResponse } from "next/server";
 import { llmOutcomeSnapshot, llmTierStats } from "@/lib/llm/monitor";
 import { googlePoolStats } from "@/lib/llm/google-key-pool";
+import { detectLlmStorms, llmTelemetrySnapshot } from "@/lib/llm/telemetry";
+import { budgetStats } from "@/lib/llm/budget";
+import { capabilitiesSnapshot } from "@/lib/llm/capabilities";
+import { canarySnapshot } from "@/lib/llm/canary";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    const telemetry = await llmTelemetrySnapshot();
     return NextResponse.json({
       success: true,
       data: {
         live: llmOutcomeSnapshot(),
         tiers: llmTierStats(),
         googlePool: googlePoolStats(),
+        telemetry,
+        alerts: detectLlmStorms(telemetry.buckets),
+        budget: budgetStats(),
+        capabilities: capabilitiesSnapshot(),
+        canary: canarySnapshot(),
       },
     });
   } catch (error) {

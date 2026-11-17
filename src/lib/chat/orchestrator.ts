@@ -12,9 +12,25 @@ import {
   normalizeToolArguments,
   type ToolCallAccum,
 } from "./tool-call-accum";
+import { frameToolResult, sanitizeToolArgs, toolAllowed } from "./tool-schema";
+import { getCachedAnswer, setCachedAnswer } from "./answer-cache";
+import { trimHistoryForBudget } from "@/lib/llm/context";
 
 const MAX_TOOL_ROUNDS = 4;
 const HISTORY_LIMIT = 12; // last N messages sent to LLM as context
+// LLM-TOOL-01: a turn may not run away with tool calls even inside 4 rounds.
+const MAX_TOOL_CALLS_PER_TURN = 8;
+const TURN_WALL_CLOCK_MS = 90_000;
+
+interface ToolTurnContext {
+  cache: Map<string, string>;
+  deadline: number;
+  count: number;
+}
+
+function newToolTurnContext(): ToolTurnContext {
+  return { cache: new Map(), deadline: Date.now() + TURN_WALL_CLOCK_MS, count: 0 };
+}
 
 // ─── System prompt ──────────────────────────────────────
 
@@ -99,7 +115,8 @@ async function persistAssistantMessage(
  */
 async function runToolCall(
   name: string,
-  rawArgs: string
+  rawArgs: string,
+  ctx?: ToolTurnContext
 ): Promise<{ content: string; executed: { name: string; latencyMs: number } | null }> {
   const { json, malformed } = normalizeToolArguments(rawArgs);
   if (malformed) {
@@ -110,10 +127,44 @@ async function runToolCall(
       executed: null,
     };
   }
+
+  // LLM-TOOL-01: per-turn budget first, then per-tool rate limit, then shape.
+  if (ctx && (Date.now() > ctx.deadline || ctx.count >= MAX_TOOL_CALLS_PER_TURN)) {
+    return {
+      content: JSON.stringify({
+        error: "Tool budget for this turn is exhausted — answer with the data already collected.",
+      }),
+      executed: null,
+    };
+  }
+
+  const guard = toolAllowed(name);
+  if (!guard.allowed) {
+    return { content: JSON.stringify({ error: guard.reason }), executed: null };
+  }
+
+  const sanitized = sanitizeToolArgs(name, JSON.parse(json) as Record<string, unknown>);
+  if (!sanitized.ok) {
+    return {
+      content: JSON.stringify({ error: `Invalid tool arguments: ${sanitized.error}` }),
+      executed: null,
+    };
+  }
+
+  // Identical calls inside one turn reuse the result (models often repeat a
+  // tool call after a rejected argument or a repair round).
+  const cacheKey = `${name}:${JSON.stringify(sanitized.args)}`;
+  const cached = ctx?.cache.get(cacheKey);
+  if (cached) return { content: cached, executed: null };
+
+  if (ctx) ctx.count++;
   const started = Date.now();
-  const result = await executeChatTool(name, JSON.parse(json) as Record<string, unknown>);
+  const result = await executeChatTool(name, sanitized.args);
+  // Tool output is data, not instructions — frame it before the model sees it.
+  const content = frameToolResult(JSON.stringify(result).slice(0, 4000));
+  ctx?.cache.set(cacheKey, content);
   return {
-    content: JSON.stringify(result).slice(0, 4000), // cap tool payload in context
+    content,
     executed: { name, latencyMs: Date.now() - started },
   };
 }
@@ -122,14 +173,21 @@ export async function runChatTurn(
   sessionId: string,
   userMessage: string
 ): Promise<{ reply: string; provider: string; toolCalls: { name: string; latencyMs: number }[] } | { error: string }> {
+  const cached = getCachedAnswer(sessionId, userMessage);
+  if (cached) {
+    return { reply: cached.text, provider: `cache:${cached.provider}`, toolCalls: [] };
+  }
+
   const history = await loadHistory(sessionId);
+  const { messages: trimmedHistory } = trimHistoryForBudget(history);
   const messages: ChatMessage[] = [
     { role: "system", content: buildSystemPrompt() },
-    ...history,
+    ...trimmedHistory,
     { role: "user", content: userMessage },
   ];
 
   const executedTools: { name: string; latencyMs: number }[] = [];
+  const toolCtx = newToolTurnContext();
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const result = await chatCompletion({ messages, tools: CHAT_TOOLS_OPENAI_FORMAT });
@@ -139,13 +197,19 @@ export async function runChatTurn(
 
     if (!message.tool_calls || message.tool_calls.length === 0) {
       // Final answer
-      return { reply: message.content ?? "", provider, toolCalls: executedTools };
+      const reply = message.content ?? "";
+      setCachedAnswer(sessionId, userMessage, reply, provider);
+      return { reply, provider, toolCalls: executedTools };
     }
 
     // Execute tools, append assistant + tool messages
     messages.push(message);
     for (const tc of message.tool_calls) {
-      const { content, executed } = await runToolCall(tc.function.name, tc.function.arguments);
+      const { content, executed } = await runToolCall(
+        tc.function.name,
+        tc.function.arguments,
+        toolCtx
+      );
       if (executed) executedTools.push(executed);
       messages.push({ role: "tool", tool_call_id: tc.id, content });
     }
@@ -156,6 +220,7 @@ export async function runChatTurn(
     messages: [...messages, { role: "user", content: "Tổng hợp câu trả lời dựa trên data đã có, không gọi tool nữa." }],
   });
   if (!final) return { error: "LLM không phản hồi sau khi gọi tools." };
+  setCachedAnswer(sessionId, userMessage, final.message.content ?? "", final.provider);
   return { reply: final.message.content ?? "", provider: final.provider, toolCalls: executedTools };
 }
 
@@ -189,6 +254,17 @@ export async function runChatTurnStream(
   userMessage: string,
   events: StreamTurnEvents
 ): Promise<void> {
+  // LLM-CACHE-01: a repeated data question can be answered without a turn.
+  // LLM-OPS-02: cached per session — never replay another session's answer.
+  const cached = getCachedAnswer(sessionId, userMessage);
+  if (cached) {
+    await persistUserMessage(sessionId, userMessage);
+    await persistAssistantMessage(sessionId, cached.text, `cache:${cached.provider}`, []);
+    events.onDelta(cached.text);
+    events.onDone({ provider: `cache:${cached.provider}`, toolCalls: [] });
+    return;
+  }
+
   await persistUserMessage(sessionId, userMessage);
   const history = await loadHistory(sessionId);
   // Remove the just-persisted user message from history (it's appended fresh below)
@@ -196,13 +272,15 @@ export async function runChatTurnStream(
     (m, i) => !(i === history.length - 1 && m.role === "user" && m.content === userMessage)
   );
 
+  const { messages: budgetedHistory } = trimHistoryForBudget(trimmedHistory);
   const messages: ChatMessage[] = [
     { role: "system", content: buildSystemPrompt() },
-    ...trimmedHistory,
+    ...budgetedHistory,
     { role: "user", content: userMessage },
   ];
 
   const executedTools: { name: string; latencyMs: number }[] = [];
+  const toolCtx = newToolTurnContext();
   let lastProvider = "unknown";
 
   try {
@@ -243,6 +321,7 @@ export async function runChatTurnStream(
 
       if (toolAccums.size === 0) {
         // Final answer streamed
+        setCachedAnswer(sessionId, userMessage, contentBuf, lastProvider);
         await persistAssistantMessage(sessionId, contentBuf, lastProvider, executedTools);
         events.onDone({ provider: lastProvider, toolCalls: executedTools });
         return;
@@ -265,7 +344,7 @@ export async function runChatTurnStream(
 
       for (const acc of toolAccums.values()) {
         events.onStatus(TOOL_STATUS_VI[acc.name] ?? `Đang gọi ${acc.name}...`);
-        const { content, executed } = await runToolCall(acc.name, acc.args);
+        const { content, executed } = await runToolCall(acc.name, acc.args, toolCtx);
         if (executed) executedTools.push(executed);
         messages.push({ role: "tool", tool_call_id: acc.id || `call_${acc.name}_${round}`, content });
       }
@@ -280,6 +359,7 @@ export async function runChatTurnStream(
       return;
     }
     events.onDelta(final.message.content ?? "");
+    setCachedAnswer(sessionId, userMessage, final.message.content ?? "", final.provider);
     await persistAssistantMessage(sessionId, final.message.content ?? "", final.provider, executedTools);
     events.onDone({ provider: final.provider, toolCalls: executedTools });
   } catch (e) {

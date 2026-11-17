@@ -8,6 +8,15 @@ import { keyHint, resolveProviderChain, type LlmProvider } from "@/lib/llm/provi
 import { normalizeToolArguments } from "./tool-call-accum";
 import { recordLlmOutcome } from "@/lib/llm/monitor";
 import {
+  classifyLlmFailure,
+  isProviderIndependentFailure,
+  payloadFingerprint,
+  type LlmFailureKind,
+} from "@/lib/llm/errors";
+import { recordLlmTelemetry } from "@/lib/llm/telemetry";
+import { keyOverBudget, recordTokenUsage } from "@/lib/llm/budget";
+import { learnModelRejectsTools, modelSupportsTools } from "@/lib/llm/capabilities";
+import {
   llmMaxHttpAttempts,
   llmRequestTimeoutMs,
   llmTemperature,
@@ -28,6 +37,20 @@ const MAX_CHAT_OUTPUT_TOKENS = 900;
 
 function chatOutputTokenBudget(requested?: number): number {
   return Math.min(requested ?? MAX_CHAT_OUTPUT_TOKENS, MAX_CHAT_OUTPUT_TOKENS);
+}
+
+/**
+ * LLM-OPS-02: a request we know no provider can parse is rejected locally —
+ * walking the chain would only duplicate the same failure four times.
+ */
+function requestShapeError(opts: LLMCompletionOptions): string | null {
+  if (!Array.isArray(opts.messages) || opts.messages.length === 0) return "messages is empty";
+  try {
+    JSON.stringify(opts.messages);
+  } catch {
+    return "messages cannot be serialized to JSON";
+  }
+  return null;
 }
 
 /**
@@ -112,6 +135,49 @@ async function postChatCompletion(
 /** Kept as a named export for the chat chain callers/tests. */
 export const resolveChatProviderChain = resolveProviderChain;
 
+/**
+ * LLM-ERR-01: one place that classifies a failed attempt, records durable
+ * telemetry and (for request_invalid on a tool payload) stops re-sending the
+ * same shape to a model that has already rejected it.
+ */
+function noteFailure(
+  provider: ChatLLMProvider,
+  input: { status: number; body: string; startedAt: number; hasTools: boolean }
+): LlmFailureKind {
+  const kind = classifyLlmFailure(input.status, input.body);
+  recordLlmTelemetry({
+    provider: provider.name,
+    source: "chat",
+    ok: false,
+    status: input.status,
+    durationMs: Date.now() - input.startedAt,
+    kind,
+  });
+  if (kind === "request_invalid") {
+    if (input.hasTools) learnModelRejectsTools(provider.model);
+    console.warn(
+      `[CHAT-LLM] ${provider.name} rejected the request payload (fp ${payloadFingerprint(input.body)}, tools=${input.hasTools})`
+    );
+  }
+  return kind;
+}
+
+function noteSuccess(
+  provider: ChatLLMProvider,
+  input: { status: number; startedAt: number; tokens?: number }
+): void {
+  const tokens = Math.max(0, Math.round(input.tokens ?? 0));
+  if (tokens > 0) recordTokenUsage(provider.apiKey, tokens);
+  recordLlmTelemetry({
+    provider: provider.name,
+    source: "chat",
+    ok: true,
+    status: input.status,
+    durationMs: Date.now() - input.startedAt,
+    tokens,
+  });
+}
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
@@ -131,6 +197,8 @@ export interface LLMCompletionOptions {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  /** LLM-PROFILE-01: which feature's tier order to use (default chat). */
+  profile?: "chat" | "square" | "movers";
 }
 
 export interface LLMCompletionResult {
@@ -140,10 +208,20 @@ export interface LLMCompletionResult {
 
 /** Non-streaming completion with provider fallback. Returns null when all providers fail. */
 export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCompletionResult | null> {
-  const chain = await resolveChatProviderChain();
+  const shapeError = requestShapeError(opts);
+  if (shapeError) {
+    console.warn(`[CHAT-LLM] request rejected before the chain: ${shapeError}`);
+    return null;
+  }
+  const chain = await resolveChatProviderChain(opts.profile ?? "chat");
   if (chain.length === 0) return null;
+  const hasTools = Boolean(opts.tools && opts.tools.length > 0);
 
   for (const provider of chain) {
+    // LLM-CAP-01: never send a tool payload to a model known to reject it.
+    if (hasTools && !modelSupportsTools(provider.model)) continue;
+    if (keyOverBudget(provider.apiKey, 800)) continue;
+
     const startedAt = Date.now();
     try {
       const response = await postChatCompletion(
@@ -168,6 +246,15 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
           keyHint: keyHint(provider.apiKey),
           error: `HTTP ${response.status}: ${errBody.slice(0, 120)}`,
         });
+        const kind = noteFailure(provider, {
+          status: response.status,
+          body: errBody,
+          startedAt,
+          hasTools,
+        });
+        // LLM-OPS-02: only a request-level fault (body not valid JSON) fails
+        // the same way on every tier. Provider-shaped 400s fall through.
+        if (isProviderIndependentFailure(kind, errBody)) break;
         continue; // next provider
       }
 
@@ -189,6 +276,11 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
         durationMs: Date.now() - startedAt,
         keyHint: keyHint(provider.apiKey),
       });
+      noteSuccess(provider, {
+        status: response.status,
+        startedAt,
+        tokens: Number(data.usage?.total_tokens ?? 0),
+      });
       return { provider: provider.name, message: msg as ChatMessage };
     } catch (e) {
       console.warn(`[CHAT-LLM] ${provider.name} failed: ${String(e).slice(0, 150)}`);
@@ -205,6 +297,7 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
         keyHint: keyHint(provider.apiKey),
         error: String(e).slice(0, 200),
       });
+      noteFailure(provider, { status: 0, body: String(e), startedAt, hasTools });
       continue;
     }
   }
@@ -228,10 +321,19 @@ export async function chatCompletionStream(
     onReset?: () => void;
   }
 ): Promise<{ provider: string } | null> {
-  const chain = await resolveChatProviderChain();
+  const shapeError = requestShapeError(opts);
+  if (shapeError) {
+    console.warn(`[CHAT-LLM] stream request rejected before the chain: ${shapeError}`);
+    return null;
+  }
+  const chain = await resolveChatProviderChain(opts.profile ?? "chat");
   if (chain.length === 0) return null;
+  const hasTools = Boolean(opts.tools && opts.tools.length > 0);
 
   for (const provider of chain) {
+    if (hasTools && !modelSupportsTools(provider.model)) continue;
+    if (keyOverBudget(provider.apiKey, 800)) continue;
+
     const startedAt = Date.now();
     let response: Response;
     try {
@@ -257,6 +359,7 @@ export async function chatCompletionStream(
         keyHint: keyHint(provider.apiKey),
         error: String(e).slice(0, 200),
       });
+      noteFailure(provider, { status: 0, body: String(e), startedAt, hasTools });
       continue;
     }
 
@@ -276,6 +379,13 @@ export async function chatCompletionStream(
         keyHint: keyHint(provider.apiKey),
         error: `stream HTTP ${response.status}: ${errBody.slice(0, 120)}`,
       });
+      const kind = noteFailure(provider, {
+        status: response.status,
+        body: errBody,
+        startedAt,
+        hasTools,
+      });
+      if (isProviderIndependentFailure(kind, errBody)) break;
       continue;
     }
 
@@ -288,6 +398,7 @@ export async function chatCompletionStream(
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let streamTokens = 0;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -305,6 +416,9 @@ export async function chatCompletionStream(
 
           try {
             const chunk = JSON.parse(payload);
+            if (typeof chunk.usage?.total_tokens === "number") {
+              streamTokens = chunk.usage.total_tokens;
+            }
             const delta = chunk.choices?.[0]?.delta;
             if (!delta) continue;
             if (typeof delta.content === "string" && delta.content.length > 0) {
@@ -350,6 +464,7 @@ export async function chatCompletionStream(
         durationMs: Date.now() - startedAt,
         keyHint: keyHint(provider.apiKey),
       });
+      noteSuccess(provider, { status: response.status, startedAt, tokens: streamTokens });
       return { provider: provider.name };
     } catch (e) {
       console.warn(`[CHAT-LLM] ${provider.name} stream read failed: ${String(e).slice(0, 150)}`);
@@ -366,6 +481,7 @@ export async function chatCompletionStream(
         keyHint: keyHint(provider.apiKey),
         error: String(e).slice(0, 200),
       });
+      noteFailure(provider, { status: 0, body: String(e), startedAt, hasTools });
       // Partial output was already forwarded — drop it before falling through.
       if (emitted) handlers.onReset?.();
       continue;
