@@ -7,6 +7,9 @@ import { orderTpsForDisplay } from "./tp-order";
 import { reportGoogleKeyOutcome, GOOGLE_POOL_BASE_URL } from "@/lib/llm/google-key-pool";
 import { keyHint, resolveProviderChain, type LlmProvider } from "@/lib/llm/provider-chain";
 import { recordLlmOutcome } from "@/lib/llm/monitor";
+import { classifyLlmFailure } from "@/lib/llm/errors";
+import { recordLlmTelemetry } from "@/lib/llm/telemetry";
+import { recordTokenUsage } from "@/lib/llm/budget";
 import {
   llmMaxHttpAttempts,
   llmRequestTimeoutMs,
@@ -118,6 +121,14 @@ async function callOpenAICompatible(
         keyHint: keyHint(provider.apiKey),
         error: (error instanceof Error ? error.message : String(error)).slice(0, 200),
       });
+      recordLlmTelemetry({
+        provider: provider.name,
+        source,
+        ok: false,
+        status: 0,
+        durationMs: Date.now() - startedAt,
+        kind: "transport",
+      });
       return null;
     }
 
@@ -152,6 +163,14 @@ async function callOpenAICompatible(
       keyHint: keyHint(provider.apiKey),
       error: `HTTP ${response.status}: ${errBody.slice(0, 120)}`,
     });
+    recordLlmTelemetry({
+      provider: provider.name,
+      source,
+      ok: false,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      kind: classifyLlmFailure(response.status, errBody),
+    });
     return null;
   }
 
@@ -159,6 +178,8 @@ async function callOpenAICompatible(
   // run, so one HTTP attempt => exactly one monitor entry (previously a
   // rejected post was logged as "ok" because only the HTTP status was known).
   const data = await response.json();
+  const usedTokens = Number(data.usage?.total_tokens ?? 0);
+  if (usedTokens > 0) recordTokenUsage(provider.apiKey, usedTokens);
   const text = data.choices?.[0]?.message?.content;
   if (typeof text !== "string" || text.length === 0) {
     recordLlmOutcome({
@@ -188,7 +209,7 @@ async function generateWithLLM(
     return null;
   }
 
-  const chain = await resolveProviderChain();
+  const chain = await resolveProviderChain("square");
   if (chain.length === 0) {
     // SQ-DIAG: the #1 reason every post falls back to template.
     console.warn("[SQ-LLM] No LLM provider configured (OPENAI_API_KEY missing) — falling back to template.");
@@ -794,7 +815,7 @@ export async function generateMoversWithLLM(
     return null;
   }
 
-  const chain = await resolveProviderChain();
+  const chain = await resolveProviderChain("movers");
   if (chain.length === 0) {
     console.warn("[SQ-LLM] No LLM provider configured — movers will use template.");
     return null;

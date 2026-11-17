@@ -28,6 +28,10 @@ export const LLM_NOTIFY_CHANNEL = "llm_config_changed";
 export const LLM_TIER_IDS = ["google", "primary", "fallback1", "fallback2"] as const;
 export type LlmTierId = (typeof LLM_TIER_IDS)[number];
 
+/** Per-feature tier ordering (LLM-PROFILE-01). */
+export const LLM_FEATURE_PROFILES = ["chat", "square", "movers"] as const;
+export type LlmFeatureProfile = (typeof LLM_FEATURE_PROFILES)[number];
+
 const CACHE_TTL_MS = 30_000;
 const HISTORY_LIMIT = 5;
 const ENC_PREFIX = "v1";
@@ -49,6 +53,8 @@ export interface StoredTier {
 export interface StoredLlmSettings {
   version: 1;
   tiers: Partial<Record<LlmTierId, StoredTier>>;
+  /** Tier order per feature; missing feature keeps the chain order. */
+  profiles?: Partial<Record<LlmFeatureProfile, LlmTierId[]>>;
   updatedAt: string;
   updatedBy?: string;
 }
@@ -69,6 +75,7 @@ export interface RuntimeTier {
 
 export interface RuntimeLlmSettings {
   tiers: Partial<Record<LlmTierId, RuntimeTier>>;
+  profiles?: Partial<Record<LlmFeatureProfile, LlmTierId[]>>;
   updatedAt: string;
   updatedBy?: string;
 }
@@ -77,6 +84,7 @@ export interface LlmHistoryEntry {
   updatedAt: string;
   updatedBy: string;
   tiers: Partial<Record<LlmTierId, StoredTier>>;
+  profiles?: Partial<Record<LlmFeatureProfile, LlmTierId[]>>;
 }
 
 // ─── Encryption ─────────────────────────────────────────
@@ -229,7 +237,12 @@ function toRuntime(stored: StoredLlmSettings): RuntimeLlmSettings {
       extraHeaders: row.extraHeaders,
     };
   }
-  return { tiers, updatedAt: stored.updatedAt, updatedBy: stored.updatedBy };
+  return {
+    tiers,
+    profiles: stored.profiles,
+    updatedAt: stored.updatedAt,
+    updatedBy: stored.updatedBy,
+  };
 }
 
 /**
@@ -315,6 +328,7 @@ export async function saveStoredLlmSettings(
           updatedAt: previous.updatedAt,
           updatedBy: previous.updatedBy ?? "admin",
           tiers: previous.tiers,
+          profiles: previous.profiles,
         },
         ...history,
       ]);
@@ -335,7 +349,12 @@ export async function clearStoredLlmSettings(updatedBy = "admin"): Promise<void>
   if (previous) {
     const history = await readLlmHistory();
     await writeHistory([
-      { updatedAt: previous.updatedAt, updatedBy: previous.updatedBy ?? "admin", tiers: previous.tiers },
+      {
+        updatedAt: previous.updatedAt,
+        updatedBy: previous.updatedBy ?? "admin",
+        tiers: previous.tiers,
+        profiles: previous.profiles,
+      },
       ...history,
     ]);
   }
@@ -354,7 +373,12 @@ export async function rollbackLlmSettings(
   const entry = history[index];
   if (!entry) return false;
   await saveStoredLlmSettings(
-    { version: 1, tiers: entry.tiers, updatedAt: new Date().toISOString() },
+    {
+      version: 1,
+      tiers: entry.tiers,
+      profiles: entry.profiles,
+      updatedAt: new Date().toISOString(),
+    },
     { updatedBy }
   );
   return true;

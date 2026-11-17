@@ -183,6 +183,44 @@ describe("chat provider chain", () => {
     expect(result).toBeNull();
   });
 
+  it("falls through a provider-shaped 400 instead of stopping the chain", async () => {
+    // LLM-OPS-02: Groq rejects the replayed tool_calls JSON, but the next tier
+    // would accept the very same request — so the chain must continue.
+    process.env.OPENAI_API_KEY = "primary-key-9999";
+    process.env.MODEL_NAME = "primary-model";
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: { message: "invalid JSON in messages[1].tool_calls[0].function.arguments" },
+          }),
+          { status: 400 }
+        )
+      )
+      .mockResolvedValueOnce(okResponse("primary ok"));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const result = await chatCompletion({ messages: REPLAY_MESSAGES() });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ provider: "primary" });
+  });
+
+  it("stops after a request-level JSON fault every provider shares", async () => {
+    process.env.OPENAI_API_KEY = "primary-key-9999";
+    process.env.MODEL_NAME = "primary-model";
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValue(new Response("request body is not valid JSON", { status: 400 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const result = await chatCompletion({ messages: MESSAGES });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toBeNull();
+  });
+
   it("calls onReset when the provider dies mid-stream, before falling back", async () => {
     const stream = sseStream(
       ['data: {"choices":[{"delta":{"content":"partial answer"}}]}\n\n'],

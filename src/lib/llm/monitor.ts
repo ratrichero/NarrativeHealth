@@ -18,9 +18,14 @@ export interface LlmCallOutcome {
   provider: string;
   /** Model id as configured for that tier. */
   model: string;
-  /** Which consumer made the call: square | chat | movers (SQ-MOVERS). */
-  source: "square" | "chat" | "movers";
+  /** Which consumer made the call: square | chat | movers | canary (LLM-CANARY-01). */
+  source: "square" | "chat" | "movers" | "canary";
   ok: boolean;
+  /**
+   * Alive but slow (a single canary timeout): counted as reachable, never as a
+   * 100%-failure tier (LLM-CANARY-02).
+   */
+  degraded?: boolean;
   /** HTTP status, or 0 for transport errors (timeout, DNS, unreachable). */
   status: number;
   /** Attempt duration in ms. */
@@ -68,6 +73,8 @@ export function llmTierStats(): {
   calls: number;
   ok: number;
   fail: number;
+  /** Calls that answered but were flagged slow (e.g. one canary timeout). */
+  degraded: number;
   lastStatus: number | null;
   lastOkAt: string | null;
   lastFailAt: string | null;
@@ -75,18 +82,37 @@ export function llmTierStats(): {
 }[] {
   const byProvider = new Map<
     string,
-    { calls: number; ok: number; fail: number; statuses: number[]; durations: number[]; lastOkAt: string | null; lastFailAt: string | null }
+    {
+      calls: number;
+      ok: number;
+      fail: number;
+      degraded: number;
+      statuses: number[];
+      durations: number[];
+      lastOkAt: string | null;
+      lastFailAt: string | null;
+    }
   >();
   for (const o of buffer) {
     let s = byProvider.get(o.provider);
     if (!s) {
-      s = { calls: 0, ok: 0, fail: 0, statuses: [], durations: [], lastOkAt: null, lastFailAt: null };
+      s = {
+        calls: 0,
+        ok: 0,
+        fail: 0,
+        degraded: 0,
+        statuses: [],
+        durations: [],
+        lastOkAt: null,
+        lastFailAt: null,
+      };
       byProvider.set(o.provider, s);
     }
     s.calls++;
     s.durations.push(o.durationMs);
     if (o.ok) {
       s.ok++;
+      if (o.degraded) s.degraded++;
       s.statuses.push(o.status);
       s.lastOkAt = o.at;
     } else {
@@ -100,6 +126,7 @@ export function llmTierStats(): {
     calls: s.calls,
     ok: s.ok,
     fail: s.fail,
+    degraded: s.degraded,
     lastStatus: s.statuses.at(-1) ?? null,
     lastOkAt: s.lastOkAt,
     lastFailAt: s.lastFailAt,
