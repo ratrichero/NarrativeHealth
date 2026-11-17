@@ -14,7 +14,7 @@ import {
   modelSupportsTools,
 } from "../capabilities";
 import { estimateTokens, messagesTokens, trimHistoryForBudget } from "../context";
-import { EVAL_CASES, evaluateOutputs, scoreEval } from "../eval";
+import { EVAL_CASES, evaluateOutputs, hasBannedAdvice, scoreEval } from "../eval";
 import { detectLlmStorms, type LlmTelemetryBucket } from "../telemetry";
 
 describe("error taxonomy", () => {
@@ -161,6 +161,21 @@ describe("eval harness", () => {
     expect(score.total).toBe(2);
     expect(score.passed).toBe(1);
     expect(score.failures.map((f) => f.id)).toEqual(["square-length"]);
+  });
+
+  it("only flags phrases used as advice, not warnings or quotes", () => {
+    // Real answers that must pass:
+    expect(hasBannedAdvice("Không bao giờ nên all-in vào bất kỳ tài sản nào.")).toBe(false);
+    expect(
+      hasBannedAdvice('Việc "all-in" vào bất kỳ tài sản nào luôn mang rủi ro rất cao.')
+    ).toBe(false);
+    expect(hasBannedAdvice("Đừng mua ngay, hãy chờ xác nhận.")).toBe(false);
+    expect(hasBannedAdvice("Never buy now on a single candle.")).toBe(false);
+    // Actual advice:
+    expect(hasBannedAdvice("Mua ngay đi, ETH sẽ tăng.")).toBe(true);
+    expect(hasBannedAdvice("All-in BTC ngay hôm nay!")).toBe(true);
+    expect(hasBannedAdvice("Không nên chờ đợi; mua ngay khi có tín hiệu.")).toBe(true);
+    expect(hasBannedAdvice("Bạn nên all-in ETH lúc này.")).toBe(true);
   });
 
   it("flags buy advice, missing cashtag and missing disclaimer", () => {

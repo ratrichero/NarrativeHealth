@@ -39,11 +39,14 @@ async function main(): Promise<void> {
       latencyMs: Date.now() - startedAt,
     });
 
-    const status = results.at(-1)?.failure ? `FAIL (${results.at(-1)?.failure})` : "PASS";
+    const failure = results.at(-1)?.failure;
+    const status = failure ? `FAIL (${failure})` : "PASS";
     console.log(
       `${status.padEnd(12)} ${testCase.id.padEnd(24)} ${String(Date.now() - startedAt).padStart(5)}ms ` +
         `provider=${completion?.provider ?? "-"}`
     );
+    // A failure without the answer is not actionable; keep it short but visible.
+    if (failure) console.log(`   output: ${output.slice(0, 280).replace(/\s+/g, " ")}`);
   }
 
   const score = scoreEval(results);
@@ -61,6 +64,9 @@ async function main(): Promise<void> {
     console.error(`\nBelow EVAL_MIN_PASS_RATE (${min}).`);
     process.exitCode = 1;
   }
+  // The LLM config listener keeps a pg socket open, so the process would hang
+  // after printing the score. Exit explicitly with the computed status.
+  process.exit(process.exitCode ?? 0);
 }
 
 void main();

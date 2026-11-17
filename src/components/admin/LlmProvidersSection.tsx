@@ -157,9 +157,38 @@ const readStatus = async (): Promise<LiveStatus> =>
   readJson(await fetch("/api/admin/llm/status"));
 
 export function LlmProvidersSection() {
+  const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ["admin", "llm", "providers"],
     queryFn: readView,
+  });
+
+  // Verify state lives here, not in the form: a successful save changes
+  // `updatedAt`, which remounts the form and would discard an in-flight result.
+  const [verifyResults, setVerifyResults] = useState<VerifyResult[] | null>(null);
+  const verifyMutation = useMutation({
+    mutationFn: async (): Promise<{ results: VerifyResult[] }> =>
+      readJson(
+        await fetch("/api/admin/llm/providers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "verify" }),
+        })
+      ),
+    onSuccess: (next) => {
+      setVerifyResults(next.results);
+      queryClient.invalidateQueries({ queryKey: ["admin", "llm", "status"] });
+    },
+    onError: (err) =>
+      setVerifyResults([
+        {
+          provider: "verify",
+          model: (err as Error).message.slice(0, 120),
+          ok: false,
+          status: 0,
+          latencyMs: 0,
+        },
+      ]),
   });
 
   if (isLoading) {
@@ -181,10 +210,31 @@ export function LlmProvidersSection() {
 
   // Remount whenever the saved config changes so the inputs reflect the DB
   // instead of a stale draft (derived state, no setState inside an effect).
-  return <LlmProvidersForm key={`${data.updatedAt ?? "env"}-${data.forcedEnv}`} initial={data} />;
+  return (
+    <LlmProvidersForm
+      key={`${data.updatedAt ?? "env"}-${data.forcedEnv}`}
+      initial={data}
+      verifyResults={verifyResults}
+      verifying={verifyMutation.isPending}
+      onVerify={() => verifyMutation.mutate()}
+      onDismissVerify={() => setVerifyResults(null)}
+    />
+  );
 }
 
-function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
+function LlmProvidersForm({
+  initial,
+  verifyResults,
+  verifying,
+  onVerify,
+  onDismissVerify,
+}: {
+  initial: ProvidersView;
+  verifyResults: VerifyResult[] | null;
+  verifying: boolean;
+  onVerify: () => void;
+  onDismissVerify: () => void;
+}) {
   const queryClient = useQueryClient();
   const data = initial;
   const [draft, setDraft] = useState<Record<TierId, Draft>>(() => toDraft(initial.tiers));
@@ -195,7 +245,7 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
   const [profiles, setProfiles] = useState<Partial<Record<FeatureId, TierId[]>>>(
     () => initial.profiles ?? {}
   );
-  const [verify, setVerify] = useState<VerifyResult[] | null>(null);
+
 
   const { data: live } = useQuery({
     queryKey: ["admin", "llm", "status"],
@@ -240,28 +290,6 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
     queryClient.invalidateQueries({ queryKey: ["admin", "llm", "status"] });
   };
 
-  const verifyMutation = useMutation({
-    mutationFn: async (): Promise<{ results: VerifyResult[] }> =>
-      readJson(
-        await fetch("/api/admin/llm/providers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "verify" }),
-        })
-      ),
-    onSuccess: (next) => {
-      setVerify(next.results);
-      const failed = next.results.filter((r) => !r.ok).length;
-      setNotice(
-        failed === 0
-          ? `Verify: ${next.results.length}/${next.results.length} tier OK.`
-          : `Verify: ${failed}/${next.results.length} tier FAIL — xem chi tiết bên dưới.`
-      );
-      refresh();
-    },
-    onError: (err) => setNotice(`Verify lỗi: ${(err as Error).message}`),
-  });
-
   const saveMutation = useMutation({
     mutationFn: async () =>
       readJson(
@@ -275,8 +303,9 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
       setNotice("Đã lưu. Chain mới có hiệu lực ngay (instance khác nhận qua NOTIFY).");
       setPreview(null);
       refresh();
-      // Verify-on-save (LLM-CANARY-01): probe every tier right away.
-      verifyMutation.mutate();
+      // Verify-on-save (LLM-CANARY-01): probe every tier right away. Results are
+      // owned by the parent so the remount caused by `refresh()` keeps them.
+      onVerify();
     },
     onError: (err) => setNotice(`Lỗi: ${(err as Error).message}`),
   });
@@ -567,8 +596,8 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
         <Button
           variant="secondary"
           size="sm"
-          onClick={() => verifyMutation.mutate()}
-          loading={verifyMutation.isPending}
+          onClick={onVerify}
+          loading={verifying}
         >
           Verify tất cả tier
         </Button>
@@ -656,24 +685,20 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
         </div>
       </div>
 
-      {stormAlerts.length > 0 && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200 space-y-1">
-          <p className="font-semibold">Cảnh báo từ telemetry 15 phút gần nhất</p>
-          {stormAlerts.map((alert) => (
-            <p key={`${alert.provider}-${alert.message}`} className="font-mono">
-              {alert.message}
-            </p>
-          ))}
-        </div>
-      )}
-
-      {verify && (
+      {verifyResults && (
         <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 space-y-1">
-          <h4 className="text-sm font-semibold text-white">Kết quả verify (ping 1 token mỗi tier)</h4>
-          {verify.length === 0 ? (
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold text-white">
+              Kết quả verify (ping 1 token mỗi tier)
+            </h4>
+            <Button size="sm" variant="ghost" onClick={onDismissVerify}>
+              Ẩn
+            </Button>
+          </div>
+          {verifyResults.length === 0 ? (
             <p className="text-xs text-amber-300">Không có tier nào trong chain để verify.</p>
           ) : (
-            verify.map((result) => (
+            verifyResults.map((result) => (
               <p
                 key={`${result.provider}-${result.model}`}
                 className={`text-xs font-mono ${result.ok ? "text-green-400" : "text-red-400"}`}
@@ -683,6 +708,17 @@ function LlmProvidersForm({ initial }: { initial: ProvidersView }) {
               </p>
             ))
           )}
+        </div>
+      )}
+
+      {stormAlerts.length > 0 && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200 space-y-1">
+          <p className="font-semibold">Cảnh báo từ telemetry 15 phút gần nhất</p>
+          {stormAlerts.map((alert) => (
+            <p key={`${alert.provider}-${alert.message}`} className="font-mono">
+              {alert.message}
+            </p>
+          ))}
         </div>
       )}
 

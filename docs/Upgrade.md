@@ -4,6 +4,38 @@
 
 ---
 
+## LLM-OPS-03 — Baseline eval/canary thật + ba lỗi phát hiện khi kiểm tra UI (2026-11-17)
+
+Chạy `npm run eval:llm` và canary thật trên chain google(3 key) → primary →
+fallback1 → fallback2, rồi mở admin local để kiểm tra tab LLM Providers.
+
+**Baseline đo được**
+- Eval: 7/8 (87.5%) — chat 4/4, square 3/4. Case fail duy nhất là
+  `square-cashtag-percent`: model viết `#BTC` thay vì cashtag `$BTC` (đúng luật
+  Square, nên đây là lỗi format thật của model, không phải lỗi scorer).
+- Canary (3 lượt, mỗi lượt 1 token/tier): google 3 key, primary, fallback1,
+  fallback2 đều HTTP 200. Riêng fallback2 (tokenlab) có lúc timeout 10s
+  (`HTTP 0`) khi probe từ server → tier này không ổn định, không phải chết hẳn.
+
+**Ba lỗi sửa luôn trong đợt kiểm tra**
+1. `npm run eval:llm` treo sau khi in điểm vì listener `pg` của LLM config giữ
+   event loop. CLI thoát tường minh với exit code theo ngưỡng, và in thêm
+   output (280 ký tự) cho case fail để biết vì sao.
+2. Scorer `hasBannedAdvice` bắt nhầm câu cảnh báo: "Không bao giờ nên all-in…"
+   và câu trích dẫn `Việc "all-in"… luôn mang rủi ro` bị tính là khuyên mua.
+   Nay chỉ tính khi cụm từ được dùng như chỉ dẫn (đầu câu hoặc sau
+   hãy/nên/should) và không bị phủ định ngay trước đó.
+3. Khối "Kết quả verify" mất ngay sau khi Lưu: lưu làm `updatedAt` đổi → form
+   remount → state verify (nằm trong form) bị xoá. Chuyển state + mutation lên
+   `LlmProvidersSection`, truyền xuống form, nên kết quả sống qua remount và
+   vẫn nằm đúng vị trí dưới hàng nút.
+
+Đã xem thực tế trên browser: chọn tier ưu tiên theo feature (Chat = google/
+primary/fallback1), Lưu → profile vào DB và chain resolve đúng thứ tự cho từng
+feature; Verify chạy 6 probe và giữ kết quả sau khi lưu; banner telemetry hiển
+thị đúng khi có tier fail 3/3 (dữ liệu banner là bucket tổng hợp để thử render,
+đã xoá sau khi kiểm tra).
+
 ## LLM-OPS-02 — Sửa hai rủi ro của đợt LLM-OPS-01 (2026-11-17)
 
 1. **Answer cache rò rỉ giữa các session.** Cache trước đây key theo câu hỏi đã
