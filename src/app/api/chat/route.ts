@@ -60,6 +60,7 @@ export async function POST(req: NextRequest) {
         await runChatTurnStream(sessionId, message, {
           onStatus: (status) => send("status", { status }),
           onDelta: (text) => send("delta", { text }),
+          onReset: () => send("reset", {}),
           onDone: (meta) => {
             send("done", meta);
             controller.close();
