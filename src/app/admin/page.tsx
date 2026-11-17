@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { ChatAnalyticsSection } from "@/components/admin/ChatAnalyticsSection";
 import { ChatReportSection } from "@/components/admin/ChatReportSection";
+import { LlmProvidersSection } from "@/components/admin/LlmProvidersSection";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -36,6 +37,7 @@ import {
   Users,
   Activity,
   TrendingUp,
+  Zap,
 } from "lucide-react";
 import type { AdminNarrative, AdminCoin, ConfigItem } from "@/types";
 import type { RecommendationRule, RuleCondition } from "@/lib/types/recommendation-rule";
@@ -428,6 +430,7 @@ type TabType =
   | "auth"
   | "accounts"
   | "llm"
+  | "llm-config"
   | "backtest";
 
 /**
@@ -485,6 +488,7 @@ const ADMIN_MODULES: {
       { id: "config", label: "Config" },
       { id: "logs", label: "Logs" },
       { id: "llm", label: "LLM Monitor" },
+      { id: "llm-config", label: "LLM Providers" },
       { id: "backtest", label: "Backtest" },
       { id: "analytics", label: "Analytics" },
       { id: "chat-report", label: "Chat Report" },
@@ -2560,6 +2564,7 @@ export default function AdminPage() {
     { id: "config", label: "Config", icon: Settings },
     { id: "logs", label: "Logs", icon: ScrollText },
     { id: "llm", label: "LLM Monitor", icon: Activity },
+    { id: "llm-config", label: "LLM Providers", icon: Zap },
     { id: "backtest", label: "Backtest", icon: BarChart3 },
     { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "chat-report", label: "Chat Report", icon: MessageSquare },
@@ -4124,6 +4129,7 @@ export default function AdminPage() {
 
           {/* AUTH-01: Access module — user-auth toggle + admin login entry */}
           {activeTab === "llm" && <LlmMonitorSection />}
+          {activeTab === "llm-config" && <LlmProvidersSection />}
           {activeTab === "backtest" && <BacktestSection />}
           {activeTab === "auth" && <AuthSettingsSection />}
 

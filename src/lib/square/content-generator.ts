@@ -88,17 +88,18 @@ async function callOpenAICompatible(
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${provider.apiKey}`,
+          ...(provider.extraHeaders ?? {}),
         },
         body: JSON.stringify({
           model: provider.model,
           messages,
-          temperature: llmTemperature(0.3),
-          max_tokens: MAX_LLM_OUTPUT_TOKENS,
+          temperature: provider.temperature ?? llmTemperature(0.3),
+          max_tokens: provider.maxTokens ?? MAX_LLM_OUTPUT_TOKENS,
         }),
         // SQ-DIAG: reasoning fallbacks (DeepSeek-V4, qwen3 via OpenRouter) can
         // take 4-30s because reasoning tokens count before any output. 20s was
         // too tight — healthy providers were being skipped as "timed out".
-        signal: AbortSignal.timeout(llmRequestTimeoutMs()),
+        signal: AbortSignal.timeout(provider.timeoutMs ?? llmRequestTimeoutMs()),
       });
     } catch (error) {
       // SQ-LLM-TRANSPORT: timeout / DNS / connection reset has no HTTP status,
@@ -187,7 +188,7 @@ async function generateWithLLM(
     return null;
   }
 
-  const chain = resolveProviderChain();
+  const chain = await resolveProviderChain();
   if (chain.length === 0) {
     // SQ-DIAG: the #1 reason every post falls back to template.
     console.warn("[SQ-LLM] No LLM provider configured (OPENAI_API_KEY missing) — falling back to template.");
@@ -793,7 +794,7 @@ export async function generateMoversWithLLM(
     return null;
   }
 
-  const chain = resolveProviderChain();
+  const chain = await resolveProviderChain();
   if (chain.length === 0) {
     console.warn("[SQ-LLM] No LLM provider configured — movers will use template.");
     return null;

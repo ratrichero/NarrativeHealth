@@ -69,8 +69,8 @@ function buildChatBody(
     model: provider.model,
     messages: messagesForProvider(provider, opts.messages),
     ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools, tool_choice: "auto" } : {}),
-    temperature: llmTemperature(opts.temperature ?? 0.4),
-    max_tokens: chatOutputTokenBudget(opts.maxTokens),
+    temperature: llmTemperature(opts.temperature ?? provider.temperature ?? 0.4),
+    max_tokens: chatOutputTokenBudget(opts.maxTokens ?? provider.maxTokens),
     ...extra,
   };
 }
@@ -94,6 +94,7 @@ async function postChatCompletion(
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${provider.apiKey}`,
+        ...(provider.extraHeaders ?? {}),
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
@@ -139,7 +140,7 @@ export interface LLMCompletionResult {
 
 /** Non-streaming completion with provider fallback. Returns null when all providers fail. */
 export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCompletionResult | null> {
-  const chain = resolveChatProviderChain();
+  const chain = await resolveChatProviderChain();
   if (chain.length === 0) return null;
 
   for (const provider of chain) {
@@ -148,7 +149,7 @@ export async function chatCompletion(opts: LLMCompletionOptions): Promise<LLMCom
       const response = await postChatCompletion(
         provider,
         buildChatBody(provider, opts),
-        opts.timeoutMs ?? llmRequestTimeoutMs(30_000)
+        opts.timeoutMs ?? provider.timeoutMs ?? llmRequestTimeoutMs(30_000)
       );
 
       if (!response.ok) {
@@ -227,7 +228,7 @@ export async function chatCompletionStream(
     onReset?: () => void;
   }
 ): Promise<{ provider: string } | null> {
-  const chain = resolveChatProviderChain();
+  const chain = await resolveChatProviderChain();
   if (chain.length === 0) return null;
 
   for (const provider of chain) {
@@ -239,7 +240,7 @@ export async function chatCompletionStream(
         buildChatBody(provider, opts, { stream: true }),
         // LLM_REQUEST_TIMEOUT is a per-request budget; a streamed answer can
         // legitimately take longer, so the stream keeps a 60s floor.
-        opts.timeoutMs ?? Math.max(llmRequestTimeoutMs(60_000), 60_000)
+        opts.timeoutMs ?? provider.timeoutMs ?? Math.max(llmRequestTimeoutMs(60_000), 60_000)
       );
     } catch (e) {
       console.warn(`[CHAT-LLM] ${provider.name} stream failed: ${String(e).slice(0, 150)}`);

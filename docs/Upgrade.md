@@ -4,6 +4,94 @@
 
 ---
 
+## LLM-CONFIG-01 — Khai báo provider LLM trực tiếp trên admin (2026-11-17)
+
+Toàn bộ cấu hình LLM trước đây nằm trong `.env`, nên mỗi lần đổi key/model phải
+sửa file và restart app. Trang admin mới cho phép khai báo cả 4 tier và lưu vào
+DB; chain đọc DB trước, thiếu mới quay lại `.env`.
+
+### Lưu trữ & ưu tiên
+
+- **`app_settings` key `llm.chain`** (không cần migration — dùng bảng có sẵn):
+  `{ version: 1, updatedAt, tiers: { google, primary, fallback1, fallback2 } }`,
+  mỗi tier `{ enabled, model?, baseUrl?, keys[] }`.
+- **Ưu tiên theo từng tier, không phải toàn cục**: tier có trong DB và `enabled`
+  → dùng DB; tier không có trong DB → `.env`; tier `enabled: false` trong DB →
+  **bỏ hẳn tier đó** (quyết định của operator, không fallback về env). Nhờ vậy có
+  thể chuyển riêng primary sang key mới mà vẫn giữ google/fallback từ env.
+- **Google pool**: keys khai báo trong DB thay thế danh sách env qua
+  `setGooglePoolKeys()`; cooldown/report key vẫn chạy như cũ (GKEY-01).
+- **Cache 30s** (`loadLlmRuntimeSettings`) để chain không query DB mỗi lần gọi LLM;
+  `invalidateLlmSettingsCache()` sau khi lưu nên instance vừa lưu thấy ngay, các
+  instance khác nhận trong ≤30s — **không cần restart app**.
+
+### An toàn
+
+- API key **mã hoá at rest** bằng AES-256-GCM, khoá dẫn xuất từ
+  `LLM_CONFIG_SECRET` (fallback `AUTH_SECRET`). Key không có prefix `v1:` được
+  coi là plaintext để có thể seed tay bằng SQL, lần lưu sau sẽ mã hoá lại.
+- API admin **không bao giờ trả key**: chỉ `…last4`. Ô nhập để trống = giữ
+  nguyên key đã lưu.
+- Key không giải mã được (secret bị đổi) bị loại khỏi chain và hiện cảnh báo
+  “unreadable” trong UI, thay vì làm sập mọi call.
+- Không có secret → API từ chối lưu key (400) và UI disable nút Lưu.
+
+### API & UI
+
+- **`GET/PUT/DELETE /api/admin/llm/providers`** (middleware ADMIN bảo vệ): GET trả
+  view đã mask + chain thực tế đang dùng; PUT lưu tier (validate: tier bật phải
+  có key + model); DELETE xoá row để quay lại `.env`.
+- **Admin → Vận hành → “LLM Providers”** (`LlmProvidersSection`): 4 card tier
+  (badge DB/ENV/TẮT, toggle bật-tắt, model, base URL, textarea keys), nút Lưu
+  (chỉ gửi tier đã thay đổi), nút “Xoá cấu hình DB”, và danh sách chain đang
+  thực sự dùng.
+- `resolveProviderChain()` chuyển sang async (đọc DB có cache); chat và Square
+  await ở 4 call site.
+
+### Test
+
+- `src/lib/llm/__tests__/settings.test.ts` (9 case): env fallback khi chưa có row,
+  override từng tier, tier bị tắt thì bỏ hẳn, google pool lấy key từ DB, row sai
+  version → env, key không giải mã được, mã hoá round-trip + mask, cache
+  invalidation sau khi lưu, và clear xong quay lại env.
+- Kiểm tra thật với Postgres local: env chain 6 entry → lưu DB (google tắt,
+  primary đổi model/key) → chain còn `primary(db) → fallback1(env) → fallback2(env)`
+  → xoá row → quay lại đủ 6 entry. Key chỉ in dạng `…abcd`.
+
+### Đợt 2 — hai fix và 9 tối ưu
+
+Hai lỗi được sửa:
+- **Google tier đọc từ DB nhưng key không giải mã được** trước đây rơi về pool env
+  (`setGooglePoolKeys([])` bị hiểu là "chưa cấu hình"). Giờ mảng rỗng là quyết định
+  rõ ràng: tier không đóng góp provider nào, **không** mượn key env.
+- **Nút Lưu** trước đây bị khoá khi thiếu `LLM_CONFIG_SECRET`. Giờ chỉ chặn khi có
+  key mới cần mã hoá; sửa model/base URL/tham số vẫn lưu được (validation tách sang
+  `src/lib/llm/tier-input.ts` để test trực tiếp).
+
+Chín tối ưu đã làm:
+1. **Test connection** từng tier (`POST {action:"test"}`) — gọi 1 completion 8 token,
+   trả HTTP/latency/lỗi, hiện ngay trong card tier.
+2. **`LLM_FORCE_ENV=1`** — kill switch bỏ qua cấu hình DB khi config làm sập chat.
+3. **Lịch sử + rollback** — `app_settings.llm.chain.history` giữ 5 bản gần nhất kèm
+   `updatedBy` (lấy từ session JWT), nút “Khôi phục” cho từng bản.
+4. **Xem trước chain** — `PUT {dryRun:true}` trả chain sẽ dùng (đã mask) mà không ghi DB.
+5. **Trạng thái sống trong trang** — calls/ok/fail/last status mỗi tier, cooldown từng
+   key google, banner đỏ khi một tier fail 100%.
+6. **Tham số theo tier** — `temperature`, `maxTokens`, `timeoutMs`, `extraHeaders`
+   lưu cùng tier và được `LlmProvider` truyền vào request của cả chat và Square.
+7. **Reset cooldown** google pool (`POST {action:"resetCooldown"}`).
+8. **Export/Import JSON** — export kèm key đã mã hoá (chỉ dùng được với cùng secret),
+   import nhận cả key plaintext và mã hoá lại.
+9. **Invalidation qua Postgres NOTIFY** — listener `LISTEN llm_config_changed`; mọi
+   instance bỏ cache ngay, TTL 30s chỉ còn là fallback khi không mở được connection.
+
+Kiểm chứng: `next build` pass; `tsc` + `eslint` sạch; 46 test LLM/chat pass; mở
+`/admin → Vận hành → LLM Providers` trên browser thật: Test connection google = HTTP
+200, preview chain đã mask, Lưu tạo row DB (`updatedBy: admin`), chain cập nhật ngay,
+rollback đưa `temperature` về giá trị trước đó.
+
+---
+
 ## LLM-17.11.2026 — Hạ tầng LLM dùng chung, ngân sách token và sửa lỗi 400 khi replay tool call (2026-11-17)
 
 Hai consumer LLM (bài Square/Movers và chat) mỗi bên tự resolve provider chain, tự

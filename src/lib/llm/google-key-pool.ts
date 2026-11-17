@@ -49,8 +49,24 @@ interface KeyState {
 
 const states = new Map<string, KeyState>();
 let nextStart = 0;
+/** LLM-CONFIG-01: keys saved in the admin panel win over the env list. */
+let keyOverride: string[] | null = null;
+
+export function setGooglePoolKeys(keys: string[] | null): void {
+  // null → use env. An EMPTY ARRAY is an explicit "no keys": a DB tier whose
+  // keys could not be decrypted must not silently fall back to the env pool.
+  const next = keys === null ? null : [...new Set(keys)];
+  if (JSON.stringify(next) === JSON.stringify(keyOverride)) return;
+  keyOverride = next;
+  console.info(
+    next === null
+      ? "[GKEY-POOL] using GOOGLE_AI_API_KEYS from env"
+      : `[GKEY-POOL] using ${next.length} key(s) from the admin config`
+  );
+}
 
 function configuredKeys(): string[] {
+  if (keyOverride !== null) return keyOverride;
   const raw =
     process.env.GOOGLE_AI_API_KEYS?.trim() ||
     process.env.GOOGLE_AI_API_KEY?.trim() ||
@@ -148,6 +164,13 @@ export function reportGoogleKeyOutcome(
   );
 }
 
+/** Clear every cooldown so the next call retries all keys immediately. */
+export function resetGooglePoolCooldowns(): void {
+  const now = Date.now();
+  for (const state of states.values()) state.failedUntil = now;
+  console.info("[GKEY-POOL] cooldowns cleared for all keys");
+}
+
 /** Introspection for logs/debug tooling. */
 export function googlePoolStats(): {
   total: number;
@@ -175,4 +198,5 @@ export function googlePoolStats(): {
 export function _resetGoogleKeyPool(): void {
   states.clear();
   nextStart = 0;
+  keyOverride = null;
 }
