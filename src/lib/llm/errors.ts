@@ -8,6 +8,8 @@
 
 export type LlmFailureKind =
   | "transport"
+  /** No HTTP response at all: the request budget expired. */
+  | "timeout"
   | "auth"
   | "rate_limit"
   | "capacity"

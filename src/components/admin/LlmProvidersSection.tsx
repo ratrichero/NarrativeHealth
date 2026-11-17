@@ -106,6 +106,8 @@ interface VerifyResult {
   provider: string;
   model: string;
   ok: boolean;
+  /** Alive but slow: a single canary timeout is not a failure (LLM-CANARY-02). */
+  degraded?: boolean;
   status: number;
   latencyMs: number;
 }
@@ -698,15 +700,22 @@ function LlmProvidersForm({
           {verifyResults.length === 0 ? (
             <p className="text-xs text-amber-300">Không có tier nào trong chain để verify.</p>
           ) : (
-            verifyResults.map((result) => (
-              <p
-                key={`${result.provider}-${result.model}`}
-                className={`text-xs font-mono ${result.ok ? "text-green-400" : "text-red-400"}`}
-              >
-                {result.ok ? "OK" : "FAIL"} · {result.provider} · {result.model} · HTTP{" "}
-                {result.status} · {result.latencyMs}ms
-              </p>
-            ))
+                          verifyResults.map((result) => (
+                <p
+                  key={`${result.provider}-${result.model}`}
+                  className={`text-xs font-mono ${
+                    result.ok
+                      ? result.degraded
+                        ? "text-amber-300"
+                        : "text-green-400"
+                      : "text-red-400"
+                  }`}
+                >
+                  {result.ok ? (result.degraded ? "SLOW" : "OK") : "FAIL"} · {result.provider} ·{" "}
+                  {result.model} · HTTP {result.status} · {result.latencyMs}ms
+                  {result.degraded ? " (timeout, chưa tính fail)" : ""}
+                </p>
+              ))
           )}
         </div>
       )}

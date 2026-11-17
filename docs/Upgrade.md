@@ -4,6 +4,40 @@
 
 ---
 
+## LLM-OPS-04 — Canary không còn báo fail giả cho tier chậm/quota thấp (2026-11-17)
+
+Đo thực tế fallback2 (tokenlab): 15 probe 1-token đều 200 (p50 821ms, p90
+1089ms, max 1608ms), nhưng completion 60-token ~4s rồi bị 429 liên tiếp; trong
+telemetry canary tier này có 14 call / 5 fail và **cả 5 đều là timeout 10s**
+(status 0). Nguyên nhân không phải tier chết mà do canary tự tạo:
+- canary hardcode `provider.timeoutMs ?? 10_000`, trong khi chat/Square dùng
+  `LLM_REQUEST_TIMEOUT` (mặc định 30s);
+- mỗi probe đơn lẻ được ghi thẳng thành fail;
+- mọi tier được probe song song (`Promise.all`) trên endpoint free quota thấp.
+
+Đã sửa trong `src/lib/llm/canary.ts`:
+1. **Ngân sách đúng production**: `max(provider.timeoutMs, LLM_CANARY_TIMEOUT_MS
+   hoặc LLM_REQUEST_TIMEOUT)` → mặc định 30s. Canary không còn khắt khe hơn
+   traffic thật.
+2. **Retry 1 lần** cho timeout/transport/429/5xx (backoff `LLM_CANARY_RETRY_DELAY_MS`,
+   mặc định 1.5s); chỉ lần cuối được tính.
+3. **Degraded trước khi fail**: một timeout/5xx được ghi là `degraded` (tier
+   còn sống, chỉ chậm) — monitor tính là ok + `degraded`, telemetry không tăng
+   fail, UI hiện “SLOW (timeout, chưa tính fail)”. Chỉ sau **2 lượt liên tiếp**
+   mới thành fail; lỗi auth/request fail ngay. Streak reset khi probe thành công.
+4. **Probe tuần tự + stagger** (`LLM_CANARY_STAGGER_MS`, 300ms) thay vì bắn song
+   song, interval có jitter ±20% — không tự đốt quota của tier free.
+5. **`LLM_CANARY_SKIP`** (tên tier hoặc model, comma-separated): loại tier quota
+   thấp khỏi probe, sức khoẻ lấy từ telemetry traffic thật.
+6. **`LLM_CANARY_PREFLIGHT=1`** (opt-in): gọi `GET /models` trước; nếu endpoint
+   không hỗ trợ (404/405/501) thì vẫn probe 1 token như cũ, nếu lỗi mạng thì
+   ghi degraded mà không tốn token.
+
+Kèm theo: `LlmFailureKind` có thêm `timeout`, `llmTierStats()` trả thêm
+`degraded`, verify trên admin hiển thị SLOW thay vì FAIL cho lần timeout đầu.
+Test mới `src/lib/llm/__tests__/canary.test.ts` (retry, degraded → fail sau 2
+lượt, reset streak, auth fail ngay, skip, preflight).
+
 ## LLM-OPS-03 — Baseline eval/canary thật + ba lỗi phát hiện khi kiểm tra UI (2026-11-17)
 
 Chạy `npm run eval:llm` và canary thật trên chain google(3 key) → primary →
