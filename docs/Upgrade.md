@@ -31,15 +31,35 @@ Không có spot pair → null, không kết luận.
 
 ### 4. Cluster/rotation
 
-`computeClusters` lấy return 1h, correlation ≥0.75, gộp bằng union-find; label
-theo narrative chung (nếu ≥2 coin) hoặc “Cụm N”, chọn leader theo composite;
-các coin còn lại là laggard (ứng viên rotation).
+`computeClusters` lấy return 1h, bỏ phần return giải thích bởi beta BTC rồi
+tính correlation residual (partial correlation) với ngưỡng mặc định 0.6. Việc
+gộp dùng union-find có kiểm tra complete-linkage: chỉ gộp hai group khi mọi cặp
+chéo đều đạt ngưỡng, nên chuỗi A~B, B~C không kéo A và C vào cùng cụm nếu
+A~C yếu. Cap `RADAR_CLUSTER_MAX_SIZE` (mặc định 8) chặn siêu cụm; nếu thiếu
+BTC closes thì fallback correlation thô. Label theo narrative chung (nếu ≥2
+coin) hoặc “Cụm N”, chọn leader theo composite; chỉ coin cùng chiều với cụm
+mới là laggard (ứng viên rotation).
 
-Ngoài top enrich, radar quét thêm tối đa `RADAR_CLUSTER_EXTRA` coin (mặc định
-20) theo quota volume + top tăng/giảm, chỉ fetch 30 nến 1h, cache 5 phút và
-dedupe request đang chạy — khoảng 20 call weight 1 mỗi snapshot, không đụng
-top gainer/loser đã enrich. Snapshot trả `clusters` summary gồm cả coin ngoài
-rows; UI có panel “Cụm rotation — quét ngoài top” với member click được.
+Cluster dùng **một universe quét cố định**, không phụ thuộc tab: top gainer,
+top loser, unusual và fill theo volume, tối đa `RADAR_CLUSTER_UNIVERSE` coin
+(mặc định 32), chỉ fetch 30 nến 1h, cache 5 phút và dedupe request đang chạy.
+Structure/leader/laggard tính trên strength percentile |24h change| của
+universe cố định; row enrich chỉ merge metadata vào sau nên đổi tab không đổi
+cụm. `ClusterInfo` chỉ gắn `laggard` cho coin cùng chiều với chiều trung bình
+của cụm; coin ngược chiều không bị gắn laggard. Snapshot trả `clusters`
+summary gồm cả coin ngoài rows và giữ đủ toàn bộ member; panel “Cụm rotation
+— quét ngoài top” chỉ
+preview 6 coin kèm `+N`, bấm “Xem đủ N coin” mở view riêng tại
+`/radar?cluster=<id>&side=…`. View này liệt kê toàn bộ member, leader/laggard,
+volume, mở được chi tiết từng coin và copy link. ID cụm băm theo membership
+để permalink không trỏ nhầm cụm khác sau refresh.
+
+Mỗi cohort 30 phút ghi snapshot cụm vào `app_settings.radar.cluster.history`
+(7 ngày / tối đa 1008 batch). So với batch gần nhất cùng side, history sinh
+event `new`, `leader-change`, `strengthening`, `weakening` (ngưỡng |Δ| ≥ 1.5
+điểm %); alert cấp cụm gửi qua cùng webhook với dedupe side+cluster+event+ngày.
+Track record lưu `clusterId/label/size/leader/laggard` tại lúc ghi tín hiệu và
+trả bảng hiệu quả theo cụm × vai trò × horizon.
 
 ### 5. Liquidity, slippage, net R:R
 
@@ -51,23 +71,29 @@ cho $1k/$10k/$50k, cờ “sổ lệnh mỏng”. Setup có thêm net R:R đã t
 
 `RADAR_ALERT_WEBHOOK_URL` (generic JSON có `text`) + ngưỡng score/freshness/
 impulse. Dedupe `symbol+bias+ngày` + cooldown theo symbol lưu `app_settings.radar.alerts.sent` (7 ngày,
-200 bản), gửi sau cohort, lỗi webhook/DB không ảnh hưởng radar.
+200 bản), gửi sau cohort, lỗi webhook/DB không ảnh hưởng radar. Alert cấp cụm
+dùng cùng webhook, dedupe `side+cluster+event+ngày` trong
+`app_settings.radar.alerts.clusters.sent`.
 
 ### 7. Mobile + permalink
 
 Dưới `md` dùng card thay bảng; URL nhận `side/sort/minVolume/excludeSystem/
-symbol` để mở đúng tab/coin, nút Copy link.
+symbol/cluster` để mở đúng tab/coin/cụm, nút Copy link. Link cụm mở view
+riêng với đầy đủ member, không phụ thuộc panel đang preview 6 coin.
 
 ### 8. Cấu hình
 
 `RADAR_ALERT_WEBHOOK_URL`, `RADAR_ALERT_MIN_SCORE` (75),
 `RADAR_ALERT_MIN_ENTRY` (50), `RADAR_ALERT_MAX_IMPULSE_HOURS` (12),
 `RADAR_ALERT_COOLDOWN_HOURS` (6 — cùng symbol không lặp trong cooldown),
-`RADAR_CLUSTER_EXTRA` (20 — số coin quét thêm cho cluster, 0 = tắt).
+`RADAR_CLUSTER_UNIVERSE` (32 — số coin trong universe cluster cố định, 0 = tắt),
+`RADAR_CLUSTER_THRESHOLD` (0.6 — correlation residual tối thiểu),
+`RADAR_CLUSTER_MAX_SIZE` (8 — cap member mỗi cụm). Cluster alert dùng chung
+`RADAR_ALERT_WEBHOOK_URL`; không có URL thì history vẫn ghi nhưng không gửi.
 
 ### 9. Kiểm tra
 
-`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **11 suite / 68 test pass**;
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **13 suite / 85 test pass**;
 eslint 0 lỗi; build pass. Preview vẫn `RADAR_DEMO=1` vì Binance futures bị
 chặn (451); spot vision truy cập được nhưng radar thật chưa chạy live. Alert
 webhook chưa được gửi thử vì không cấu hình URL.

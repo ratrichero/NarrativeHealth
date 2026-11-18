@@ -45,6 +45,12 @@ export interface RadarSignalRecord {
   btcPrice?: number | null;
   /** Setup tại đúng thời điểm ghi, để đo TP/SL chạm hay không. */
   setup?: SignalSetupSnapshot | null;
+  /** Cụm tại thời điểm ghi, để đo hiệu quả leader/laggard. */
+  clusterId?: string | null;
+  clusterLabel?: string | null;
+  clusterSize?: number;
+  clusterLeader?: boolean;
+  clusterLaggard?: boolean;
   /** Đủ mạnh để coi là tín hiệu hành động tại thời điểm ghi. */
   actionable: boolean;
 }
@@ -87,8 +93,19 @@ export interface BiasSummary {
   horizons: HorizonSummary[];
 }
 
+export type ClusterRole = "leader" | "laggard" | "member";
+
+export interface ClusterPerformanceSummary {
+  key: string;
+  side: SignalSide;
+  label: string;
+  role: ClusterRole;
+  horizons: HorizonSummary[];
+}
+
 export interface TrackRecordResult {
   summaries: BiasSummary[];
+  clusterSummaries?: ClusterPerformanceSummary[];
   recent: TrackedSignal[];
   total: number;
   actionable: number;
@@ -300,6 +317,45 @@ export function summarizeByBias(rows: TrackedSignal[]): BiasSummary[] {
       const aN = a.horizons.find((h) => h.horizon === "24h")?.n ?? 0;
       const bN = b.horizons.find((h) => h.horizon === "24h")?.n ?? 0;
       return bN - aN;
+    });
+}
+
+export function summarizeByCluster(rows: TrackedSignal[]): ClusterPerformanceSummary[] {
+  const groups = new Map<
+    string,
+    { side: SignalSide; label: string; role: ClusterRole; rows: TrackedSignal[] }
+  >();
+
+  for (const row of rows) {
+    if (!row.clusterLabel) continue;
+    const role: ClusterRole = row.clusterLeader
+      ? "leader"
+      : row.clusterLaggard
+        ? "laggard"
+        : "member";
+    const key = `${row.side}|${row.clusterLabel}|${role}`;
+    const group = groups.get(key) ?? {
+      side: row.side,
+      label: row.clusterLabel,
+      role,
+      rows: [],
+    };
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+
+  return [...groups.entries()]
+    .map(([key, group]) => ({
+      key,
+      side: group.side,
+      label: group.label,
+      role: group.role,
+      horizons: HORIZONS.map((horizon) => aggregateHorizon(group.rows, horizon.id)),
+    }))
+    .sort((a, b) => {
+      const aN = a.horizons.find((horizon) => horizon.horizon === "24h")?.n ?? 0;
+      const bN = b.horizons.find((horizon) => horizon.horizon === "24h")?.n ?? 0;
+      return bN - aN || a.label.localeCompare(b.label);
     });
 }
 

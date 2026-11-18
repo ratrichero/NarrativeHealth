@@ -11,6 +11,7 @@ import {
   HORIZONS,
   LEDGER_NOTE,
   summarizeByBias,
+  summarizeByCluster,
   type HorizonId,
   type HorizonResult,
   type RadarSignalRecord,
@@ -198,18 +199,24 @@ function demoClusters(): RadarClusterSummary[] {
     .map(([label, rows]) => {
       const sorted = [...rows].sort((a, b) => b.changePct - a.changePct);
       const avg = rows.reduce((sum, row) => sum + row.changePct, 0) / rows.length;
+      const direction = avg >= 0 ? ("up" as const) : ("down" as const);
+      const leader = [...rows].sort((a, b) => b.score - a.score)[0]?.symbol ?? null;
       return {
         id: `demo-${label}`,
         label,
         size: rows.length,
         avgChangePct: Number(avg.toFixed(2)),
         totalVolumeUsd: rows.reduce((sum, row) => sum + row.quoteVolume, 0),
-        leader: [...rows].sort((a, b) => b.score - a.score)[0]?.symbol ?? null,
-        direction: avg >= 0 ? ("up" as const) : ("down" as const),
-        members: sorted.slice(0, 6).map((row) => ({
+        leader,
+        direction,
+        members: sorted.map((row) => ({
           symbol: row.symbol,
           changePct: row.changePct,
           quoteVolumeUsd: row.quoteVolume,
+          leader: row.symbol === leader,
+          laggard:
+            row.symbol !== leader &&
+            (direction === "up" ? row.changePct > 0 : row.changePct < 0),
         })),
       } satisfies RadarClusterSummary;
     })
@@ -218,10 +225,23 @@ function demoClusters(): RadarClusterSummary[] {
 }
 
 export function buildDemoSnapshot(side: MoverSide): RadarSnapshot {
+  const rows = demoRows(side);
+  const clusters = demoClusters();
+  for (const cluster of clusters) {
+    for (const member of cluster.members) {
+      const row = rows.find((candidate) => candidate.symbol === member.symbol);
+      if (!row) continue;
+      row.clusterId = cluster.id;
+      row.clusterLabel = cluster.label;
+      row.clusterSize = cluster.size;
+      row.clusterLeader = member.leader ?? (cluster.leader === member.symbol);
+      row.clusterLaggard = member.laggard ?? false;
+    }
+  }
   return {
     side,
-    rows: demoRows(side),
-    clusters: demoClusters(),
+    rows,
+    clusters,
     market: {
       gainers: 182,
       losers: 96,
@@ -342,6 +362,9 @@ export function buildDemoTrackRecord(): TrackRecordResult {
         ? buildSetup(bullish ? "BULLISH" : "BEARISH", spec.price, spec.price * 0.035)
         : null;
     const at = new Date(now - spec.ageHours * 3_600_000).toISOString();
+    const sourceRow = [...demoRows("gainer"), ...demoRows("loser"), ...demoRows("unusual")].find(
+      (row) => row.symbol === spec.symbol
+    );
     const record: RadarSignalRecord = {
       symbol: spec.symbol,
       side: bullish ? "gainer" : bearish ? "loser" : "unusual",
@@ -361,6 +384,11 @@ export function buildDemoTrackRecord(): TrackRecordResult {
             stopLoss: setup.stopLoss,
           }
         : null,
+      clusterId: sourceRow?.clusterId ?? null,
+      clusterLabel: sourceRow?.clusterLabel ?? null,
+      clusterSize: sourceRow?.clusterSize ?? 1,
+      clusterLeader: sourceRow?.clusterLeader ?? false,
+      clusterLaggard: sourceRow?.clusterLaggard ?? false,
       actionable: spec.bias !== "neutral" && spec.score >= 55,
     };
     return {
@@ -372,6 +400,7 @@ export function buildDemoTrackRecord(): TrackRecordResult {
 
   return {
     summaries: summarizeByBias(tracked),
+    clusterSummaries: summarizeByCluster(tracked),
     recent: [...tracked].sort((a, b) => a.ageHours - b.ageHours).slice(0, 20),
     total: tracked.length,
     actionable: tracked.filter((s) => s.actionable).length,
@@ -386,6 +415,19 @@ export function getDemoDetail(rawSymbol: string): RadarDetail | null {
   const all = [...demoRows("gainer"), ...demoRows("loser"), ...demoRows("unusual")];
   const row = all.find((r) => r.symbol === symbol);
   if (!row) return null;
+
+  // Member có thể nằm ngoài rows của tab hiện tại; lấy cluster từ snapshot demo.
+  const cluster = demoClusters().find((item) =>
+    item.members.some((member) => member.symbol === symbol)
+  );
+  const member = cluster?.members.find((item) => item.symbol === symbol);
+  if (cluster && member) {
+    row.clusterId = cluster.id;
+    row.clusterLabel = cluster.label;
+    row.clusterSize = cluster.size;
+    row.clusterLeader = member.leader ?? cluster.leader === member.symbol;
+    row.clusterLaggard = member.laggard ?? false;
+  }
 
   const bullish = ["continuation", "flush-bounce", "breakout", "accumulation"].includes(row.bias);
   const bearish = ["exhaustion", "breakdown"].includes(row.bias);

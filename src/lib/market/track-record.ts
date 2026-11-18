@@ -10,11 +10,13 @@ import {
   evaluateSignal,
   planCohorts,
   summarizeByBias,
+  summarizeByCluster,
   type RadarSignalRecord,
   type TrackRecordResult,
 } from "@/lib/market/ledger";
 import { buildSetup, type SetupLevels } from "@/lib/market/setup";
-import { dispatchRadarAlerts } from "@/lib/market/alerts";
+import { dispatchClusterAlerts, dispatchRadarAlerts } from "@/lib/market/alerts";
+import { recordClusterSnapshots } from "@/lib/market/cluster-history";
 import { isBearishBias, isBullishBias } from "@/lib/market/ledger";
 import { getRadarSnapshot, type RadarRow } from "@/lib/market/radar";
 
@@ -104,6 +106,13 @@ export async function recordAllRadarCohorts(): Promise<void> {
   }
 
   const [gainer, loser, unusual] = snapshots;
+
+  // Cluster history + cảnh báo cấp cụm độc lập với việc có signal mới hay không.
+  const clusterEvents = await recordClusterSnapshots(snapshots).catch(() => []);
+  if (clusterEvents.length > 0) {
+    await dispatchClusterAlerts(clusterEvents, gainer.market).catch(() => 0);
+  }
+
   const plan = planCohorts({ gainer: gainer.rows, loser: loser.rows, unusual: unusual.rows });
   const btcPrice = gainer.market.btcPrice;
   const day = new Date(now).toISOString().slice(0, 10);
@@ -128,6 +137,11 @@ export async function recordAllRadarCohorts(): Promise<void> {
             stopLoss: setup.stopLoss,
           }
         : null,
+      clusterId: row.clusterId ?? null,
+      clusterLabel: row.clusterLabel ?? null,
+      clusterSize: row.clusterSize ?? 1,
+      clusterLeader: row.clusterLeader ?? false,
+      clusterLaggard: row.clusterLaggard ?? false,
       actionable: row.bias !== "neutral" && row.score >= 55 && row.entryQuality >= 40,
     };
   });
@@ -183,6 +197,7 @@ export async function evaluateRadarSignals(): Promise<TrackRecordResult> {
   if (signals.length === 0) {
     return {
       summaries: [],
+      clusterSummaries: [],
       recent: [],
       total: 0,
       actionable: 0,
@@ -215,6 +230,7 @@ export async function evaluateRadarSignals(): Promise<TrackRecordResult> {
 
   const result: TrackRecordResult = {
     summaries: summarizeByBias(tracked),
+    clusterSummaries: summarizeByCluster(tracked),
     recent: tracked.slice(0, MAX_RECENT),
     total: tracked.length,
     actionable: tracked.filter((s) => s.actionable).length,

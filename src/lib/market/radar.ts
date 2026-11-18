@@ -37,12 +37,25 @@ export const DEFAULT_MIN_VOLUME_USD = 10_000_000;
 const PER_SIDE_ENRICH = Math.min(15, Math.max(5, Number(process.env.RADAR_ENRICH_PER_SIDE ?? 10)));
 const UNUSUAL_CANDIDATES = Math.min(20, Math.max(6, Number(process.env.RADAR_UNUSUAL_CANDIDATES ?? 12)));
 const UNUSUAL_POOL_VOLUME_USD = 20_000_000;
-// Quét thêm coin ngoài top enrich để bắt cụm/rotation, nhưng chỉ lấy 1h closes
+// Universe quét cluster cố định, độc lập với tab người xem. Chỉ lấy 1h closes
 // (weight thấp) và cache 5 phút; 0 = tắt.
-const CLUSTER_EXTRA_RAW = Number(process.env.RADAR_CLUSTER_EXTRA ?? 20);
-const CLUSTER_EXTRA = Number.isFinite(CLUSTER_EXTRA_RAW)
-  ? Math.min(30, Math.max(0, Math.floor(CLUSTER_EXTRA_RAW)))
-  : 20;
+const CLUSTER_UNIVERSE_RAW = Number(process.env.RADAR_CLUSTER_UNIVERSE ?? 32);
+// Đủ chỗ cho toàn bộ row có thể được enrich ở cả 3 tab + unusual, để merge sau
+// không làm rơi row ra khỏi universe.
+const CLUSTER_UNIVERSE_MIN = PER_SIDE_ENRICH * 2 + UNUSUAL_CANDIDATES;
+const CLUSTER_UNIVERSE = Number.isFinite(CLUSTER_UNIVERSE_RAW)
+  ? CLUSTER_UNIVERSE_RAW <= 0
+    ? 0
+    : Math.min(60, Math.max(CLUSTER_UNIVERSE_MIN, Math.floor(CLUSTER_UNIVERSE_RAW)))
+  : CLUSTER_UNIVERSE_MIN;
+const CLUSTER_THRESHOLD_RAW = Number(process.env.RADAR_CLUSTER_THRESHOLD ?? 0.6);
+const CLUSTER_THRESHOLD = Number.isFinite(CLUSTER_THRESHOLD_RAW)
+  ? Math.min(0.9, Math.max(0.3, CLUSTER_THRESHOLD_RAW))
+  : 0.6;
+const CLUSTER_MAX_SIZE_RAW = Number(process.env.RADAR_CLUSTER_MAX_SIZE ?? 8);
+const CLUSTER_MAX_SIZE = Number.isFinite(CLUSTER_MAX_SIZE_RAW)
+  ? Math.min(20, Math.max(3, Math.floor(CLUSTER_MAX_SIZE_RAW)))
+  : 8;
 const CLUSTER_CACHE_MS = 5 * 60_000;
 
 export interface FuturesTicker {
@@ -131,6 +144,8 @@ export interface RadarClusterMember {
   symbol: string;
   changePct: number;
   quoteVolumeUsd: number;
+  leader?: boolean;
+  laggard?: boolean;
 }
 
 export interface RadarClusterSummary {
@@ -434,6 +449,12 @@ async function enrichTicker(
 // ─── Snapshot ───────────────────────────────────────────
 
 const snapshotCache = new Map<string, { expires: number; promise: Promise<RadarSnapshot> }>();
+// Cache membership cluster theo universe/minVolume để drawer detail của coin ngoài
+// rows vẫn đọc được cluster/leader/laggard từ snapshot gần nhất.
+const clusterInfoCache = new Map<
+  number,
+  { value: Map<string, ClusterInfo | null>; expires: number }
+>();
 
 let btcTrendCache: { value: "up" | "down" | "flat" | null; expires: number } = { value: null, expires: 0 };
 
@@ -492,7 +513,7 @@ function buildMarket(
   };
 }
 
-interface ClusterCandidate {
+export interface ClusterCandidate {
   symbol: string;
   closes: number[];
   composite: number;
@@ -535,6 +556,46 @@ async function getClusterCloses(symbol: string): Promise<number[]> {
 }
 
 /**
+ * Chuẩn hoá strength của coin extra về phân bố composite của coin enrich.
+ * Xếp hạng |biến động 24h| trong universe rồi nội suy đúng percentile đó trên
+ * composite của các coin enrich — tránh extra luôn thắng vì thang abs(change)*6.
+ */
+export function normalizeExtraComposite(
+  changePct: number,
+  absChangeRanks: number[],
+  enrichedComposites: number[]
+): number {
+  const percentile = percentileRank(absChangeRanks, Math.abs(changePct)) ?? 50;
+  const sorted = enrichedComposites
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (sorted.length === 0) return percentile;
+
+  const position = (percentile / 100) * (sorted.length - 1);
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  const weight = position - lower;
+  const value = sorted[lower] + (sorted[upper] - sorted[lower]) * weight;
+  return Math.round(Math.min(100, Math.max(0, value)));
+}
+
+/** Gộp enrich + extra, chuẩn hoá composite extra trước khi tính cluster. */
+export function mergeClusterCandidates(
+  enriched: ClusterCandidate[],
+  extra: ClusterCandidate[],
+  absChangeRanks: number[]
+): ClusterCandidate[] {
+  const enrichedComposites = enriched.map((item) => item.composite);
+  return [
+    ...enriched,
+    ...extra.map((item) => ({
+      ...item,
+      composite: normalizeExtraComposite(item.changePct, absChangeRanks, enrichedComposites),
+    })),
+  ];
+}
+
+/**
  * Chọn universe quét cluster rộng hơn top enrich: ưu tiên volume, nhưng vẫn
  * dành quota cho top tăng/giảm để không bỏ sót cụm nhỏ.
  * Loại các symbol đã enrich để không fetch trùng.
@@ -542,7 +603,7 @@ async function getClusterCloses(symbol: string): Promise<number[]> {
 export function selectClusterPool(
   eligible: FuturesTicker[],
   excluded: Set<string>,
-  limit = CLUSTER_EXTRA
+  limit = CLUSTER_UNIVERSE
 ): FuturesTicker[] {
   if (limit <= 0) return [];
   const seen = new Set(excluded);
@@ -582,6 +643,80 @@ export function selectClusterPool(
   return picked;
 }
 
+/**
+ * Universe quét cluster cố định: top gainer + top loser + unusual + volume.
+ * Không nhận `side` và không loại coin đã enrich, nên mọi tab dùng cùng universe.
+ */
+export function selectClusterUniverse(
+  eligible: FuturesTicker[],
+  minVolume: number,
+  limit = CLUSTER_UNIVERSE
+): FuturesTicker[] {
+  if (limit <= 0) return [];
+  const seen = new Set<string>();
+  const picked: FuturesTicker[] = [];
+  const add = (ticker: FuturesTicker) => {
+    if (picked.length >= limit || seen.has(ticker.symbol)) return;
+    seen.add(ticker.symbol);
+    picked.push(ticker);
+  };
+
+  const byChangeDesc = [...eligible].sort(
+    (a, b) => Number(b.priceChangePercent) - Number(a.priceChangePercent)
+  );
+  const byChangeAsc = [...eligible].sort(
+    (a, b) => Number(a.priceChangePercent) - Number(b.priceChangePercent)
+  );
+  const byVolume = [...eligible].sort(
+    (a, b) => Number(b.quoteVolume) - Number(a.quoteVolume)
+  );
+  const taken = new Set([
+    ...byChangeDesc.slice(0, PER_SIDE_ENRICH).map((ticker) => ticker.symbol),
+    ...byChangeAsc.slice(0, PER_SIDE_ENRICH).map((ticker) => ticker.symbol),
+  ]);
+  const unusual = eligible
+    .filter(
+      (ticker) =>
+        Math.abs(Number(ticker.priceChangePercent)) <= 8 &&
+        Number(ticker.quoteVolume) >= Math.max(minVolume, UNUSUAL_POOL_VOLUME_USD) &&
+        !taken.has(ticker.symbol)
+    )
+    .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+    .slice(0, UNUSUAL_CANDIDATES);
+
+  // Thứ tự add cố định để label/cluster id không phụ thuộc tab.
+  for (const ticker of byChangeDesc.slice(0, PER_SIDE_ENRICH)) add(ticker);
+  for (const ticker of byChangeAsc.slice(0, PER_SIDE_ENRICH)) add(ticker);
+  for (const ticker of unusual) add(ticker);
+  for (const ticker of byVolume) add(ticker);
+  return picked;
+}
+
+export type ClusterInfoFields = Pick<
+  RadarRow,
+  "clusterId" | "clusterLabel" | "clusterSize" | "clusterLeader" | "clusterLaggard"
+>;
+
+/** Gắn (hoặc xoá) metadata cụm lên row detail từ snapshot/cache. */
+export function applyClusterInfo(row: ClusterInfoFields, info: ClusterInfo | null): void {
+  row.clusterId = info?.clusterId ?? null;
+  row.clusterLabel = info?.label ?? null;
+  row.clusterSize = info?.size ?? 1;
+  row.clusterLeader = info?.leader ?? false;
+  row.clusterLaggard = info?.laggard ?? false;
+}
+
+/** ID ổn định theo membership để permalink cụm không trỏ nhầm cụm sau refresh. */
+function stableClusterId(members: RadarClusterMember[]): string {
+  const signature = members.map((member) => member.symbol).sort().join("|");
+  let hash = 2166136261;
+  for (let i = 0; i < signature.length; i += 1) {
+    hash ^= signature.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `cluster-${(hash >>> 0).toString(36)}`;
+}
+
 /** Gộp kết quả cluster thành summary cho panel cụm/rotation (gồm cả coin ngoài rows). */
 export function summarizeClusters(
   items: Array<{ symbol: string; changePct: number; quoteVolumeUsd: number }>,
@@ -590,7 +725,7 @@ export function summarizeClusters(
 ): RadarClusterSummary[] {
   const groups = new Map<
     string,
-    { info: ClusterInfo; members: Array<RadarClusterMember & { leader: boolean }> }
+    { info: ClusterInfo; members: Array<RadarClusterMember & { leader: boolean; laggard: boolean }> }
   >();
 
   for (const item of items) {
@@ -602,6 +737,7 @@ export function summarizeClusters(
       changePct: item.changePct,
       quoteVolumeUsd: item.quoteVolumeUsd,
       leader: info.leader,
+      laggard: info.laggard,
     });
     groups.set(info.clusterId, group);
   }
@@ -612,22 +748,97 @@ export function summarizeClusters(
       const avgChangePct =
         members.reduce((sum, member) => sum + member.changePct, 0) / Math.max(1, members.length);
       return {
-        id: info.clusterId,
+        id: stableClusterId(members),
         label: info.label,
         size: members.length,
         avgChangePct: Number(avgChangePct.toFixed(2)),
         totalVolumeUsd: members.reduce((sum, member) => sum + member.quoteVolumeUsd, 0),
         leader: members.find((member) => member.leader)?.symbol ?? null,
         direction: avgChangePct >= 0 ? ("up" as const) : ("down" as const),
-        members: sorted.slice(0, 6).map(({ symbol, changePct, quoteVolumeUsd }) => ({
+        members: sorted.map(({ symbol, changePct, quoteVolumeUsd, leader, laggard }) => ({
           symbol,
           changePct,
           quoteVolumeUsd,
+          leader,
+          laggard,
         })),
       } satisfies RadarClusterSummary;
     })
     .sort((a, b) => b.size - a.size || Math.abs(b.avgChangePct) - Math.abs(a.avgChangePct))
     .slice(0, limit);
+}
+
+export interface ClusterBaseOptions {
+  absChangeRanks: number[];
+  btcCloses?: number[];
+  threshold?: number;
+  maxSize?: number;
+}
+
+export interface ClusterBase {
+  clusters: Map<string, ClusterInfo | null>;
+  summaries: RadarClusterSummary[];
+  items: ClusterCandidate[];
+}
+
+/**
+ * Tính cluster từ universe cố định. Composite ở đây là percentile |24h change|
+ * trong universe, không lấy từ row enrich của tab hiện tại — nhờ vậy đổi tab
+ * không đổi membership/leader/laggard. Enriched rows chỉ merge metadata sau.
+ */
+export function buildClusterBase(
+  candidates: ClusterCandidate[],
+  options: ClusterBaseOptions
+): ClusterBase {
+  const items = candidates.map((candidate) => ({
+    ...candidate,
+    composite: percentileRank(options.absChangeRanks, Math.abs(candidate.changePct)) ?? 50,
+  }));
+  const clusters = computeClusters(items, {
+    btcCloses: options.btcCloses,
+    threshold: options.threshold ?? CLUSTER_THRESHOLD,
+    maxSize: options.maxSize ?? CLUSTER_MAX_SIZE,
+  });
+  const summaries = summarizeClusters(
+    items.map(({ symbol, changePct, quoteVolumeUsd }) => ({ symbol, changePct, quoteVolumeUsd })),
+    clusters
+  );
+  return { clusters, summaries, items };
+}
+
+async function loadClusterBase(
+  universe: FuturesTicker[],
+  system: Map<string, { narratives: string[] }>,
+  absChangeRanks: number[],
+  enrichedCloses: Map<string, number[]>
+): Promise<ClusterBase> {
+  if (universe.length === 0) {
+    return { clusters: new Map(), summaries: [], items: [] };
+  }
+
+  const candidates = (
+    await mapLimit(universe, 6, async (ticker) => {
+      const symbol = ticker.symbol.replace(/USDT$/, "");
+      const closes = enrichedCloses.get(symbol) ?? (await getClusterCloses(ticker.symbol));
+      if (closes.length < 25) return null;
+      return {
+        symbol,
+        closes,
+        composite: 0,
+        narratives: system.get(symbol)?.narratives.slice(0, 3) ?? [],
+        changePct: Number(ticker.priceChangePercent),
+        quoteVolumeUsd: Number(ticker.quoteVolume) || 0,
+      } satisfies ClusterCandidate;
+    })
+  ).filter((item): item is ClusterCandidate => item !== null);
+
+  if (candidates.length === 0) {
+    return { clusters: new Map(), summaries: [], items: [] };
+  }
+  const btcCloses =
+    candidates.find((item) => item.symbol === "BTC")?.closes ??
+    (await getClusterCloses("BTCUSDT").catch(() => []));
+  return buildClusterBase(candidates, { absChangeRanks, btcCloses });
 }
 
 async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarSnapshot> {
@@ -648,6 +859,10 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
   const market = buildMarket(tickers, eligible, btcTrend);
   const btcChangePct = market.btcChangePct;
   const changeRanks = eligible.map((t) => Number(t.priceChangePercent)).sort((a, b) => a - b);
+  const absChangeRanks = eligible
+    .map((t) => Math.abs(Number(t.priceChangePercent)))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
   const byChangeDesc = [...eligible].sort(
     (a, b) =>
       Number(b.priceChangePercent) - Number(a.priceChangePercent) ||
@@ -679,81 +894,40 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     chosen = pool;
   }
 
-  const extraPool = selectClusterPool(
-    eligible,
-    new Set(chosen.map((ticker) => ticker.symbol))
+  const clusterUniverse = selectClusterUniverse(eligible, minVolume);
+  const enriched = await mapLimit(chosen, 8, (ticker) =>
+    enrichTicker(
+      ticker,
+      info.get(ticker.symbol),
+      side,
+      system,
+      spotMap.get(ticker.symbol),
+      btcChangePct
+    ).catch((error) => {
+      console.warn(
+        `[RADAR] Enrich ${ticker.symbol} lỗi:`,
+        error instanceof Error ? error.message : String(error)
+      );
+      return null;
+    })
   );
-  const extraPromise: Promise<ClusterCandidate[]> =
-    CLUSTER_EXTRA > 0 && extraPool.length > 0
-      ? mapLimit(extraPool, 6, async (ticker) => {
-          const closes = await getClusterCloses(ticker.symbol);
-          if (closes.length < 25) return null;
-          const symbol = ticker.symbol.replace(/USDT$/, "");
-          const changePct = Number(ticker.priceChangePercent);
-          return {
-            symbol,
-            closes,
-            composite: Math.min(100, Math.abs(changePct) * 6),
-            narratives: system.get(symbol)?.narratives.slice(0, 3) ?? [],
-            changePct,
-            quoteVolumeUsd: Number(ticker.quoteVolume) || 0,
-          } satisfies ClusterCandidate;
-        }).then((items) => items.filter((item): item is ClusterCandidate => item !== null))
-      : Promise.resolve([]);
-
-  const [enriched, extraItems] = await Promise.all([
-    mapLimit(chosen, 8, (ticker) =>
-      enrichTicker(
-        ticker,
-        info.get(ticker.symbol),
-        side,
-        system,
-        spotMap.get(ticker.symbol),
-        btcChangePct
-      ).catch((error) => {
-        console.warn(
-          `[RADAR] Enrich ${ticker.symbol} lỗi:`,
-          error instanceof Error ? error.message : String(error)
-        );
-        return null;
-      })
-    ),
-    extraPromise,
-  ]);
 
   const clean = enriched.filter((r): r is EnrichedRow => r !== null);
   for (const entry of clean) {
     entry.row.rsPercentile = percentileRank(changeRanks, entry.row.changePct);
   }
 
-  const clusterItems: ClusterCandidate[] = [
-    ...clean.map((entry) => ({
-      symbol: entry.row.symbol,
-      closes: entry.closes,
-      composite: entry.row.composite,
-      narratives: entry.row.narratives,
-      changePct: entry.row.changePct,
-      quoteVolumeUsd: entry.row.quoteVolume,
-    })),
-    ...extraItems,
-  ];
-  const clusters = computeClusters(clusterItems);
+  // Cluster được tính trên universe cố định trước; row enrich chỉ merge vào sau.
+  const enrichedCloses = new Map(clean.map((entry) => [entry.row.symbol, entry.closes]));
+  const clusterBase = await loadClusterBase(clusterUniverse, system, absChangeRanks, enrichedCloses);
+  clusterInfoCache.set(minVolume, {
+    value: clusterBase.clusters,
+    expires: Date.now() + 60_000,
+  });
   for (const entry of clean) {
-    const cluster = clusters.get(entry.row.symbol) ?? null;
-    entry.row.clusterId = cluster?.clusterId ?? null;
-    entry.row.clusterLabel = cluster?.label ?? null;
-    entry.row.clusterSize = cluster?.size ?? 1;
-    entry.row.clusterLeader = cluster?.leader ?? false;
-    entry.row.clusterLaggard = cluster ? !cluster.leader : false;
+    applyClusterInfo(entry.row, clusterBase.clusters.get(entry.row.symbol) ?? null);
   }
-  const clusterSummaries = summarizeClusters(
-    clusterItems.map(({ symbol, changePct, quoteVolumeUsd }) => ({
-      symbol,
-      changePct,
-      quoteVolumeUsd,
-    })),
-    clusters
-  );
+  const clusterSummaries = clusterBase.summaries;
 
   let rows = clean.map((entry) => entry.row);
   if (side === "unusual") {
@@ -823,6 +997,39 @@ export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSna
   return shapeSnapshot(await entry.promise, query);
 }
 
+function cachedClusterInfo(symbol: string): ClusterInfo | null | undefined {
+  const now = Date.now();
+  const defaultKey = minVolumeDefault();
+  const defaultEntry = clusterInfoCache.get(defaultKey);
+  const defaultFresh = defaultEntry && defaultEntry.expires > now ? defaultEntry : null;
+
+  // Ưu tiên cache của đúng minVolume mặc định; nếu không có thì tìm cụm trong
+  // cache của filter khác mà người dùng đang xem.
+  if (defaultFresh) {
+    const hit = defaultFresh.value.get(symbol);
+    if (hit) return hit;
+  }
+  for (const [key, entry] of clusterInfoCache) {
+    if (key === defaultKey || entry.expires <= now) continue;
+    const hit = entry.value.get(symbol);
+    if (hit) return hit;
+  }
+  if (defaultFresh && defaultFresh.value.has(symbol)) return null;
+  return defaultFresh ? null : undefined;
+}
+
+async function getClusterInfoForSymbol(symbol: string): Promise<ClusterInfo | null> {
+  const cached = cachedClusterInfo(symbol);
+  if (cached !== undefined) return cached;
+
+  try {
+    await getRadarSnapshot({ side: "gainer", limit: 30, minVolume: minVolumeDefault() });
+  } catch {
+    return null;
+  }
+  return clusterInfoCache.get(minVolumeDefault())?.value.get(symbol) ?? null;
+}
+
 // ─── Detail ─────────────────────────────────────────────
 
 const detailCache = new Map<string, { expires: number; promise: Promise<RadarDetail | null> }>();
@@ -890,7 +1097,7 @@ export async function getMoverDetail(rawSymbol: string): Promise<RadarDetail | n
       tickers.map((t) => Number(t.priceChangePercent)).filter(Number.isFinite).sort((a, b) => a - b),
       row.changePct
     );
-    row.clusterLaggard = false;
+    applyClusterInfo(row, await getClusterInfoForSymbol(symbol));
 
     const bullish: Bias[] = ["continuation", "flush-bounce", "breakout", "accumulation"];
     const bearish: Bias[] = ["exhaustion", "breakdown"];

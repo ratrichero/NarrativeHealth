@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
@@ -20,7 +20,13 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BIAS_LABELS, type MoverSide, type Bias } from "@/lib/market/scoring";
-import type { RadarDetail, RadarRow, RadarSnapshot, RadarSort } from "@/lib/market/radar";
+import type {
+  RadarClusterSummary,
+  RadarDetail,
+  RadarRow,
+  RadarSnapshot,
+  RadarSort,
+} from "@/lib/market/radar";
 import type { BriefResult } from "@/lib/market/brief";
 import { HORIZONS, type HorizonId, type TrackRecordResult } from "@/lib/market/ledger";
 
@@ -552,6 +558,51 @@ function TrackRecord() {
             </table>
           </div>
 
+          {data.clusterSummaries && data.clusterSummaries.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-violet-200">Hiệu quả theo cụm rotation</p>
+              <div className="overflow-x-auto rounded-lg border border-violet-500/20">
+                <table className="w-full min-w-[620px] text-left text-xs">
+                  <thead className="bg-violet-500/5 text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Cụm</th>
+                      <th className="px-3 py-2 font-medium">Side</th>
+                      <th className="px-3 py-2 font-medium">Vai trò</th>
+                      <th className="px-3 py-2 font-medium">N</th>
+                      <th className="px-3 py-2 font-medium">Hit rate</th>
+                      <th className="px-3 py-2 font-medium">Return TB</th>
+                      <th className="px-3 py-2 font-medium">Vs BTC</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-300">
+                    {data.clusterSummaries.map((cluster) => {
+                      const h = cluster.horizons.find((item) => item.horizon === horizon);
+                      return (
+                        <tr key={cluster.key} className="border-t border-violet-500/10">
+                          <td className="px-3 py-2 font-medium text-slate-200">{cluster.label}</td>
+                          <td className="px-3 py-2 text-slate-400">{cluster.side}</td>
+                          <td className="px-3 py-2 text-slate-400">
+                            {cluster.role === "leader" ? "Leader" : cluster.role === "laggard" ? "Laggard" : "Khác"}
+                          </td>
+                          <td className="px-3 py-2 tabular-nums">{h?.n ?? 0}</td>
+                          <td className="px-3 py-2 tabular-nums">
+                            {h?.hitRate === null || h?.hitRate === undefined ? "—" : `${h.hitRate}%`}
+                          </td>
+                          <td className={cn("px-3 py-2 tabular-nums", (h?.avgReturnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                            {h?.avgReturnPct === null || h?.avgReturnPct === undefined ? "—" : formatPct(h.avgReturnPct)}
+                          </td>
+                          <td className={cn("px-3 py-2 tabular-nums", (h?.avgRelativePct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                            {h?.avgRelativePct === null || h?.avgRelativePct === undefined ? "—" : formatPct(h.avgRelativePct)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-left text-xs">
               <thead className="text-slate-500">
@@ -610,8 +661,148 @@ function TrackRecord() {
   );
 }
 
+function ClusterView({
+  cluster,
+  side,
+  copied,
+  onClose,
+  onCopy,
+  onSelectMember,
+}: {
+  cluster: RadarClusterSummary;
+  side: MoverSide;
+  copied: boolean;
+  onClose: () => void;
+  onCopy: () => void;
+  onSelectMember: (symbol: string) => void;
+}) {
+  const sideLabel = SIDE_TABS.find((tab) => tab.id === side)?.label ?? side;
+
+  return (
+    <div
+      className="fixed inset-0 z-40 overflow-y-auto bg-black/70 p-4 backdrop-blur-sm sm:p-8"
+      onClick={onClose}
+    >
+      <div
+        className="mx-auto w-full max-w-3xl overflow-hidden rounded-2xl border border-violet-500/30 bg-slate-950 shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-slate-800 p-4 sm:p-5">
+          <div>
+            <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-violet-300">
+              <Layers className="h-3.5 w-3.5" /> Cụm rotation · {sideLabel}
+            </p>
+            <h2 className="mt-1 text-xl font-semibold text-slate-100 sm:text-2xl">{cluster.label}</h2>
+            <p className="mt-1 text-xs text-slate-400">
+              {cluster.size} coin · TB {formatPct(cluster.avgChangePct)} ·{" "}
+              {formatUsd(cluster.totalVolumeUsd)}
+              {cluster.leader ? ` · leader $${cluster.leader}` : ""}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-slate-700 p-2 text-slate-400 hover:bg-slate-800 hover:text-white"
+            aria-label="Đóng cụm"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 p-4 sm:grid-cols-4 sm:p-5">
+          <Stat label="Số member" value={String(cluster.size)} />
+          <Stat
+            label="Biến động TB 24h"
+            value={formatPct(cluster.avgChangePct)}
+            tone={cluster.direction === "up" ? "up" : "down"}
+          />
+          <Stat label="Tổng volume 24h" value={formatUsd(cluster.totalVolumeUsd)} />
+          <Stat label="Leader" value={cluster.leader ? `$${cluster.leader}` : "—"} />
+        </div>
+
+        <div className="px-4 pb-4 sm:px-5">
+          <div className="overflow-x-auto rounded-xl border border-slate-800">
+            <table className="w-full min-w-[560px] text-left text-sm">
+              <thead className="border-b border-slate-800 bg-slate-900/60 text-[11px] uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2.5 font-medium">Coin</th>
+                  <th className="px-3 py-2.5 font-medium">24h</th>
+                  <th className="px-3 py-2.5 font-medium">Volume 24h</th>
+                  <th className="px-3 py-2.5 font-medium">Vai trò</th>
+                  <th className="px-3 py-2.5 text-right font-medium">Chi tiết</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cluster.members.map((member) => {
+                  const isLeader = member.leader ?? member.symbol === cluster.leader;
+                  const isLaggard =
+                    member.laggard ??
+                    (!isLeader &&
+                      (cluster.direction === "up" ? member.changePct > 0 : member.changePct < 0));
+                  const roleLabel = isLeader ? "Leader" : isLaggard ? "Laggard" : "Khác chiều";
+                  return (
+                    <tr
+                      key={member.symbol}
+                      className="border-b border-slate-800/60 last:border-0 hover:bg-slate-800/30"
+                    >
+                      <td className="px-3 py-2.5 font-medium text-slate-100">${member.symbol}</td>
+                      <td
+                        className={cn(
+                          "px-3 py-2.5 tabular-nums font-medium",
+                          member.changePct >= 0 ? "text-emerald-400" : "text-rose-400"
+                        )}
+                      >
+                        {formatPct(member.changePct)}
+                      </td>
+                      <td className="px-3 py-2.5 tabular-nums text-slate-300">
+                        {formatUsd(member.quoteVolumeUsd)}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span
+                          className={cn(
+                            "rounded-full border px-2 py-0.5 text-[10px]",
+                            isLeader
+                              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                              : "border-slate-700 bg-slate-900 text-slate-400"
+                          )}
+                        >
+                          {roleLabel}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        <button
+                          onClick={() => onSelectMember(member.symbol)}
+                          className="rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 hover:text-white"
+                        >
+                          Mở coin
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 p-4 sm:px-5">
+          <p className="text-[11px] leading-relaxed text-slate-500">
+            Hiển thị đủ {cluster.size} member · tương quan return 1h. Bấm “Mở coin” để xem chart và bias.
+          </p>
+          <button
+            onClick={onCopy}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+          >
+            <Copy className="h-3.5 w-3.5" /> {copied ? "Đã copy" : "Copy link cụm"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RadarScreen() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const sideParam = searchParams.get("side");
   const sortParam = searchParams.get("sort");
   const volumeParam = Number(searchParams.get("minVolume"));
@@ -627,6 +818,7 @@ function RadarScreen() {
   const [excludeSystem, setExcludeSystem] = useState(searchParams.get("excludeSystem") === "1");
   const [sort, setSort] = useState<RadarSort>(initialSort);
   const [selected, setSelected] = useState<string | null>(searchParams.get("symbol"));
+  const [clusterId, setClusterId] = useState<string | null>(searchParams.get("cluster"));
   const [copied, setCopied] = useState(false);
 
   const queryKey = useMemo(
@@ -649,18 +841,28 @@ function RadarScreen() {
 
   const activeTab = SIDE_TABS.find((tab) => tab.id === side) ?? SIDE_TABS[0];
   const rows = data?.rows ?? [];
+  const activeCluster = clusterId
+    ? (data?.clusters?.find((cluster) => cluster.id === clusterId) ?? null)
+    : null;
   const updatedLabel = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString("vi-VN") : "—";
 
-  const copyPermalink = async () => {
-    const url = new URL(window.location.href);
-    url.searchParams.set("side", side);
-    url.searchParams.set("sort", sort);
-    if (minVolume) url.searchParams.set("minVolume", String(minVolume));
-    else url.searchParams.delete("minVolume");
-    if (excludeSystem) url.searchParams.set("excludeSystem", "1");
-    else url.searchParams.delete("excludeSystem");
-    if (selected) url.searchParams.set("symbol", selected);
-    else url.searchParams.delete("symbol");
+  const radarHref = (
+    clusterIdValue: string | null = clusterId,
+    symbolValue: string | null = selected
+  ) => {
+    const params = new URLSearchParams({ side, sort });
+    if (minVolume) params.set("minVolume", String(minVolume));
+    if (excludeSystem) params.set("excludeSystem", "1");
+    if (clusterIdValue) params.set("cluster", clusterIdValue);
+    if (symbolValue) params.set("symbol", symbolValue);
+    return `/radar?${params.toString()}`;
+  };
+
+  const copyPermalink = async (
+    clusterIdValue: string | null = clusterId,
+    symbolValue: string | null = selected
+  ) => {
+    const url = new URL(radarHref(clusterIdValue, symbolValue), window.location.origin);
     try {
       await navigator.clipboard.writeText(url.toString());
       setCopied(true);
@@ -668,6 +870,17 @@ function RadarScreen() {
     } catch {
       setCopied(false);
     }
+  };
+
+  const openCluster = (id: string) => {
+    setClusterId(id);
+    setSelected(null);
+    router.replace(radarHref(id, null), { scroll: false });
+  };
+
+  const closeCluster = () => {
+    setClusterId(null);
+    router.replace(radarHref(null, selected), { scroll: false });
   };
 
   return (
@@ -726,6 +939,15 @@ function RadarScreen() {
         </div>
       ) : null}
 
+      {clusterId && data && !activeCluster ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+          <span>Cụm trong link không còn trong snapshot hiện tại (dữ liệu radar đổi mỗi 60 giây).</span>
+          <button onClick={closeCluster} className="underline decoration-dotted">
+            Về danh sách cụm
+          </button>
+        </div>
+      ) : null}
+
       <section className="grid grid-cols-2 gap-2 md:grid-cols-4">
         <Stat
           label="BTC 24h"
@@ -744,7 +966,7 @@ function RadarScreen() {
               <Layers className="h-4 w-4" /> Cụm rotation — quét ngoài top
             </h2>
             <span className="text-[11px] text-slate-500">
-              Tương quan 1h · gồm coin ngoài {rows.length} rows
+              Tương quan 1h · bấm cụm để mở link · gồm coin ngoài {rows.length} rows
             </span>
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
@@ -762,7 +984,7 @@ function RadarScreen() {
                   </span>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1">
-                  {cluster.members.map((member) => (
+                  {cluster.members.slice(0, 6).map((member) => (
                     <button
                       key={member.symbol}
                       onClick={() => setSelected(member.symbol)}
@@ -774,10 +996,27 @@ function RadarScreen() {
                       </span>
                     </button>
                   ))}
+                  {cluster.members.length > 6 ? (
+                    <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-500">
+                      +{cluster.members.length - 6}
+                    </span>
+                  ) : null}
                 </div>
-                {cluster.leader ? (
-                  <p className="mt-1.5 text-[10px] text-slate-500">Leader: ${cluster.leader}</p>
-                ) : null}
+                <div className="mt-1.5 flex items-center justify-between gap-2">
+                  <p className="text-[10px] text-slate-500">
+                    {cluster.leader ? `Leader: $${cluster.leader}` : " "}
+                  </p>
+                  <a
+                    href={radarHref(cluster.id, null)}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      openCluster(cluster.id);
+                    }}
+                    className="text-[10px] font-medium text-violet-300 hover:text-violet-200"
+                  >
+                    Xem đủ {cluster.size} coin →
+                  </a>
+                </div>
               </div>
             ))}
           </div>
@@ -1114,6 +1353,17 @@ function RadarScreen() {
           </p>
         </div>
       </details>
+
+      {activeCluster ? (
+        <ClusterView
+          cluster={activeCluster}
+          side={side}
+          copied={copied}
+          onClose={closeCluster}
+          onCopy={() => void copyPermalink(activeCluster.id, null)}
+          onSelectMember={setSelected}
+        />
+      ) : null}
 
       {selected ? <DetailDrawer key={selected} symbol={selected} onClose={() => setSelected(null)} /> : null}
     </main>

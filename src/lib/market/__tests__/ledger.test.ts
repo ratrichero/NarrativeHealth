@@ -5,6 +5,7 @@ import {
   planCohorts,
   selectCohort,
   summarizeByBias,
+  summarizeByCluster,
   type RadarSignalRecord,
   type TrackedSignal,
 } from "@/lib/market/ledger";
@@ -133,6 +134,49 @@ describe("evaluateSignal", () => {
     );
     expect(tracked.horizons["1h"]?.returnPct).not.toBeNull();
     expect(tracked.horizons["1h"]?.win).toBeNull();
+  });
+});
+
+describe("summarizeByCluster", () => {
+  it("nhóm hiệu quả theo cụm và vai trò leader/laggard", () => {
+    const leader = evaluateSignal(
+      {
+        ...baseSignal,
+        clusterId: "c1",
+        clusterLabel: "AI",
+        clusterSize: 2,
+        clusterLeader: true,
+        clusterLaggard: false,
+      },
+      coinCandles,
+      btcCandles,
+      T0 + 2 * HOUR
+    );
+    const laggard = evaluateSignal(
+      {
+        ...baseSignal,
+        symbol: "LAG",
+        clusterId: "c1",
+        clusterLabel: "AI",
+        clusterSize: 2,
+        clusterLeader: false,
+        clusterLaggard: true,
+      },
+      coinCandles,
+      btcCandles,
+      T0 + 2 * HOUR
+    );
+
+    const summaries = summarizeByCluster([leader, laggard]);
+    expect(summaries).toHaveLength(2);
+    expect(summaries.map((summary) => summary.role).sort()).toEqual(["laggard", "leader"]);
+    expect(summaries.every((summary) => summary.label === "AI")).toBe(true);
+    expect(summaries.every((summary) => summary.horizons[0].n === 1)).toBe(true);
+  });
+
+  it("bỏ qua tín hiệu không thuộc cụm", () => {
+    const tracked = evaluateSignal(baseSignal, coinCandles, btcCandles, T0 + 2 * HOUR);
+    expect(summarizeByCluster([tracked])).toEqual([]);
   });
 });
 
