@@ -8,8 +8,11 @@ import { reportGoogleKeyOutcome, GOOGLE_POOL_BASE_URL } from "@/lib/llm/google-k
 import { keyHint, resolveProviderChain, type LlmProvider } from "@/lib/llm/provider-chain";
 import { recordLlmOutcome } from "@/lib/llm/monitor";
 import { classifyLlmFailure } from "@/lib/llm/errors";
+import { modelCapabilities } from "@/lib/llm/capabilities";
 import { recordLlmTelemetry } from "@/lib/llm/telemetry";
 import { recordTokenUsage } from "@/lib/llm/budget";
+import { noteTierFailure, noteTierSuccess } from "@/lib/llm/breaker";
+import { recordLlmCost } from "@/lib/llm/cost";
 import {
   llmMaxHttpAttempts,
   llmRequestTimeoutMs,
@@ -75,7 +78,8 @@ interface LlmCallResult {
 async function callOpenAICompatible(
   provider: LLMProviderConfig,
   messages: ChatMessage[],
-  source: LlmSource = "square"
+  source: LlmSource = "square",
+  options: { json?: boolean } = {}
 ): Promise<LlmCallResult | null> {
   // SQ-DIAG: free/on-demand Groq tiers enforce small OTPM budgets — a 429
   // here is usually "Please try again in N s", not a hard failure. Retry a
@@ -98,6 +102,7 @@ async function callOpenAICompatible(
           messages,
           temperature: provider.temperature ?? llmTemperature(0.3),
           max_tokens: provider.maxTokens ?? MAX_LLM_OUTPUT_TOKENS,
+          ...(options.json ? { response_format: { type: "json_object" } } : {}),
         }),
         // SQ-DIAG: reasoning fallbacks (DeepSeek-V4, qwen3 via OpenRouter) can
         // take 4-30s because reasoning tokens count before any output. 20s was
@@ -129,6 +134,7 @@ async function callOpenAICompatible(
         durationMs: Date.now() - startedAt,
         kind: "transport",
       });
+      noteTierFailure(provider.name, provider.apiKey, "transport");
       return null;
     }
 
@@ -171,6 +177,7 @@ async function callOpenAICompatible(
       durationMs: Date.now() - startedAt,
       kind: classifyLlmFailure(response.status, errBody),
     });
+    noteTierFailure(provider.name, provider.apiKey, classifyLlmFailure(response.status, errBody));
     return null;
   }
 
@@ -179,7 +186,11 @@ async function callOpenAICompatible(
   // rejected post was logged as "ok" because only the HTTP status was known).
   const data = await response.json();
   const usedTokens = Number(data.usage?.total_tokens ?? 0);
-  if (usedTokens > 0) recordTokenUsage(provider.apiKey, usedTokens);
+  if (usedTokens > 0) {
+    recordTokenUsage(provider.apiKey, usedTokens);
+    recordLlmCost({ provider: provider.name, model: provider.model, source, tokens: usedTokens });
+  }
+  noteTierSuccess(provider.name, provider.apiKey);
   const text = data.choices?.[0]?.message?.content;
   if (typeof text !== "string" || text.length === 0) {
     recordLlmOutcome({
@@ -216,19 +227,28 @@ async function generateWithLLM(
     return null;
   }
 
+  // LLM-SQ-JSON: structured output when the caller opts in (LLM_SQUARE_JSON=1)
+  // and the model is known to support json_object. The plain-text prompt stays
+  // the default: an unsupported response_format is an instant 400 on several
+  // OpenAI-compatible free tiers.
+  const jsonPrompt = process.env.LLM_SQUARE_JSON === "1";
   const prompt = buildLLMPrompt(brief);
 
   for (const provider of chain) {
+    const jsonMode = jsonPrompt && modelCapabilities(provider.model).jsonMode;
+    const conversationPrompt = jsonMode
+      ? `${prompt}\n\nOUTPUT FORMAT: trả về JSON hợp lệ duy nhất dạng {"post": "<toàn bộ nội dung bài đăng>"} — không markdown, không giải thích ngoài JSON.`
+      : prompt;
     try {
       let conversation: { role: "user" | "assistant"; content: string }[] = [
-        { role: "user", content: prompt },
+        { role: "user", content: conversationPrompt },
       ];
       let attempts = 0;
       const maxAttempts = 3; // initial try + up to 2 repair rounds
 
       while (attempts < maxAttempts) {
         attempts++;
-        const call = await callOpenAICompatible(provider, conversation, source);
+        const call = await callOpenAICompatible(provider, conversation, source, { json: jsonMode });
 
         if (!call) {
           // Nothing to validate (HTTP failure, empty body or transport error —
@@ -242,7 +262,10 @@ async function generateWithLLM(
         // SQ-DIAG: reasoning models (e.g. qwen3) emit <think>…</think> blocks
         // before the answer. Strip them before validation — the post is the
         // text after the think block, not the reasoning itself.
-        const generatedText = call.text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+        const generatedText = normalizeCashtags(
+          parseSquareOutput(call.text),
+          brief
+        );
 
         const validated = validateLLMOutput(generatedText, brief);
         if (validated) {
@@ -406,6 +429,7 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   lines.push("RULES:");
   lines.push("- Use ONLY the facts provided below. Do NOT invent any price, volume, or data.");
   lines.push("- Do NOT change Entry/TP/SL levels. Do NOT add or remove cashtags.");
+  lines.push("- Cashtags MUST use the $ form ($BTC). NEVER write them as hashtags (#BTC) — hashtags are rejected by the publisher.");
   lines.push("- NEVER use the words BUY, SELL, ORDER, EXECUTE as commands. The words LONG and SHORT (as in 'Direction: SHORT setup') are REQUIRED and allowed — just never use them as verbs describing your own past actions.");
   lines.push("- Keep the whole post between 900 and 1300 characters — rich but dense. If the post feels thin, expand the HOOK and the data interpretations, never pad with filler.");
   lines.push("- End with exactly: ⚠️ Data-driven analysis, not financial advice. DYOR.");
@@ -529,6 +553,47 @@ function buildLLMPrompt(brief: SquareContentBrief): string {
   lines.push("Write the post now. Output only the post text, nothing else.");
 
   return lines.join("\n");
+}
+
+/**
+ * LLM-SQ-JSON: extract the post from {"post": "…"} when structured output is
+ * on. Tolerates ```json fences and surrounding prose; anything that is not the
+ * expected object falls through unchanged so the validator (and repair loop)
+ * still see the raw text.
+ */
+export function parseSquareOutput(raw: string): string {
+  const withoutThink = raw.replace(/<think[\s\S]*?<\/think>/gi, "").trim();
+  const fenced = withoutThink.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] ?? withoutThink).trim();
+  if (!candidate.startsWith("{")) return candidate;
+  try {
+    const parsed = JSON.parse(candidate) as { post?: unknown; text?: unknown };
+    const post = typeof parsed.post === "string" ? parsed.post : parsed.text;
+    if (typeof post === "string" && post.trim().length > 0) return post.trim();
+  } catch {
+    // Not JSON — keep the raw text for validation/repair.
+  }
+  return candidate;
+}
+
+/**
+ * SQ-CASHTAG: models occasionally emit a hashtag (`#BTC`) where the product
+ * requires a cashtag (`$BTC`) — the only baseline eval case that failed. Known
+ * symbols from the brief are rewritten deterministically instead of spending a
+ * repair round or falling back to the template.
+ */
+export function normalizeCashtags(text: string, brief: SquareContentBrief): string {
+  const symbols = new Set<string>();
+  for (const tag of brief.cashtags ?? []) symbols.add(tag.replace(/^\$/, ""));
+  for (const symbol of brief.leadingCoinSymbols ?? []) symbols.add(symbol);
+
+  let out = text;
+  for (const symbol of symbols) {
+    if (!/^[A-Za-z0-9]{1,20}$/.test(symbol)) continue;
+    const pattern = new RegExp(`#${symbol}\\b`, "gi");
+    out = out.replace(pattern, `$${symbol}`);
+  }
+  return out;
 }
 
 function validateLLMOutput(text: string, brief: SquareContentBrief): string | null {

@@ -10,6 +10,7 @@
     "test": "jest",
     "test:live": "jest --config jest.live.config.js",
     "eval:llm": "tsx scripts/eval-llm.ts",
+    "eval:gate": "tsx scripts/eval-llm.ts --gate",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

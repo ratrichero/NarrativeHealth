@@ -74,6 +74,65 @@ interface LiveStatus {
   };
   /** Persistent-telemetry storm alerts (LLM-TELEMETRY-01). */
   alerts?: { provider: string; message: string }[];
+  /** Open persisted circuit breakers (LLM-BREAKER-01). */
+  breakers?: {
+    tier: string;
+    keyHint: string;
+    reason: string;
+    fails: number;
+    until: string;
+    remainingMs: number;
+  }[];
+  /** Today's USD estimate + optional daily cap (LLM-COST-01). */
+  cost?: {
+    today: {
+      date: string;
+      totalUsd: number;
+      tokens: number;
+      byProvider: Record<string, number>;
+    };
+    budgetUsd: number;
+    overBudget: boolean;
+    history: { date: string; usd: number; tokens: number }[];
+  };
+  /** Hourly latency series for the trend chart (LLM-TELEMETRY-02). */
+  telemetrySeries?: {
+    hour: string;
+    provider: string;
+    calls: number;
+    ok: number;
+    fail: number;
+    tokens: number;
+    p50Ms: number | null;
+    p95Ms: number | null;
+  }[];
+  /** Candidate-tier shadow samples (LLM-SHADOW-01). */
+  shadow?: {
+    enabled: boolean;
+    tier: string | null;
+    pct: number;
+    comparison: {
+      tier: string;
+      samples: number;
+      okRate: number;
+      adviceViolations: number;
+      avgChars: number;
+      p95Ms: number | null;
+      readyToPromote: boolean;
+      reason: string;
+    }[];
+  };
+  /** Recent per-turn traces (LLM-TRACE-01). */
+  traces?: {
+    id: string;
+    at: string;
+    feature: string;
+    ok: boolean;
+    provider?: string;
+    totalMs: number;
+    error?: string;
+    steps: { tier: string; status: number; ms: number; note?: string }[];
+  }[];
 }
 
 interface TestResult {
@@ -726,6 +785,140 @@ function LlmProvidersForm({
           {stormAlerts.map((alert) => (
             <p key={`${alert.provider}-${alert.message}`} className="font-mono">
               {alert.message}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {(live?.breakers ?? []).length > 0 && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100 space-y-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-semibold">
+              Circuit breaker đang mở (tier bị bỏ qua tới hết cooldown)
+            </p>
+            <Button
+              size="sm"
+              variant="ghost"
+              loading={actionMutation.isPending}
+              onClick={() => actionMutation.mutate({ action: "resetBreaker" })}
+            >
+              Đóng tất cả breaker
+            </Button>
+          </div>
+          {(live?.breakers ?? []).map((breaker) => (
+            <p key={`${breaker.tier}-${breaker.keyHint}`} className="font-mono">
+              {breaker.tier} {breaker.keyHint} · {breaker.reason} · {breaker.fails} fail · còn{" "}
+              {Math.max(0, Math.round(breaker.remainingMs / 60_000))} phút
+            </p>
+          ))}
+        </div>
+      )}
+
+      {live?.cost && (
+        <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 space-y-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold text-white">
+              Chi phí LLM hôm nay (ước tính USD)
+            </h4>
+            <span className="text-xs text-slate-400">
+              {live.cost.budgetUsd > 0
+                ? `ngân sách $${live.cost.budgetUsd.toFixed(2)}/ngày`
+                : "chưa đặt LLM_DAILY_BUDGET_USD"}
+            </span>
+          </div>
+          <p className={`text-lg font-mono ${live.cost.overBudget ? "text-red-300" : "text-cyan-300"}`}>
+            ${live.cost.today.totalUsd.toFixed(4)}{" "}
+            <span className="text-xs text-slate-500">
+              · {live.cost.today.tokens.toLocaleString("vi-VN")} token
+            </span>
+          </p>
+          <p className="text-[11px] text-slate-500">
+            Theo tier:{" "}
+            {Object.entries(live.cost.today.byProvider)
+              .sort((a, b) => b[1] - a[1])
+              .map(([provider, usd]) => `${provider} $${usd.toFixed(4)}`)
+              .join(" · ") || "chưa có call nào"}
+          </p>
+          {live.cost.overBudget && (
+            <p className="text-[11px] text-red-300">
+              Đã chạm ngân sách: chat chuyển sang trả lời ngắn, tắt tool.
+            </p>
+          )}
+        </div>
+      )}
+
+      {(live?.telemetrySeries ?? []).length > 0 && (
+        <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 space-y-2">
+          <h4 className="text-sm font-semibold text-white">Độ trễ theo giờ (p50 / p95)</h4>
+          <p className="text-[11px] text-slate-500">
+            Percentile ước tính từ histogram; thanh dài = p95 cao. Chỉ 12 giờ gần nhất.
+          </p>
+          <div className="space-y-1">
+            {(live?.telemetrySeries ?? []).slice(0, 16).map((point) => {
+              const width = Math.min(100, Math.max(2, Math.round((point.p95Ms ?? 0) / 100)));
+              return (
+                <div
+                  key={`${point.hour}-${point.provider}`}
+                  className="flex items-center gap-2 text-[11px] font-mono text-slate-300"
+                >
+                  <span className="w-32 shrink-0 text-slate-500">
+                    {point.hour.slice(5, 16).replace("T", " ")}
+                  </span>
+                  <span className="w-20 shrink-0">{point.provider}</span>
+                  <span className="w-28 shrink-0 text-slate-400">
+                    p50 {point.p50Ms ?? "-"} / p95 {point.p95Ms ?? "-"}ms
+                  </span>
+                  <span className="h-1.5 rounded bg-cyan-500/60" style={{ width: `${width}px` }} />
+                  <span className="text-slate-500">
+                    {point.ok}/{point.calls} ok
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {live?.shadow?.enabled && (
+        <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 space-y-1">
+          <h4 className="text-sm font-semibold text-white">
+            Shadow A/B — tier ứng viên {live.shadow.tier} ({live.shadow.pct}% lượt chat)
+          </h4>
+          <p className="text-[11px] text-slate-500">
+            Câu trả lời shadow không hiển thị cho user; verdict chỉ để tham khảo trước khi đổi chain.
+          </p>
+          {(live.shadow.comparison ?? []).map((row) => (
+            <p
+              key={row.tier}
+              className={`text-[11px] font-mono ${row.readyToPromote ? "text-green-400" : "text-amber-300"}`}
+            >
+              {row.tier} · {row.samples} mẫu · ok {(row.okRate * 100).toFixed(0)}% ·{" "}
+              {row.adviceViolations} advice · p95 {row.p95Ms ?? "-"}ms · {row.reason}
+            </p>
+          ))}
+          {(live.shadow.comparison ?? []).length === 0 && (
+            <p className="text-[11px] text-slate-500">Chưa có mẫu shadow nào.</p>
+          )}
+        </div>
+      )}
+
+      {(live?.traces ?? []).length > 0 && (
+        <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 space-y-1">
+          <h4 className="text-sm font-semibold text-white">Trace gần đây (mã tra cứu)</h4>
+          <p className="text-[11px] text-slate-500">
+            Mỗi lượt một trace; lưu 24h, không chứa nội dung câu hỏi hay key.
+          </p>
+          {(live?.traces ?? []).slice(0, 8).map((trace) => (
+            <p
+              key={trace.id}
+              className={`text-[11px] font-mono ${trace.ok ? "text-green-400" : "text-red-400"}`}
+            >
+              {trace.ok ? "OK" : "FAIL"} · {trace.id} · {trace.feature} ·{" "}
+              {trace.totalMs}ms · {trace.provider ?? "-"} ·{" "}
+              {trace.steps
+                .map((step) => `${step.tier}:${step.status}${step.note ? `/${step.note}` : ""}`)
+                .join(" → ") || "không có bước"}
+              {trace.error ? ` · ${trace.error.slice(0, 60)}` : ""}
             </p>
           ))}
         </div>

@@ -55,3 +55,16 @@ export function retryDelayMs(response: Response, attempt: number): number {
 }
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * LLM-HEDGE-01: how long the first tier may stay silent before the next tier
+ * is started in parallel. 0 disables hedging (LLM_HEDGE_MS=0). Only the chat
+ * stream uses it — Square/Movers must not double-spend on batch posts.
+ */
+export function llmHedgeMs(): number {
+  const raw = process.env.LLM_HEDGE_MS?.trim();
+  if (raw === "0" || raw?.toLowerCase() === "off") return 0;
+  const value = raw ? Number(raw) : NaN;
+  if (!Number.isFinite(value) || value <= 0) return 2_500;
+  return clamp(Math.round(value), 300, 20_000);
+}

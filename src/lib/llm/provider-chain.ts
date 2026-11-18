@@ -27,6 +27,7 @@ import {
   type RuntimeTier,
 } from "./settings";
 import { keyOverBudget } from "./budget";
+import { hydrateLlmBreakers, isBreakerOpen } from "./breaker";
 
 export interface LlmProvider {
   name: string;
@@ -139,7 +140,7 @@ export function buildChainFromSettings(
     defaultBaseUrl: "https://api.openai.com/v1",
   });
 
-  return affordableForBudget(applyProfile(chain, stored, profile));
+  return filterUnavailable(applyProfile(chain, stored, profile));
 }
 
 /**
@@ -162,12 +163,26 @@ function applyProfile(
 
 /**
  * LLM-BUDGET-01: a key that already spent its per-minute token window should
- * not be tried first (the request would only earn a 429). When every tier is
- * over budget the chain is returned untouched — the caller may still succeed.
+ * not be tried first (the request would only earn a 429).
+ *
+ * LLM-BREAKER-01: a tier whose breaker is open (2 real provider failures in 5
+ * minutes, persisted across restarts) is skipped for its cooldown.
+ *
+ * When EVERY tier is filtered out the chain is returned untouched: a stale
+ * breaker must never turn a degraded system into a dead one — the caller may
+ * still succeed, and a success closes the breaker again.
  */
-function affordableForBudget(chain: LlmProvider[]): LlmProvider[] {
-  const affordable = chain.filter((provider) => !keyOverBudget(provider.apiKey, 800));
-  return affordable.length > 0 ? affordable : chain;
+function filterUnavailable(chain: LlmProvider[]): LlmProvider[] {
+  // Unit tests share one process and a handful of fake keys across suites, so
+  // breaker state would leak between them. Breaker accounting still runs; only
+  // the chain-level gate is opt-in for tests (LLM_BREAKER_TEST=1).
+  const breakerGate = process.env.NODE_ENV !== "test" || process.env.LLM_BREAKER_TEST === "1";
+  const available = chain.filter(
+    (provider) =>
+      !(breakerGate && isBreakerOpen(provider.name, provider.apiKey)) &&
+      !keyOverBudget(provider.apiKey, 800)
+  );
+  return available.length > 0 ? available : chain;
 }
 
 function googleEntries(model: string, row: RuntimeTier | undefined): LlmProvider[] {
@@ -185,5 +200,8 @@ function googleEntries(model: string, row: RuntimeTier | undefined): LlmProvider
 export async function resolveProviderChain(
   profile?: LlmFeatureProfile
 ): Promise<LlmProvider[]> {
+  // Breakers live in app_settings; load them before filtering so a restarted
+  // process skips the tier that was failing before the restart.
+  await hydrateLlmBreakers();
   return buildChainFromSettings(await loadLlmRuntimeSettings(), profile);
 }

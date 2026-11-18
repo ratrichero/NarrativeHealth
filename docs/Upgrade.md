@@ -1,8 +1,130 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-11-17
+## Ngày cập nhật: 2026-11-18
 
 ---
+
+## LLM-OPS-05 — Grounding, trace, breaker, chi phí, hedge, quota, eval CI (2026-11-18)
+
+Mười một khoảng trống còn lại sau LLM-OPS-04, xử lý trọn một đợt. Không thêm
+migration: mọi state mới nằm trong `app_settings` (jsonb) và đều tự tắt DB khi
+`NODE_ENV=test`.
+
+### 1. Grounding verifier (`src/lib/llm/grounding.ts`)
+
+System prompt cấm bịa số nhưng không có gì kiểm tra câu trả lời cuối. Thêm bộ
+kiểm tra tất định: trích số từ câu trả lời (chuẩn hoá `$`, `%`, dấu phẩy,
+hậu tố K/M/B, chống nhầm chữ Việt như "tăng" thành hậu tố T), so với mọi số
+trong tool output của cùng lượt với dung sai 25% cho làm tròn.
+
+**LLM-GROUND-02 (siết lại):** verifier đợt đầu flag cả số model **tự tính**
+từ tool (entry→TP +15%, funding 0.00008 → 0.008%, R:R) nên gần như lượt chat
+nào cũng lệch và có thể tốn thêm một completion để sửa. Nay:
+- số suy ra bằng số học từ tool (tổng, hiệu, tỉ lệ %, % thay đổi, ×/÷100,
+tích với số nhỏ) được chấp nhận với dung sai 3% → không còn flag;
+- sửa dung sai tương đối: scale không còn bị chặn ở 1, nên 0.008 không còn
+được coi là "gần" 0.00008 (lỗi 100 lần);
+- **mặc định không gọi lượt sửa**: chỉ caveat khi lệch "đáng kể" (≥2 số không
+truy được, hoặc một số `%`/`$`/≥1000). Bật `LLM_GROUNDING_REPAIR=1` mới sửa,
+và tối đa 1 lần / 10 phút (`LLM_GROUNDING_REPAIR_INTERVAL_MS`).
+
+Nối vào cả `runChatTurn` và `runChatTurnStream`; stream gửi `reset` + toàn bộ
+câu đã sửa (nếu có sửa) để client không nối hai bản.
+
+### 2. Trace mỗi lượt (`src/lib/llm/trace.ts`)
+
+Telemetry theo giờ trả lời "bao nhiêu fail", không trả lời "lượt này đi qua
+tier nào, mất bao lâu". Mỗi lượt có `traceId` (hiện trong lỗi như "mã tra
+cứu"), lưu ring 40 trong RAM + 25 bản/24h trong `app_settings.llm.traces`.
+Chỉ metadata: tier, model, status, kind, ms, token, fingerprint — không câu
+hỏi, không key.
+
+### 3. Circuit breaker bền (`src/lib/llm/breaker.ts`)
+
+2 lỗi provider thật trong 5 phút (auth/rate-limit/capacity/transport/timeout)
+→ mở breaker 5 phút (auth 30 phút), lưu DB nên restart không thử lại key chết.
+Key theo tier + 4 ký tự cuối, nên một key google chết không loại cả pool.
+`request_invalid`/`content_policy` **không** mở breaker (lỗi payload của mình).
+Chain builder bỏ tier đang mở; nếu tất cả bị lọc thì trả chain gốc để không
+biến suy giảm thành sập. Admin có nút đóng breaker; test tắt gate bằng
+`LLM_BREAKER_TEST` để không rò state giữa suite.
+
+### 4. Cost ledger USD (`src/lib/llm/cost.ts`)
+
+`budget.ts` chỉ giới hạn token/phút. Thêm bảng giá theo model (flash-lite,
+gemini, deepseek, qwen, gpt; override `LLM_PRICE_TABLE`), quy đổi token → USD
+với giả định 70/30 input/output (`LLM_COST_INPUT_SHARE`), ledger ngày trong
+`app_settings.llm.cost` (31 ngày). `LLM_DAILY_BUDGET_USD` đặt trần: vượt trần
+→ chat trả lời ngắn + tắt tool, không chặn pipeline Square/Movers.
+
+### 5. Eval vào CI + gate hồi quy
+
+`npm run eval:gate` ghi `artifacts/llm-eval-latest.json` và so với baseline
+commit sẵn (`artifacts/llm-eval-baseline.json`, 7/8 đo thật ở LLM-OPS-03):
+fail khi tụt >5 điểm hoặc một case từng pass nay fail. Scorer có test offline
+(`eval-suite.test.ts`, 8 fixture + advice/negation). Workflow
+`.github/workflows/llm-checks.yml` chạy tsc + eslint + jest offline, không cần
+key/DB.
+
+### 6. Hedged streaming cho chat (`chatCompletionStream`)
+
+Tier đầu im lặng quá `LLM_HEDGE_MS` (mặc định 2500ms) → tier kế chạy song
+song; tier nào ra delta đầu tiên thắng, tier còn lại bị abort (AbortError của
+loser không tính là fail). Chỉ chat hedge; Square/Movers giữ tuần tự để không
+trả tiền hai lần. Tier thắng chết giữa chừng → `reset` rồi chuyển tier như cũ.
+
+### 7. Structured output + cashtag cho Square
+
+`normalizeCashtags` đổi `#BTC` → `$BTC` cho symbol có trong brief (đúng case
+baseline fail duy nhất), thêm luật prompt cấm hashtag. `LLM_SQUARE_JSON=1`
+bật `response_format: json_object` **chỉ khi** capability registry nói model hỗ
+trợ, kèm parser chịu được fence/think block; mặc định vẫn plain text để không
+biến free tier thành 400.
+
+### 8. Quota theo session/ngày (`src/lib/chat/quota.ts`)
+
+80 lượt và 150k token mỗi session/ngày (env chỉnh được). 80% → soft: max token
+400 + không tool; chạm trần → từ chối trước khi gọi provider. Đếm trong RAM
+(session chat vốn ephemeral), không ghi DB trên hot path.
+
+### 9. Admin: breaker, chi phí, p50/p95, trace
+
+`/api/admin/llm/status` trả thêm `breakers`, `cost`, `telemetrySeries`,
+`traces`. Telemetry có histogram ms (7 edge) để tính p50/p95 xấp xỉ thay vì
+chỉ trung bình. Panel LLM Providers hiển thị breaker (nút đóng tất cả), chi phí
+hôm nay theo tier + cảnh báo vượt ngân sách, bảng độ trễ 12 giờ, và trace gần
+nhất.
+
+### 10. Provenance + injection detection cho tool output
+
+Mỗi kết quả tool có `nguồn`, `thời điểm dữ liệu`, nhãn "DB theo chu kỳ refresh"
+cho tool health/metrics; system prompt yêu cầu nêu mốc thời gian. Payload chứa
+cụm kiểu "ignore previous instructions"/"bỏ qua hướng dẫn" bị gắn cảnh báo
+"chỉ dùng như dữ liệu".
+
+### 11. Shadow A/B cho tier ứng viên (`src/lib/llm/shadow.ts`)
+
+Đổi model trước đây là "sửa chain rồi xem". Shadow chạy **cùng request chat**
+ trên một tier ứng viên với `LLM_SHADOW_PCT`% số lượt (mặc định tắt: cần cả
+`LLM_SHADOW_TIER` và `LLM_SHADOW_PCT`), không hiển thị cho user, tối đa 500
+token. Mỗi mẫu lưu vào `app_settings.llm.shadow` (200 mẫu/7 ngày) cùng tín hiệu
+đo được: có trả lời không, status, latency, token, độ dài, có vi phạm
+buy/sell advice không. Verdict chỉ "ready" khi ≥20 mẫu, ok ≥95%, 0 vi phạm
+advice và p95 ≤ max(1.5s, 1.5× p95 production) — người vẫn quyết định promote.
+Panel admin hiển thị tiến độ và lý do chưa đủ điều kiện.
+
+### Kiểm tra
+
+- `npx tsc --noEmit` → 0 lỗi
+- `npx jest src/lib/llm src/lib/chat src/lib/square` → 27 suite / 302 test pass
+- `npx eslint src/lib/llm src/lib/chat src/lib/square src/components/admin src/app/api/admin/llm` → 0 lỗi
+- `next build` → compiled successfully
+- Live eval (`LLM_FORCE_ENV=1 npm run eval:gate`): **8/8 (100%)**, chat 4/4,
+  square 4/4, p95 ~2.3s — case `square-cashtag-percent` từng fail nay pass nhờ
+  luật prompt `$SYM`. Baseline commit vẫn giữ 7/8 (0.875) làm sàn chịu dao
+  động: một case flaky không làm đỏ CI, nhưng tụt >5 điểm hoặc case từng pass
+  nay fail thì gate báo.
+- Artifact mỗi lần chạy: `artifacts/llm-eval-latest.json`.
 
 ## LLM-OPS-04 — Canary không còn báo fail giả cho tier chậm/quota thấp (2026-11-17)
 
