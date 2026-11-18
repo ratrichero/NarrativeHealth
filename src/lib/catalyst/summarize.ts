@@ -3,6 +3,7 @@
 // hoặc thêm số lạ; lỗi/không có key → template. Không có fact → không có summary.
 
 import { generateMoversWithLLM } from "@/lib/square/content-generator";
+import { peekRadarRuntimeConfig } from "@/lib/settings/radar-config";
 import { catalystLlmDailyLimit, consumeCatalystLlmQuota } from "./llm-quota";
 import type { CatalystFact, CatalystSyncInfo } from "./types";
 
@@ -125,7 +126,7 @@ export async function summarizeCatalysts(
   }
 
   const template = buildTemplateSummary(symbol, facts);
-  const llmEnabled = String(process.env.CATALYST_LLM_ENABLED ?? "1").toLowerCase() !== "0";
+  const llmEnabled = peekRadarRuntimeConfig().catalystLlmEnabled;
   if (!llmEnabled) {
     return { text: template, mode: "template", note: "LLM tắt (CATALYST_LLM_ENABLED=0) — template facts." };
   }

@@ -23,7 +23,8 @@
     "audit:migration": "node src/lib/p3/__tests__/migration-audit.js",
     "audit:score-configs": "node src/lib/p3/__tests__/score-configs-audit.js",
     "check:backup": "node src/lib/p3/__tests__/check-backup.js",
-    "migrate:p3": "node src/lib/p3/__tests__/execute-migrations.js"
+    "migrate:p3": "node src/lib/p3/__tests__/execute-migrations.js",
+    "check:radar-ui": "tsx scripts/check-radar-ui.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
@@ -43,6 +44,8 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "@electric-sql/pglite-socket": "^0.2.19",
     "@jest/globals": "^30.4.1",
     "@tailwindcss/postcss": "4.1.17",
     "@types/bcryptjs": "^3.0.0",

@@ -199,7 +199,7 @@ export function ChatWidget() {
           setOpen(true);
         }}
         aria-label="Mở chat trợ lý"
-        className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-900/40 flex items-center justify-center transition-transform hover:scale-105"
+        className="fixed bottom-4 right-4 z-50 h-12 w-12 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg shadow-cyan-900/40 flex items-center justify-center transition-transform hover:scale-105 sm:bottom-6 sm:right-6 sm:h-14 sm:w-14"
       >
         <MessageCircle className="h-6 w-6" />
       </button>
@@ -207,7 +207,7 @@ export function ChatWidget() {
   }
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex flex-col rounded-xl border border-slate-700 bg-slate-900 shadow-2xl w-[380px] max-w-[calc(100vw-2rem)]"
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col rounded-xl border border-slate-700 bg-slate-900 shadow-2xl w-[380px] max-w-[calc(100vw-1.5rem)] sm:bottom-6 sm:right-6 sm:max-w-[calc(100vw-2rem)]"
       style={{ height: "min(560px, calc(100vh - 3rem))" }}
     >
       {/* Header */}

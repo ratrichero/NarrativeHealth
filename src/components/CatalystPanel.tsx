@@ -66,7 +66,7 @@ export function CatalystPanel({ symbol }: { symbol: string }) {
   });
 
   return (
-    <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 p-4">
+    <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 p-3 sm:p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 text-sm font-semibold text-violet-200">
           <Sparkles className="h-4 w-4" /> Vì sao volume bất thường?
@@ -119,7 +119,10 @@ export function CatalystPanel({ symbol }: { symbol: string }) {
 
           <ul className="space-y-2">
             {data.facts.map((fact) => (
-              <li key={`${fact.source}-${fact.externalId}`} className="text-xs text-slate-300">
+              <li
+                key={`${fact.source}-${fact.externalId}`}
+                className="break-words text-xs leading-relaxed text-slate-300"
+              >
                 <span className="mr-1.5 rounded border border-slate-700 px-1 py-0.5 text-[10px] text-slate-400">
                   {catalystTypeLabel(fact.type)}
                 </span>

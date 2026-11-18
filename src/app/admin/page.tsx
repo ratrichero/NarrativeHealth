@@ -37,9 +37,11 @@ import {
   Users,
   Activity,
   TrendingUp,
+  SlidersHorizontal,
   Zap,
 } from "lucide-react";
 import type { AdminNarrative, AdminCoin, ConfigItem } from "@/types";
+import { RadarConfigSection } from "@/components/admin/RadarConfigSection";
 import type { RecommendationRule, RuleCondition } from "@/lib/types/recommendation-rule";
 import type { HealthWeights, ConfidenceWeights, RecommendationThresholds } from "@/lib/types/rule-version";
 import BacktestSection from "./backtest-section";
@@ -427,6 +429,7 @@ type TabType =
   | "alerts"
   | "analytics"
   | "chat-report"
+  | "radar-config"
   | "auth"
   | "accounts"
   | "llm"
@@ -486,6 +489,7 @@ const ADMIN_MODULES: {
     icon: RefreshCw,
     tabs: [
       { id: "config", label: "Config" },
+      { id: "radar-config", label: "Radar & Catalyst" },
       { id: "logs", label: "Logs" },
       { id: "llm", label: "LLM Monitor" },
       { id: "llm-config", label: "LLM Providers" },
@@ -854,9 +858,9 @@ function CatalystSyncSection() {
   };
 
   return (
-    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-4">
+    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 sm:p-4 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Zap className="h-5 w-5 text-violet-400" />
           <h3 className="text-base font-semibold text-white">Catalyst sync</h3>
           {stateBadge()}
@@ -885,7 +889,7 @@ function CatalystSyncSection() {
         </div>
       )}
       {data?.live?.error ? (
-        <p className="text-[11px] text-yellow-400">
+        <p className="break-words text-[11px] leading-relaxed text-yellow-400">
           Không đếm được fact còn hạn: {data.live.error}
         </p>
       ) : null}
@@ -911,7 +915,7 @@ function CatalystSyncSection() {
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="w-full min-w-[560px] text-[11px] sm:text-xs">
             <thead>
               <tr className="text-slate-500 text-left border-b border-slate-700">
                 <th className="py-1.5 pr-3 font-medium">Nguồn</th>
@@ -945,7 +949,7 @@ function CatalystSyncSection() {
                   <td className="py-1.5 pr-3 text-right text-slate-300">{row.stored}</td>
                   <td className="py-1.5">
                     {row.failing ? (
-                      <span className="text-red-300" title={row.error ?? undefined}>
+                      <span className="break-words text-red-300" title={row.error ?? undefined}>
                         LỖI · {row.error ?? "không rõ"}
                       </span>
                     ) : row.stale ? (
@@ -1032,16 +1036,16 @@ function CatalystCoverageSection() {
     count > 0 ? `${count} (${pct ?? "—"}%)` : "—";
 
   return (
-    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-3">
+    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-3 sm:p-4 space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <BarChart3 className="h-5 w-5 text-cyan-400" />
           <h3 className="text-base font-semibold text-white">Catalyst coverage</h3>
           <Badge variant={coverageVariant}>
             {totals?.coveragePct ?? "—"}% outlier có catalyst
           </Badge>
         </div>
-        <p className="text-xs text-slate-500">
+        <p className="text-[11px] text-slate-500 sm:text-xs">
           {data?.outliers ?? 0} outlier / {data?.totalSignals ?? 0} tín hiệu ·{" "}
           {data?.factsAvailable ?? 0} fact còn hạn · tự cập nhật mỗi 5 phút
         </p>
@@ -1066,7 +1070,7 @@ function CatalystCoverageSection() {
       ) : (
         <>
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full min-w-[560px] text-[11px] sm:text-xs">
               <thead>
                 <tr className="text-slate-500 text-left border-b border-slate-700">
                   <th className="py-1.5 pr-3 font-medium">Nhóm</th>
@@ -1126,7 +1130,7 @@ function CatalystCoverageSection() {
               <p className="text-xs text-green-400">Mọi outlier trong cửa sổ ledger đều có ít nhất một catalyst.</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs">
+                <table className="w-full min-w-[520px] text-[11px] sm:text-xs">
                   <thead>
                     <tr className="text-slate-500 text-left border-b border-slate-700">
                       <th className="py-1.5 pr-3 font-medium">Coin</th>
@@ -2952,6 +2956,7 @@ export default function AdminPage() {
     { id: "rule-engine", label: "Rule Engine", icon: GitBranch },
     { id: "alerts", label: "Alerts", icon: Bell },
     { id: "config", label: "Config", icon: Settings },
+    { id: "radar-config", label: "Radar & Catalyst", icon: SlidersHorizontal },
     { id: "logs", label: "Logs", icon: ScrollText },
     { id: "llm", label: "LLM Monitor", icon: Activity },
     { id: "llm-config", label: "LLM Providers", icon: Zap },
@@ -4453,6 +4458,8 @@ export default function AdminPage() {
               </div>
             </div>
           )}
+
+          {activeTab === "radar-config" && <RadarConfigSection />}
 
           {activeTab === "analytics" && (
             <div className="space-y-6">

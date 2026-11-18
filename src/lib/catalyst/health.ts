@@ -17,6 +17,7 @@ import { db } from "@/db";
 import { appSettings } from "@/db/schema";
 import { dispatchCustomText } from "@/lib/services/alert-delivery.service";
 import type { CatalystSourceStatus, CatalystSyncScope } from "./sync";
+import { peekRadarRuntimeConfig } from "@/lib/settings/radar-config";
 
 /** Số lượt liên tiếp 0 fact (không lỗi) để coi là chết âm thầm. */
 export const CATALYST_STALE_ZERO_RUNS = 2;
@@ -147,8 +148,8 @@ export function buildCatalystStaleMessage(stale: CatalystSourceStaleness[]): str
 }
 
 function alertCooldownHours(): number {
-  const parsed = Number(process.env.CATALYST_STALE_ALERT_COOLDOWN_HOURS);
-  return Number.isFinite(parsed) && parsed >= 1 ? parsed : 6;
+  const hours = peekRadarRuntimeConfig().catalystStaleCooldownHours;
+  return hours >= 1 ? hours : 6;
 }
 
 async function readAlerted(): Promise<Record<string, string> | null> {

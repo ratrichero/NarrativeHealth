@@ -11,9 +11,9 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { appSettings } from "@/db/schema";
+import { peekRadarRuntimeConfig } from "@/lib/settings/radar-config";
 
 const KEY = "catalyst.llm.usage";
-const DEFAULT_LIMIT = 200;
 
 export interface CatalystLlmQuotaDecision {
   allowed: boolean;
@@ -24,10 +24,9 @@ export interface CatalystLlmQuotaDecision {
   reason?: "limit" | "storage";
 }
 
-/** CATALYST_LLM_DAILY_LIMIT; 0 = không giới hạn, giá trị lạ → mặc định 200. */
+/** Config runtime `catalystLlmDailyLimit` (DB > env); 0 = không giới hạn. */
 export function catalystLlmDailyLimit(): number {
-  const raw = Number(process.env.CATALYST_LLM_DAILY_LIMIT);
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : DEFAULT_LIMIT;
+  return Math.max(0, Math.floor(peekRadarRuntimeConfig().catalystLlmDailyLimit));
 }
 
 /** Pure: state kế tiếp, reset theo ngày UTC. limit <= 0 = không giới hạn. */

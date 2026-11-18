@@ -31,33 +31,37 @@ import { buildSetup, type SetupLevels } from "@/lib/market/setup";
 import { shouldExplainCatalyst } from "@/lib/catalyst/matching";
 import { isEligibleTicker, listingAgeDays } from "@/lib/market/universe";
 import { buildDemoSnapshot, getDemoDetail } from "@/lib/market/demo";
+import { peekRadarRuntimeConfig, readRadarRuntimeConfig } from "@/lib/settings/radar-config";
 
 const FUTURES_API = "https://fapi.binance.com/fapi/v1";
 
 export const DEFAULT_MIN_VOLUME_USD = 10_000_000;
-const PER_SIDE_ENRICH = Math.min(15, Math.max(5, Number(process.env.RADAR_ENRICH_PER_SIDE ?? 10)));
-const UNUSUAL_CANDIDATES = Math.min(20, Math.max(6, Number(process.env.RADAR_UNUSUAL_CANDIDATES ?? 12)));
 const UNUSUAL_POOL_VOLUME_USD = 20_000_000;
-// Universe quét cluster cố định, độc lập với tab người xem. Chỉ lấy 1h closes
-// (weight thấp) và cache 5 phút; 0 = tắt.
-const CLUSTER_UNIVERSE_RAW = Number(process.env.RADAR_CLUSTER_UNIVERSE ?? 32);
-// Đủ chỗ cho toàn bộ row có thể được enrich ở cả 3 tab + unusual, để merge sau
-// không làm rơi row ra khỏi universe.
-const CLUSTER_UNIVERSE_MIN = PER_SIDE_ENRICH * 2 + UNUSUAL_CANDIDATES;
-const CLUSTER_UNIVERSE = Number.isFinite(CLUSTER_UNIVERSE_RAW)
-  ? CLUSTER_UNIVERSE_RAW <= 0
-    ? 0
-    : Math.min(60, Math.max(CLUSTER_UNIVERSE_MIN, Math.floor(CLUSTER_UNIVERSE_RAW)))
-  : CLUSTER_UNIVERSE_MIN;
-const CLUSTER_THRESHOLD_RAW = Number(process.env.RADAR_CLUSTER_THRESHOLD ?? 0.6);
-const CLUSTER_THRESHOLD = Number.isFinite(CLUSTER_THRESHOLD_RAW)
-  ? Math.min(0.9, Math.max(0.3, CLUSTER_THRESHOLD_RAW))
-  : 0.6;
-const CLUSTER_MAX_SIZE_RAW = Number(process.env.RADAR_CLUSTER_MAX_SIZE ?? 8);
-const CLUSTER_MAX_SIZE = Number.isFinite(CLUSTER_MAX_SIZE_RAW)
-  ? Math.min(20, Math.max(3, Math.floor(CLUSTER_MAX_SIZE_RAW)))
-  : 8;
 const CLUSTER_CACHE_MS = 5 * 60_000;
+
+/**
+ * Tham số tuning lấy từ config runtime (DB > env). Hàm thay cho các hằng
+ * module-level trước đây để đổi cấu hình trên Admin không cần restart.
+ * Clamp giữ đúng giới hạn an toàn như env cũ.
+ */
+export function radarTuning() {
+  const cfg = peekRadarRuntimeConfig();
+  const perSide = Math.min(15, Math.max(5, Math.floor(cfg.enrichPerSide)));
+  const unusual = Math.min(20, Math.max(6, Math.floor(cfg.unusualCandidates)));
+  // Đủ chỗ cho toàn bộ row có thể được enrich ở cả 3 tab + unusual.
+  const minUniverse = perSide * 2 + unusual;
+  const universe =
+    cfg.clusterUniverse <= 0
+      ? 0
+      : Math.min(60, Math.max(minUniverse, Math.floor(cfg.clusterUniverse)));
+  return {
+    perSide,
+    unusual,
+    universe,
+    threshold: Math.min(0.9, Math.max(0.3, cfg.clusterThreshold)),
+    maxSize: Math.min(20, Math.max(3, Math.floor(cfg.clusterMaxSize))),
+  };
+}
 
 export interface FuturesTicker {
   symbol: string;
@@ -168,6 +172,11 @@ export interface RadarSnapshot {
   market: RadarMarketContext;
   /** Cụm phát hiện trên universe quét rộng (gồm coin ngoài top rows). */
   clusters?: RadarClusterSummary[];
+  /**
+   * Toàn bộ cụm của universe, chỉ dùng server-side để resolve `?cluster=<id>`
+   * khi cụm đó không nằm trong top 6 của panel. Bị bỏ trước khi trả JSON.
+   */
+  allClusters?: RadarClusterSummary[];
   collectedAt: string;
   /** true khi RADAR_DEMO=1 và dữ liệu là mẫu, không phải Binance thật. */
   demo?: boolean;
@@ -457,6 +466,13 @@ async function enrichTicker(
 // ─── Snapshot ───────────────────────────────────────────
 
 const snapshotCache = new Map<string, { expires: number; promise: Promise<RadarSnapshot> }>();
+
+/** Xoá cache snapshot/detail để đổi cấu hình radar áp dụng ngay, không chờ TTL. */
+export function invalidateRadarSnapshotCache(): void {
+  snapshotCache.clear();
+  detailCache.clear();
+  clusterInfoCache.clear();
+}
 // Cache membership cluster theo universe/minVolume để drawer detail của coin ngoài
 // rows vẫn đọc được cluster/leader/laggard từ snapshot gần nhất.
 const clusterInfoCache = new Map<
@@ -634,7 +650,7 @@ export function mergeClusterCandidates(
 export function selectClusterPool(
   eligible: FuturesTicker[],
   excluded: Set<string>,
-  limit = CLUSTER_UNIVERSE
+  limit = radarTuning().universe
 ): FuturesTicker[] {
   if (limit <= 0) return [];
   const seen = new Set(excluded);
@@ -681,9 +697,10 @@ export function selectClusterPool(
 export function selectClusterUniverse(
   eligible: FuturesTicker[],
   minVolume: number,
-  limit = CLUSTER_UNIVERSE
+  limit = radarTuning().universe
 ): FuturesTicker[] {
   if (limit <= 0) return [];
+  const { perSide, unusual: unusualCount } = radarTuning();
   const seen = new Set<string>();
   const picked: FuturesTicker[] = [];
   const add = (ticker: FuturesTicker) => {
@@ -702,8 +719,8 @@ export function selectClusterUniverse(
     (a, b) => Number(b.quoteVolume) - Number(a.quoteVolume)
   );
   const taken = new Set([
-    ...byChangeDesc.slice(0, PER_SIDE_ENRICH).map((ticker) => ticker.symbol),
-    ...byChangeAsc.slice(0, PER_SIDE_ENRICH).map((ticker) => ticker.symbol),
+    ...byChangeDesc.slice(0, perSide).map((ticker) => ticker.symbol),
+    ...byChangeAsc.slice(0, perSide).map((ticker) => ticker.symbol),
   ]);
   const unusual = eligible
     .filter(
@@ -713,11 +730,11 @@ export function selectClusterUniverse(
         !taken.has(ticker.symbol)
     )
     .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
-    .slice(0, UNUSUAL_CANDIDATES);
+    .slice(0, unusualCount);
 
   // Thứ tự add cố định để label/cluster id không phụ thuộc tab.
-  for (const ticker of byChangeDesc.slice(0, PER_SIDE_ENRICH)) add(ticker);
-  for (const ticker of byChangeAsc.slice(0, PER_SIDE_ENRICH)) add(ticker);
+  for (const ticker of byChangeDesc.slice(0, perSide)) add(ticker);
+  for (const ticker of byChangeAsc.slice(0, perSide)) add(ticker);
   for (const ticker of unusual) add(ticker);
   for (const ticker of byVolume) add(ticker);
   return picked;
@@ -800,6 +817,8 @@ export interface ClusterBaseOptions {
 export interface ClusterBase {
   clusters: Map<string, ClusterInfo | null>;
   summaries: RadarClusterSummary[];
+  /** Không cắt top 6 — dùng để mở permalink cụm ngoài panel. */
+  allSummaries: RadarClusterSummary[];
   items: ClusterCandidate[];
 }
 
@@ -816,16 +835,18 @@ export function buildClusterBase(
     ...candidate,
     composite: percentileRank(options.absChangeRanks, Math.abs(candidate.changePct)) ?? 50,
   }));
+  const tuning = radarTuning();
   const clusters = computeClusters(items, {
     btcCloses: options.btcCloses,
-    threshold: options.threshold ?? CLUSTER_THRESHOLD,
-    maxSize: options.maxSize ?? CLUSTER_MAX_SIZE,
+    threshold: options.threshold ?? tuning.threshold,
+    maxSize: options.maxSize ?? tuning.maxSize,
   });
-  const summaries = summarizeClusters(
+  const allSummaries = summarizeClusters(
     items.map(({ symbol, changePct, quoteVolumeUsd }) => ({ symbol, changePct, quoteVolumeUsd })),
-    clusters
+    clusters,
+    Number.POSITIVE_INFINITY
   );
-  return { clusters, summaries, items };
+  return { clusters, summaries: allSummaries.slice(0, 6), allSummaries, items };
 }
 
 async function loadClusterBase(
@@ -835,7 +856,7 @@ async function loadClusterBase(
   enrichedCloses: Map<string, number[]>
 ): Promise<ClusterBase> {
   if (universe.length === 0) {
-    return { clusters: new Map(), summaries: [], items: [] };
+    return { clusters: new Map(), summaries: [], allSummaries: [], items: [] };
   }
 
   const candidates = (
@@ -855,7 +876,7 @@ async function loadClusterBase(
   ).filter((item): item is ClusterCandidate => item !== null);
 
   if (candidates.length === 0) {
-    return { clusters: new Map(), summaries: [], items: [] };
+    return { clusters: new Map(), summaries: [], allSummaries: [], items: [] };
   }
   const btcCloses =
     candidates.find((item) => item.symbol === "BTC")?.closes ??
@@ -896,13 +917,14 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
       Number(b.quoteVolume) - Number(a.quoteVolume)
   );
 
+  const tuning = radarTuning();
   let chosen: FuturesTicker[] = [];
-  if (side === "gainer") chosen = byChangeDesc.slice(0, PER_SIDE_ENRICH);
-  else if (side === "loser") chosen = byChangeAsc.slice(0, PER_SIDE_ENRICH);
+  if (side === "gainer") chosen = byChangeDesc.slice(0, tuning.perSide);
+  else if (side === "loser") chosen = byChangeAsc.slice(0, tuning.perSide);
   else {
     const taken = new Set([
-      ...byChangeDesc.slice(0, PER_SIDE_ENRICH).map((t) => t.symbol),
-      ...byChangeAsc.slice(0, PER_SIDE_ENRICH).map((t) => t.symbol),
+      ...byChangeDesc.slice(0, tuning.perSide).map((t) => t.symbol),
+      ...byChangeAsc.slice(0, tuning.perSide).map((t) => t.symbol),
     ]);
     const pool = eligible
       .filter(
@@ -912,7 +934,7 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
           !taken.has(t.symbol)
       )
       .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
-      .slice(0, UNUSUAL_CANDIDATES);
+      .slice(0, tuning.unusual);
     chosen = pool;
   }
 
@@ -972,6 +994,7 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     rows,
     market,
     clusters: clusterSummaries,
+    allClusters: clusterBase.allSummaries,
     collectedAt: new Date().toISOString(),
   };
 }
@@ -984,9 +1007,11 @@ export interface RadarQuery {
   minVolume?: number;
   excludeSystem?: boolean;
   sort?: RadarSort;
+  /** `?cluster=<id>` — ghim đúng cụm vào snapshot kể cả ngoài top 6 của panel. */
+  cluster?: string;
 }
 
-function shapeSnapshot(snapshot: RadarSnapshot, query: RadarQuery): RadarSnapshot {
+export function shapeRadarSnapshot(snapshot: RadarSnapshot, query: RadarQuery): RadarSnapshot {
   const limit = Math.min(30, Math.max(5, query.limit ?? 15));
   const sort = query.sort ?? "composite";
   const rows = snapshot.rows
@@ -998,7 +1023,22 @@ function shapeSnapshot(snapshot: RadarSnapshot, query: RadarQuery): RadarSnapsho
       return b.composite - a.composite;
     })
     .slice(0, limit);
-  return { ...snapshot, rows };
+
+  // Permalink: cụm được hỏi có thể nằm ngoài top 6 panel (hoặc khác tab).
+  // Ghim nó lên đầu để client luôn mở đúng cụm + đủ member từ URL.
+  const pinned = query.cluster
+    ? [...(snapshot.clusters ?? []), ...(snapshot.allClusters ?? [])].find(
+        (cluster) => cluster.id === query.cluster
+      ) ?? null
+    : null;
+  const clusters =
+    pinned && !(snapshot.clusters ?? []).some((cluster) => cluster.id === pinned.id)
+      ? [pinned, ...(snapshot.clusters ?? [])]
+      : snapshot.clusters;
+
+  // allClusters chỉ là dữ liệu tra cứu server-side, không đưa vào payload API.
+  const { allClusters: _allClusters, ...rest } = snapshot;
+  return { ...rest, rows, ...(clusters ? { clusters } : {}) };
 }
 
 export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSnapshot> {
@@ -1006,8 +1046,11 @@ export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSna
   const minVolume = query.minVolume && query.minVolume > 0 ? query.minVolume : minVolumeDefault();
 
   if (process.env.RADAR_DEMO === "1") {
-    return shapeSnapshot(buildDemoSnapshot(side), query);
+    return shapeRadarSnapshot(buildDemoSnapshot(side), query);
   }
+
+  // Nạp config runtime (DB > env) trước khi snapshot dùng tuning sync.
+  await readRadarRuntimeConfig();
 
   const key = `${side}|${minVolume}`;
   const cached = snapshotCache.get(key);
@@ -1021,7 +1064,7 @@ export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSna
     });
   }
 
-  return shapeSnapshot(await entry.promise, query);
+  return shapeRadarSnapshot(await entry.promise, query);
 }
 
 function cachedClusterInfo(symbol: string): ClusterInfo | null | undefined {

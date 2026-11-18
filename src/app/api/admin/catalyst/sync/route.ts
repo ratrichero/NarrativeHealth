@@ -28,6 +28,7 @@ import {
 import { catalystSourceLabel, catalystSyncSourceLabel } from "@/lib/catalyst/summarize";
 import { catalystStaleness } from "@/lib/catalyst/health";
 import { countLiveCatalystFacts } from "@/lib/catalyst/store";
+import { demoCatalystSyncStatus, demoLiveCatalystCounts } from "@/lib/catalyst/demo-facts";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
@@ -51,7 +52,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
-  const status = await readCatalystSyncStatus();
+  // Demo mode: dùng status + số fact mẫu, không đọc DB (cùng nguồn với panel).
+  const demo = process.env.RADAR_DEMO === "1";
+  const status = demo ? demoCatalystSyncStatus() : await readCatalystSyncStatus();
   const info = catalystSyncInfo(status);
   const statuses = catalystSourceStatuses(status);
   // RADAR-06-STALE: quá hạn theo nhịp scope HOẶC 2 lượt liền 0 fact. Tính ở
@@ -81,7 +84,7 @@ export async function GET() {
   } = { total: 0, bySource: [] };
 
   try {
-    const counts = await countLiveCatalystFacts();
+    const counts = demo ? demoLiveCatalystCounts() : await countLiveCatalystFacts();
     live = {
       total: counts.reduce((sum, row) => sum + row.live, 0),
       bySource: counts.map((row) => ({

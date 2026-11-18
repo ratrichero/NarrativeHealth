@@ -39,9 +39,13 @@ export async function GET(request: NextRequest) {
   const minVolumeRaw = Number(params.get("minVolume"));
   const minVolume = Number.isFinite(minVolumeRaw) && minVolumeRaw > 0 ? minVolumeRaw : undefined;
   const excludeSystem = params.get("excludeSystem") === "1";
+  // `?cluster=<id>`: giữ đúng cụm của permalink trong payload kể cả khi cụm
+  // không nằm trong top 6 panel hiện tại.
+  const clusterRaw = params.get("cluster")?.trim();
+  const cluster = clusterRaw && clusterRaw.length <= 120 ? clusterRaw : undefined;
 
   try {
-    const snapshot = await getRadarSnapshot({ side, limit, minVolume, sort, excludeSystem });
+    const snapshot = await getRadarSnapshot({ side, limit, minVolume, sort, excludeSystem, cluster });
 
     // Track record chỉ ghi tín hiệu thật; demo không được làm bẩn số liệu.
     // Ghi đủ 3 side + cohort neutral sau response, không phụ thuộc tab đang xem

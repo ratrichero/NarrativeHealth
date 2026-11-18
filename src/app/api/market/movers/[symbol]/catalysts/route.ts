@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { normalizeSymbol } from "@/lib/market/radar";
-import { catalystLimiter, clientIpFromHeaders, rateLimitHeaders } from "@/lib/market/rate-limit";
+import { getCatalystLimiter, clientIpFromHeaders, rateLimitHeaders } from "@/lib/market/rate-limit";
 import { matchCatalystsForSymbol } from "@/lib/catalyst/matching";
 import { readRecentCatalystFacts } from "@/lib/catalyst/store";
-import { summarizeCatalysts } from "@/lib/catalyst/summarize";
+import { buildTemplateSummary, emptyCatalystNote, summarizeCatalysts } from "@/lib/catalyst/summarize";
 import { catalystSyncInfo, readCatalystSyncStatus } from "@/lib/catalyst/sync";
+import { demoCatalystFacts, demoCatalystSyncStatus } from "@/lib/catalyst/demo-facts";
+import { readRadarRuntimeConfig } from "@/lib/settings/radar-config";
 import type { CatalystSummary } from "@/lib/catalyst/types";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +20,9 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ symbol: string }> }
 ) {
-  const rate = catalystLimiter.check(clientIpFromHeaders(request.headers));
+  // Nạp config runtime trước để rate limit/LLM dùng giá trị mới nhất (DB > env).
+  await readRadarRuntimeConfig();
+  const rate = getCatalystLimiter().check(clientIpFromHeaders(request.headers));
   if (!rate.allowed) {
     return NextResponse.json(
       { success: false, error: `Quá nhiều request. Thử lại sau ${rate.retryAfterSec}s.` },
@@ -30,6 +34,26 @@ export async function GET(
   const symbol = normalizeSymbol(raw);
   if (!/^[A-Z0-9]{2,15}$/.test(symbol)) {
     return NextResponse.json({ success: false, error: "Symbol không hợp lệ." }, { status: 400 });
+  }
+
+  // RADAR_DEMO: trả facts mẫu (Binance/RSS/unlock) để panel có dữ liệu thật
+  // khi không có DB/mạng; cùng bộ facts với card admin coverage/sync.
+  if (process.env.RADAR_DEMO === "1") {
+    const sync = catalystSyncInfo(demoCatalystSyncStatus());
+    const matched = matchCatalystsForSymbol(symbol, demoCatalystFacts());
+    const summary = buildTemplateSummary(symbol, matched);
+    const data: CatalystSummary = {
+      symbol,
+      facts: matched,
+      summary,
+      mode: summary ? "template" : "none",
+      generatedAt: new Date().toISOString(),
+      note: summary
+        ? "Dữ liệu mẫu (RADAR_DEMO=1) — facts kèm link nguồn, không phải khuyến nghị đầu tư."
+        : emptyCatalystNote(sync),
+      sync,
+    };
+    return NextResponse.json({ success: true, data }, { headers: rateLimitHeaders(rate) });
   }
 
   try {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { parseCatalystSyncScope, syncCatalysts } from "@/lib/catalyst/sync";
+import { readRadarRuntimeConfig } from "@/lib/settings/radar-config";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
@@ -53,6 +54,8 @@ export async function POST(request: NextRequest) {
   const scope = parseCatalystSyncScope((body as { scope?: unknown })?.scope);
 
   try {
+    // Làm mới config runtime trước khi sync (STALE cooldown/LLM quota nằm trong DB).
+    await readRadarRuntimeConfig();
     const summary = await syncCatalysts(Date.now(), scope);
     console.log(
       `[CATALYST] sync scope=${summary.scope} sources=${summary.sources.length} stored=${summary.totals.stored} failed=${summary.totals.failedSources} purged=${summary.purged}`

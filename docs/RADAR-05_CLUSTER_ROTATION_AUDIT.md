@@ -125,7 +125,7 @@ cho đúng nguyên nhân gốc.
 | 1 | **Một universe quét chung, độc lập tab**; row enrich merge vào sau; snapshot cụm dùng chung | #2, E6 | Gộp luôn chi phí 3 tab thành 1 lần quét |
 | 2 | **Chuẩn hoá strength + residual correlation + chặn siêu cụm**; leader/laggard theo cùng thang, có chiều | #3, #4, #5, E2, E3 | Tách “nhãn” khỏi “tín hiệu”: chỉ gắn laggard khi cùng chiều cụm và chưa bắt nhịp |
 | 3 | **Lưu cluster snapshot/history + alert/track-record theo cụm** | #6, #9, E1 | Sau khi id và strength đã ổn định mới đáng lưu |
-| 4 | **Cluster detail/permalink + test cache/per-tab/weight** | #7, #8, E5 | Cần id ổn định + history đã có |
+| 4 | **Cluster detail/permalink + test cache/per-tab/weight** — permalink **Xong (RADAR-05-B4)** | #7, #8, E5 | Cần id ổn định + history đã có |
 
 **Tiêu chí nghiệm thu tối thiểu cho từng bước**
 
@@ -148,3 +148,10 @@ cho đúng nguyên nhân gốc.
 
 > Cập nhật sau audit: **E1 đã sửa** (RADAR-05-E1) — `clusterId` chuyển sang hash ổn định; xem
 > mục E1 và bước 0 ở trên.
+>
+> **Bước 4 (permalink) đã làm** (RADAR-05-B4): `/radar?cluster=<id>` đọc id từ URL ở mọi lần
+> render (kể cả back/forward), `GET /api/market/movers?cluster=<id>` ghim cụm vào snapshot nên
+> cụm ngoài top 6 panel vẫn mở đúng; panel hiện đủ member + leader. Id không còn trong universe →
+> banner “Cụm trong link không còn trong snapshot hiện tại”. Test `cluster-permalink.test.ts`.
+> Phần “test cache TTL + inflight dedupe” vẫn chưa có test riêng (hành vi cache 60s/inflight có sẵn
+> từ trước, không đổi trong lượt này).

@@ -4,6 +4,95 @@
 
 ---
 
+## RADAR-DEMO-CATALYST — dữ liệu catalyst mẫu cho demo mode (2026-11-18)
+
+Trước đây `RADAR_DEMO=1` chỉ có bảng so sánh catalyst với nhãn hardcode; panel “Vì sao volume
+bất thường?” và card admin Catalyst sync/coverage rỗng hoặc báo “chưa đồng bộ nguồn”, không xem
+được UI thật khi server bị Binance geo-block.
+
+- `src/lib/catalyst/demo-facts.ts`: 6 fact mẫu (Binance listing ENA, unlock ENA/FET từ
+  `EVENT_RISKS_UNLOCK`, RSS CoinDesk/The Block/Cointelegraph cho SUI/RNDR/FET), có `sourceUrl`,
+  thời gian tính tương đối theo `now` để không bị cũ; kèm `demoCatalystLabels()`,
+  `demoCatalystSyncStatus()` (3 scope, không nguồn lỗi, chạy 2 phút trước) và
+  `demoLiveCatalystCounts()`.
+- `src/lib/catalyst/demo-coverage.ts`: dựng coverage từ chính ledger demo + facts mẫu, nên số
+  liệu khớp bảng so sánh (hiện 14 outlier, 3 có catalyst = 21%).
+- API: `/api/market/movers/[symbol]/catalysts` trả facts mẫu + template summary + sync `synced`;
+  `/api/admin/catalyst/sync|coverage` dùng status/counts/coverage mẫu khi `RADAR_DEMO=1` — không
+  đọc DB, không gọi mạng. Nhánh demo trong `market/demo.ts` gắn `catalystTriggered` và nhãn
+  ledger từ chính facts (bỏ danh sách symbol hardcode).
+- `npm run check:radar-ui` kiểm thêm panel ENA phải có fact kèm link, sync `live > 0`,
+  coverage `outliers > 0`; test `src/lib/catalyst/__tests__/demo.test.ts` khoá hành vi.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `jest src/lib/market src/lib/catalyst` **28 suite / 178 test
+pass**; eslint 0 lỗi; `npm run check:radar-ui` pass 7/7 (panel ENA 2 fact, sync live=6, coverage
+14 outlier/21%). Kiểm tra browser: panel hiện 2 fact + link “Unlock calendar”/“Binance
+Announcement”, card sync “Nguồn OK · Fact còn hạn: 6”, card coverage “21% outlier có catalyst”.
+
+## DEV-CHECK — `npm run check:radar-ui` (2026-11-18)
+
+Mỗi lần merge phải dựng PostgreSQL thủ công mới xem được card Catalyst sync/coverage (RADAR-06)
+và bảng cụm/catalyst. Thêm script dev-only tự dựng môi trường tạm:
+
+- `scripts/check-radar-ui.ts`: PGlite in-memory + socket TCP (`@electric-sql/pglite`,
+  `@electric-sql/pglite-socket` ở devDependencies), tạo `catalyst_events` (đúng migration 0036),
+  `app_settings` và seed 1 catalyst fact; không đọc `.env`, không chạm DB thật.
+- Chạy `next dev` port ngẫu nhiên với `DATABASE_URL` trỏ PGlite, `RADAR_DEMO=1`, `AUTH_SECRET`
+  sinh riêng (>=32 ký tự) để tự ký cookie admin bằng `signSession`.
+- Kiểm tra: `/radar` 200; `/api/market/movers` có cụm + member; `?cluster=<id>` ghim đúng cụm;
+  `/api/market/radar/track-record` có `clusterSummaries` và `catalyst.labeled > 0` (điều kiện để
+  bảng catalyst render); `/api/admin/catalyst/sync|coverage` trả 200 `success: true`, không
+  `live.error`. Exit code 1 nếu có check fail, tự kill `next dev` + PGlite khi xong.
+- Tuỳ chọn `npm run check:radar-ui -- --browser`: nếu có `playwright`, mở Chromium 390×844 và
+  chờ đúng text hai bảng + hai card admin trong DOM; không có thì in cảnh báo và bỏ qua.
+- Lưu ý: nếu đang có `next dev` khác trong cùng thư mục, Next 16 từ chối chạy server thứ hai;
+  script in PID cần `kill` và hướng dẫn chạy lại.
+
+Verify: `npx tsc --noEmit` 0 lỗi; eslint 0 lỗi; chạy thật `npm run check:radar-ui` pass 6/6
+(4 cụm demo, permalink `demo-DeFi`, 3/14 tín hiệu có catalyst, sync live=1, coverage 200).
+
+## MOBILE-UI — Tối ưu mobile cho radar cụm/catalyst (2026-11-18)
+
+Các tính năng mới (cụm rotation, catalyst comparison, permalink cụm, card admin) trước đây dựa
+vào bảng 7–9 cột và modal cố định, trên mobile phải vuốt ngang và bị nav che header modal.
+
+- `/radar`: bỏ padding trùng của layout (thêm 32px chiều ngang trên mobile), tiêu đề gọn lại
+  (`text-xl`, badge Binance ẩn dưới `sm`), hàng “cập nhật / Copy link / Refresh” full-width.
+- Bảng bias, hiệu quả cụm, so sánh catalyst và ledger gần đây chuyển sang **card mobile** (`sm:hidden`),
+  bảng giữ cho `sm:block` — không còn nội dung bị cắt ở 390px.
+- `ClusterView`: mobile thành sheet toàn màn hình, `z-[60]` để không bị nav dính che header, member
+  dạng card (symbol · volume · vai trò · 24h · nút Mở coin), chừa chỗ cho chat widget.
+- Card cụm ở panel: label truncate, số liệu không co, chip/badge tăng vùng chạm.
+- Admin: card Catalyst sync/coverage padding gọn, long SQL error `break-words`, badge wrap; bảng
+  nguồn/coverage có `min-w` trong khung cuộn ngang để cột không bị ép.
+- `CatalystPanel` trong drawer: padding mobile nhỏ hơn, fact `break-words`.
+- Chat widget nhỏ hơn và sát góc hơn trên mobile (`h-12`, `bottom-4`).
+
+Verify: `npx tsc --noEmit` 0 lỗi; eslint 0 lỗi. Kiểm tra bằng browser ở viewport 390×844: `/radar`
+(header, panel cụm, 4 bảng dạng card), `?cluster=demo-DeFi` (sheet + 4 member card), Admin →
+Vận hành → Analytics (card Catalyst sync/coverage). `document.documentElement.scrollWidth` = 382 ≤
+390 nên không có tràn ngang cấp trang.
+
+## RADAR-05-B4 — Permalink `?cluster=<id>` (2026-11-18)
+
+Audit RADAR-05 bước 4: id cụm đã ổn định nhưng mở link còn phụ thuộc snapshot/top 6 của panel.
+
+- `src/app/radar/page.tsx`: bỏ state `clusterId` riêng — `searchParams.get("cluster")` là nguồn
+  sự thật duy nhất, nên dán link, back/forward hay bấm “Xem đủ N coin” đều mở đúng cụm; mở cụm
+  chỉ còn `router.replace(...)` ghi URL.
+- `GET /api/market/movers?cluster=<id>`: `RadarQuery.cluster` + `shapeRadarSnapshot` ghim cụm được
+  hỏi lên đầu `clusters` (tra trong `allClusters` = toàn bộ cụm của universe), nhờ vậy cụm ngoài
+  top 6 hoặc khác tab vẫn trả đủ member. `allClusters` bị strip khỏi payload API.
+- Cụm không còn trong universe (membership đổi sau 60 giây) → giữ banner “Cụm trong link không
+  còn trong snapshot hiện tại” + nút về danh sách cụm.
+- Tests `cluster-permalink.test.ts`: ghim cụm ngoài top 6, không nhân đôi cụm đã có, id lạ không
+  ghim, không rò `allClusters`.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market src/lib/catalyst` **27 suite / 172 test
+pass**; eslint 0 lỗi. Demo mode (browser thật): mở `/radar?cluster=demo-AI` → panel AI 3 member;
+đổi URL sang `demo-Interop` → panel 2 member; bấm “Xem đủ 4 coin” → URL có `cluster=demo-DeFi`,
+panel 4 member; `?cluster=demo-gone` → banner. Chưa verify với dữ liệu Binance thật.
+
 ## RADAR-05-E1 — clusterId ổn định (2026-11-18)
 
 Audit RADAR-05 E1: `clusterId = cluster-${labelIndex}` tăng theo thứ tự duyệt `groups`, mà thứ tự
@@ -2809,3 +2898,19 @@ một coin hoặc narrative đạt điều kiện cảnh báo.
 Alert Rule lưu phạm vi (scope), đối tượng (scopeId), loại trigger (triggerType) và ngưỡng (triggerValue). Khi hệ thống phát hiện điều kiện, nó ghi một bản ghi vào alert_history; admin có thể xem lịch sử và acknowledge cảnh báo.
 
 Trong code hiện tại, Alerts không trực tiếp tính hoặc trừ điểm. Chúng là lớp thông báo/giám sát sử dụng dữ liệu điểm đã có. Tuy nhiên phần thực thi trigger tự động chưa được nối đầy đủ: service hiện có các hàm tạo rule, ghi lịch sử và acknowledge, nhưng tìm kiếm toàn bộ code chỉ thấy recordAlert(), chưa thấy scheduler/engine thực sự gọi nó để phát cảnh báo. Ngoài ra UI hiện có nút tạo alert mutation nhưng chưa thấy nút Add Alert Rule tương ứng trong phần hiển thị.
+
+## RADAR-CONFIG — Cấu hình Radar/Catalyst trên Admin (2026-11-18)
+
+Env `RADAR_*`/`CATALYST_*` nay chỉ là **fallback**. Admin → module Vận hành → tab
+**Radar & Catalyst** cho phép sửa trực tiếp các tham số runtime, lưu vào
+`app_settings` key `radar.config`, ưu tiên hơn env và áp dụng ngay không cần
+restart server (cache 10 giây, đồng thời invalidate/cập nhật cache ngay sau khi lưu).
+
+Phạm vi: universe/ngưỡng/size cụm, enrich mỗi tab, unusual candidates; webhook +
+ngưỡng/cooldown alert radar; ngưỡng mở panel catalyst, bật/tắt LLM, trần LLM/ngày,
+rate limit catalyst theo IP, cooldown cảnh báo STALE. Giá trị DB hỏng/ngoài biên bị
+bỏ qua và rơi về env/default tương ứng. API: `GET/PUT /api/admin/radar/config`
+(admin session; PUT nhận `{ values: { ... } }`).
+
+Nhịp chạy job `SCHEDULER_CATALYST_*` và `SCHEDULER_CATALYST_TOKEN` vẫn thuộc tiến
+trình FastAPI (cấu hình lúc start), chưa đổi qua form này.

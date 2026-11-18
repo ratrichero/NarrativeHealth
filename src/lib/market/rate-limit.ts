@@ -1,4 +1,6 @@
 // RADAR-RATE: sliding-window rate limit trong RAM cho các route public.
+
+import { peekRadarRuntimeConfig } from "@/lib/settings/radar-config";
 // Mỗi instance có cửa sổ riêng; đủ để chặn lạm dụng đơn giản, không thay WAF.
 
 export interface RateLimitResult {
@@ -101,13 +103,21 @@ export const listLimiter = new SlidingWindowLimiter(listLimitPerMinute(), 60_000
 export const briefIpLimiter = new SlidingWindowLimiter(briefLimitPerHour(), 3_600_000);
 export const trackRecordLimiter = new SlidingWindowLimiter(trackRecordLimitPerMinute(), 60_000);
 
-function catalystLimitPerMinute(): number {
-  const value = Number(process.env.CATALYST_PER_IP_PER_MIN);
-  return Number.isFinite(value) && value > 0 ? value : 20;
-}
+let catalystLimit = peekRadarRuntimeConfig().catalystPerIpPerMin;
+let catalystLimiterInstance = new SlidingWindowLimiter(catalystLimit, 60_000);
 
-/** RADAR-06: endpoint catalyst gọi LLM/DB nên có trần riêng theo IP. */
-export const catalystLimiter = new SlidingWindowLimiter(catalystLimitPerMinute(), 60_000);
+/**
+ * RADAR-06: endpoint catalyst gọi LLM/DB nên có trần riêng theo IP.
+ * Trần đọc từ config runtime nên đổi trên Admin có hiệu lực ngay (không restart).
+ */
+export function getCatalystLimiter(): SlidingWindowLimiter {
+  const limit = peekRadarRuntimeConfig().catalystPerIpPerMin;
+  if (limit !== catalystLimit) {
+    catalystLimit = limit;
+    catalystLimiterInstance = new SlidingWindowLimiter(limit, 60_000);
+  }
+  return catalystLimiterInstance;
+}
 
 export function rateLimitHeaders(result: RateLimitResult): Record<string, string> {
   const headers: Record<string, string> = {

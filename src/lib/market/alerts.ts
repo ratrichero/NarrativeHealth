@@ -11,6 +11,7 @@ import type { ClusterEvent } from "@/lib/market/cluster-history";
 import { matchCatalystsForSymbol } from "@/lib/catalyst/matching";
 import { readRecentCatalystFacts } from "@/lib/catalyst/store";
 import type { CatalystFact } from "@/lib/catalyst/types";
+import { peekRadarRuntimeConfig, readRadarRuntimeConfig } from "@/lib/settings/radar-config";
 
 const KEY = "radar.alerts.sent";
 const CLUSTER_KEY = "radar.alerts.clusters.sent";
@@ -35,15 +36,12 @@ export interface AlertOptions {
 }
 
 export function alertOptions(): AlertOptions {
-  const num = (name: string, fallback: number) => {
-    const value = Number(process.env[name]);
-    return Number.isFinite(value) && value >= 0 ? value : fallback;
-  };
+  const cfg = peekRadarRuntimeConfig();
   return {
-    minScore: num("RADAR_ALERT_MIN_SCORE", 75),
-    minEntryQuality: num("RADAR_ALERT_MIN_ENTRY", 50),
-    maxImpulseAgeHours: num("RADAR_ALERT_MAX_IMPULSE_HOURS", 12),
-    cooldownHours: num("RADAR_ALERT_COOLDOWN_HOURS", 6),
+    minScore: cfg.alertMinScore,
+    minEntryQuality: cfg.alertMinEntry,
+    maxImpulseAgeHours: cfg.alertMaxImpulseHours,
+    cooldownHours: cfg.alertCooldownHours,
   };
 }
 
@@ -213,7 +211,8 @@ export async function dispatchRadarAlerts(
   market: RadarMarketContext
 ): Promise<number> {
   if (process.env.NODE_ENV === "test" || process.env.RADAR_DEMO === "1") return 0;
-  const url = process.env.RADAR_ALERT_WEBHOOK_URL?.trim();
+  await readRadarRuntimeConfig();
+  const url = peekRadarRuntimeConfig().alertWebhookUrl;
   if (!url) return 0;
 
   const day = new Date().toISOString().slice(0, 10);
@@ -332,7 +331,7 @@ export async function dispatchClusterAlerts(
 ): Promise<number> {
   if (process.env.NODE_ENV === "test" || process.env.RADAR_DEMO === "1") return 0;
   if (events.length === 0) return 0;
-  const url = process.env.RADAR_ALERT_WEBHOOK_URL?.trim();
+  const url = peekRadarRuntimeConfig().alertWebhookUrl;
   if (!url) return 0;
 
   const day = new Date().toISOString().slice(0, 10);

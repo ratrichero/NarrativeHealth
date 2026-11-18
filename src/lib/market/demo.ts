@@ -20,6 +20,7 @@ import {
   type TrackedSignal,
 } from "@/lib/market/ledger";
 import type { Bias } from "@/lib/market/scoring";
+import { demoCatalystLabels } from "@/lib/catalyst/demo-facts";
 
 interface DemoSpec {
   symbol: string;
@@ -121,6 +122,9 @@ function toMetrics(spec: DemoSpec, side: MoverSide): MarketMetrics {
 function toRow(spec: DemoSpec, side: MoverSide): RadarRow {
   const metrics = toMetrics(spec, side);
   const score = scoreForSide(metrics, side);
+  // RADAR-06: cờ mở panel catalyst lấy từ chính facts mẫu (cùng nguồn với panel),
+  // không dùng danh sách symbol hardcode.
+  const catalyst = demoCatalystLabels().get(spec.symbol);
   return {
     symbol: spec.symbol,
     pair: `${spec.symbol}USDT`,
@@ -168,6 +172,7 @@ function toRow(spec: DemoSpec, side: MoverSide): RadarRow {
     composite: compositeScore(score.score, score.entryQuality),
     reasons: score.reasons,
     warnings: score.warnings,
+    catalystTriggered: Boolean(catalyst),
   };
 }
 
@@ -353,10 +358,10 @@ function demoHorizons(base24h: number, bias: Bias): TrackedSignal["horizons"] {
   return result;
 }
 
-const DEMO_CATALYST_SYMBOLS = new Set(["ENA", "SUI", "RNDR", "FET"]);
-
 export function buildDemoTrackRecord(): TrackRecordResult {
   const now = Date.now();
+  // Nhãn ledger demo lấy từ cùng bộ facts mẫu mà panel/card admin đang dùng.
+  const catalystLabels = demoCatalystLabels(now);
   const tracked: TrackedSignal[] = DEMO_LEDGER.map((spec) => {
     const bullish = ["continuation", "flush-bounce", "breakout", "accumulation"].includes(spec.bias);
     const bearish = ["exhaustion", "breakdown"].includes(spec.bias);
@@ -392,11 +397,14 @@ export function buildDemoTrackRecord(): TrackRecordResult {
       clusterSize: sourceRow?.clusterSize ?? 1,
       clusterLeader: sourceRow?.clusterLeader ?? false,
       clusterLaggard: sourceRow?.clusterLaggard ?? false,
-      // Demo cho bảng so sánh catalyst: vài coin có catalyst thật trong narrative,
+      // Demo cho bảng so sánh catalyst: nhãn lấy từ facts mẫu (Binance/RSS/unlock),
       // phần còn lại là nhóm đối chứng (không gọi mạng/DB).
-      hasCatalyst: DEMO_CATALYST_SYMBOLS.has(spec.symbol),
-      ...(DEMO_CATALYST_SYMBOLS.has(spec.symbol)
-        ? { catalystTypes: ["LISTING"], catalystSources: ["BINANCE_ANNOUNCEMENT"] }
+      hasCatalyst: catalystLabels.has(spec.symbol),
+      ...(catalystLabels.has(spec.symbol)
+        ? {
+            catalystTypes: catalystLabels.get(spec.symbol)!.types,
+            catalystSources: catalystLabels.get(spec.symbol)!.sources,
+          }
         : {}),
       actionable: spec.bias !== "neutral" && spec.score >= 55,
     };

@@ -513,7 +513,66 @@ function TrackRecord() {
             <span>· BTC làm mốc relative</span>
           </div>
 
-          <div className="overflow-x-auto rounded-lg border border-slate-800">
+          {/* Mobile: card theo bias thay vì vuốt ngang. */}
+          <div className="space-y-2 sm:hidden">
+            {summaries.map((summary) => {
+              const h = summary.horizons.find((item) => item.horizon === horizon);
+              return (
+                <div key={summary.bias} className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-medium text-slate-100">{summary.label}</p>
+                    <span
+                      className={cn(
+                        "shrink-0 text-sm font-semibold tabular-nums",
+                        (h?.avgReturnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                      )}
+                    >
+                      {h?.avgReturnPct === null || h?.avgReturnPct === undefined
+                        ? "—"
+                        : formatPct(h.avgReturnPct)}
+                    </span>
+                  </div>
+                  <dl className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                    <div>
+                      <dt className="text-slate-500">N</dt>
+                      <dd className="tabular-nums text-slate-200">{h?.n ?? 0}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Hit rate</dt>
+                      <dd className="tabular-nums text-slate-200">
+                        {h?.hitRate === null || h?.hitRate === undefined ? "—" : `${h.hitRate}%`}
+                        {h && h.n > 0 ? <span className="ml-1 text-slate-600">({h.n})</span> : null}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Vs BTC</dt>
+                      <dd
+                        className={cn(
+                          "tabular-nums",
+                          (h?.avgRelativePct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                        )}
+                      >
+                        {h?.avgRelativePct === null || h?.avgRelativePct === undefined
+                          ? "—"
+                          : formatPct(h.avgRelativePct)}
+                      </dd>
+                    </div>
+                  </dl>
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    MFE/MAE{" "}
+                    {h?.avgMfePct === null || h?.avgMfePct === undefined ? "—" : formatPct(h.avgMfePct)}
+                    {" / "}
+                    {h?.avgMaePct === null || h?.avgMaePct === undefined ? "—" : formatPct(h.avgMaePct)}
+                    {" · "}TP1/SL{" "}
+                    {h?.tp1HitRate === null || h?.tp1HitRate === undefined ? "—" : `${h.tp1HitRate}%`}
+                    {" / "}
+                    {h?.slHitRate === null || h?.slHitRate === undefined ? "—" : `${h.slHitRate}%`}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+          <div className="hidden overflow-x-auto rounded-lg border border-slate-800 sm:block">
             <table className="w-full min-w-[720px] text-left text-xs">
               <thead className="bg-slate-950/60 text-slate-500">
                 <tr>
@@ -563,7 +622,65 @@ function TrackRecord() {
           {data.clusterSummaries && data.clusterSummaries.length > 0 ? (
             <div className="space-y-2">
               <p className="text-xs font-semibold text-violet-200">Hiệu quả theo cụm rotation</p>
-              <div className="overflow-x-auto rounded-lg border border-violet-500/20">
+              {/* Mobile: card theo cụm thay vì bắt vuốt ngang 7 cột. */}
+              <div className="space-y-2 sm:hidden">
+                {data.clusterSummaries.map((cluster) => {
+                  const h = cluster.horizons.find((item) => item.horizon === horizon);
+                  const roleLabel =
+                    cluster.role === "leader" ? "Leader" : cluster.role === "laggard" ? "Laggard" : "Khác";
+                  return (
+                    <div
+                      key={cluster.key}
+                      className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-slate-100">{cluster.label}</p>
+                          <p className="mt-0.5 text-[11px] text-slate-500">
+                            {cluster.side} · {roleLabel}
+                          </p>
+                        </div>
+                        <span
+                          className={cn(
+                            "shrink-0 text-sm font-semibold tabular-nums",
+                            (h?.avgReturnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                          )}
+                        >
+                          {h?.avgReturnPct === null || h?.avgReturnPct === undefined
+                            ? "—"
+                            : formatPct(h.avgReturnPct)}
+                        </span>
+                      </div>
+                      <dl className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                        <div>
+                          <dt className="text-slate-500">N</dt>
+                          <dd className="tabular-nums text-slate-200">{h?.n ?? 0}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Hit rate</dt>
+                          <dd className="tabular-nums text-slate-200">
+                            {h?.hitRate === null || h?.hitRate === undefined ? "—" : `${h.hitRate}%`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Vs BTC</dt>
+                          <dd
+                            className={cn(
+                              "tabular-nums",
+                              (h?.avgRelativePct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                            )}
+                          >
+                            {h?.avgRelativePct === null || h?.avgRelativePct === undefined
+                              ? "—"
+                              : formatPct(h.avgRelativePct)}
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="hidden overflow-x-auto rounded-lg border border-violet-500/20 sm:block">
                 <table className="w-full min-w-[620px] text-left text-xs">
                   <thead className="bg-violet-500/5 text-slate-500">
                     <tr>
@@ -616,7 +733,65 @@ function TrackRecord() {
                   {data.catalyst.unlabeled} chưa gắn nhãn
                 </span>
               </div>
-              <div className="mt-2 overflow-x-auto">
+              {/* Mobile: mỗi horizon một card, không phải vuốt ngang. */}
+              <div className="mt-2 space-y-2 sm:hidden">
+                {data.catalyst.horizons.map((row) => (
+                  <div key={row.horizon} className="rounded-lg border border-violet-500/20 bg-slate-950/40 p-3">
+                    <p className="text-xs font-semibold text-slate-200">
+                      {HORIZONS.find((h) => h.id === row.horizon)?.label ?? row.horizon}
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-3 text-[11px]">
+                      <div>
+                        <p className="text-slate-500">Có catalyst</p>
+                        <p className="tabular-nums text-slate-200">
+                          {row.withCatalyst.n > 0
+                            ? `${row.withCatalyst.avgReturnPct === null ? "—" : formatPct(row.withCatalyst.avgReturnPct)} · ${
+                                row.withCatalyst.hitRate ?? "—"
+                              }% (${row.withCatalyst.n})`
+                            : "—"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-slate-500">Không</p>
+                        <p className="tabular-nums text-slate-200">
+                          {row.withoutCatalyst.n > 0
+                            ? `${row.withoutCatalyst.avgReturnPct === null ? "—" : formatPct(row.withoutCatalyst.avgReturnPct)} · ${
+                                row.withoutCatalyst.hitRate ?? "—"
+                              }% (${row.withoutCatalyst.n})`
+                            : "—"}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-800/60 pt-2 text-[11px]">
+                      <span className="text-slate-500">
+                        Δ return{" "}
+                        <span
+                          className={cn(
+                            "font-medium tabular-nums",
+                            (row.deltaAvgReturnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                          )}
+                        >
+                          {row.deltaAvgReturnPct === null ? "—" : formatPct(row.deltaAvgReturnPct)}
+                        </span>
+                      </span>
+                      <span className="text-slate-500">
+                        Δ hit rate{" "}
+                        <span
+                          className={cn(
+                            "font-medium tabular-nums",
+                            (row.deltaHitRate ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                          )}
+                        >
+                          {row.deltaHitRate === null
+                            ? "—"
+                            : `${row.deltaHitRate > 0 ? "+" : ""}${row.deltaHitRate} điểm`}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 hidden overflow-x-auto sm:block">
                 <table className="w-full min-w-[560px] text-left text-xs">
                   <thead className="text-slate-500">
                     <tr>
@@ -674,7 +849,83 @@ function TrackRecord() {
             </div>
           ) : null}
 
-          <div className="overflow-x-auto">
+          {/* Mobile: ledger gần đây dạng card, không vuốt ngang 9 cột. */}
+          <div className="space-y-2 sm:hidden">
+            {data.recent.map((row) => {
+              const h = row.horizons[horizon];
+              return (
+                <div
+                  key={`${row.symbol}-${row.bias}-${row.at}`}
+                  className="rounded-lg border border-slate-800 bg-slate-900/40 p-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-100">
+                        ${row.symbol}
+                        {!row.actionable ? (
+                          <span className="ml-1 rounded border border-slate-700 px-1 py-0.5 text-[9px] text-slate-500">
+                            watch
+                          </span>
+                        ) : null}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        {BIAS_LABELS[row.bias]} · score {row.score} · ${formatPrice(row.price)}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p
+                        className={cn(
+                          "text-sm font-semibold tabular-nums",
+                          (h?.returnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                        )}
+                      >
+                        {h?.pending
+                          ? "pending"
+                          : h?.returnPct === null || h?.returnPct === undefined
+                            ? "—"
+                            : formatPct(h.returnPct)}
+                        {h?.win === true ? " ✓" : h?.win === false ? " ✗" : ""}
+                      </p>
+                      <p className="text-[11px] text-slate-500">{row.ageHours}h</p>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                    <span>
+                      Vs BTC{" "}
+                      <span
+                        className={cn(
+                          "tabular-nums",
+                          (h?.relativePct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                        )}
+                      >
+                        {h?.relativePct === null || h?.relativePct === undefined
+                          ? "—"
+                          : formatPct(h.relativePct)}
+                      </span>
+                    </span>
+                    <span className="tabular-nums">
+                      MFE/MAE{" "}
+                      {h?.mfePct === null || h?.mfePct === undefined ? "—" : formatPct(h.mfePct)}
+                      {" / "}
+                      {h?.maePct === null || h?.maePct === undefined ? "—" : formatPct(h.maePct)}
+                    </span>
+                    <span>
+                      {h?.firstEvent === "tp"
+                        ? "TP trước"
+                        : h?.firstEvent === "sl"
+                          ? "SL trước"
+                          : h?.firstEvent === "ambiguous"
+                            ? "cùng nến"
+                            : h?.pending
+                              ? "—"
+                              : "chưa chạm"}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="hidden overflow-x-auto sm:block">
             <table className="w-full min-w-[760px] text-left text-xs">
               <thead className="text-slate-500">
                 <tr>
@@ -751,11 +1002,11 @@ function ClusterView({
 
   return (
     <div
-      className="fixed inset-0 z-40 overflow-y-auto bg-black/70 p-4 backdrop-blur-sm sm:p-8"
+      className="fixed inset-0 z-[60] overflow-y-auto bg-black/70 backdrop-blur-sm sm:p-8"
       onClick={onClose}
     >
       <div
-        className="mx-auto w-full max-w-3xl overflow-hidden rounded-2xl border border-violet-500/30 bg-slate-950 shadow-2xl"
+        className="mx-auto min-h-full w-full max-w-3xl overflow-hidden border-violet-500/30 bg-slate-950 shadow-2xl sm:min-h-0 sm:rounded-2xl sm:border"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 border-b border-slate-800 p-4 sm:p-5">
@@ -790,7 +1041,47 @@ function ClusterView({
           <Stat label="Leader" value={cluster.leader ? `$${cluster.leader}` : "—"} />
         </div>
 
-        <div className="px-4 pb-4 sm:px-5">
+        {/* Mobile: mỗi member một hàng card, không vuốt ngang. */}
+        <div className="space-y-2 px-4 pb-24 sm:hidden sm:pb-4">
+          {cluster.members.map((member) => {
+            const isLeader = member.leader ?? member.symbol === cluster.leader;
+            const isLaggard =
+              member.laggard ??
+              (!isLeader && (cluster.direction === "up" ? member.changePct > 0 : member.changePct < 0));
+            const roleLabel = isLeader ? "Leader" : isLaggard ? "Laggard" : "Khác chiều";
+            return (
+              <div
+                key={member.symbol}
+                className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-slate-100">${member.symbol}</p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">
+                    <span className="tabular-nums">{formatUsd(member.quoteVolumeUsd)}</span> · {roleLabel}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span
+                    className={cn(
+                      "text-sm font-semibold tabular-nums",
+                      member.changePct >= 0 ? "text-emerald-400" : "text-rose-400"
+                    )}
+                  >
+                    {formatPct(member.changePct)}
+                  </span>
+                  <button
+                    onClick={() => onSelectMember(member.symbol)}
+                    className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 hover:bg-slate-800 hover:text-white"
+                  >
+                    Mở coin
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="hidden px-4 pb-4 sm:block sm:px-5">
           <div className="overflow-x-auto rounded-xl border border-slate-800">
             <table className="w-full min-w-[560px] text-left text-sm">
               <thead className="border-b border-slate-800 bg-slate-900/60 text-[11px] uppercase tracking-wide text-slate-500">
@@ -889,12 +1180,15 @@ function RadarScreen() {
   const [excludeSystem, setExcludeSystem] = useState(searchParams.get("excludeSystem") === "1");
   const [sort, setSort] = useState<RadarSort>(initialSort);
   const [selected, setSelected] = useState<string | null>(searchParams.get("symbol"));
-  const [clusterId, setClusterId] = useState<string | null>(searchParams.get("cluster"));
   const [copied, setCopied] = useState(false);
 
+  // URL là nguồn sự thật duy nhất của `?cluster=` (RADAR-05 bước 4): mở link,
+  // back/forward hay đổi cluster đều đi qua router.replace → searchParams.
+  const clusterId = searchParams.get("cluster");
+
   const queryKey = useMemo(
-    () => ["market-radar", side, minVolume ?? 0, excludeSystem, sort] as const,
-    [side, minVolume, excludeSystem, sort]
+    () => ["market-radar", side, minVolume ?? 0, excludeSystem, sort, clusterId ?? ""] as const,
+    [side, minVolume, excludeSystem, sort, clusterId]
   );
 
   const { data, isLoading, isFetching, error, refetch, dataUpdatedAt } = useQuery<RadarSnapshot>({
@@ -903,6 +1197,8 @@ function RadarScreen() {
       const params = new URLSearchParams({ side, sort, limit: "20" });
       if (minVolume) params.set("minVolume", String(minVolume));
       if (excludeSystem) params.set("excludeSystem", "1");
+      // Server ghim cụm của permalink vào snapshot để cụm ngoài top 6 vẫn mở được.
+      if (clusterId) params.set("cluster", clusterId);
       return getJson<RadarSnapshot>(`/api/market/movers?${params.toString()}`);
     },
     refetchInterval: 90_000,
@@ -944,24 +1240,22 @@ function RadarScreen() {
   };
 
   const openCluster = (id: string) => {
-    setClusterId(id);
     setSelected(null);
     router.replace(radarHref(id, null), { scroll: false });
   };
 
   const closeCluster = () => {
-    setClusterId(null);
     router.replace(radarHref(null, selected), { scroll: false });
   };
 
   return (
-    <main className="container mx-auto space-y-5 px-4 py-6">
+    <main className="space-y-4 py-4 sm:space-y-5 sm:py-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <RadarIcon className="h-5 w-5 text-cyan-400" />
-            <h1 className="text-2xl font-semibold text-slate-100">Market Radar</h1>
-            <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+            <RadarIcon className="h-5 w-5 shrink-0 text-cyan-400" />
+            <h1 className="text-xl font-semibold text-slate-100 sm:text-2xl">Market Radar</h1>
+            <span className="hidden rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500 sm:inline-block">
               Binance Futures · USDT perp
             </span>
           </div>
@@ -987,17 +1281,17 @@ function RadarScreen() {
             </div>
           ) : null}
         </div>
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <span>cập nhật {updatedLabel}</span>
+        <div className="flex w-full items-center gap-2 text-xs text-slate-500 sm:w-auto">
+          <span className="mr-auto sm:mr-0">cập nhật {updatedLabel}</span>
           <button
             onClick={() => void copyPermalink()}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 hover:bg-slate-800"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800 sm:py-1.5"
           >
             <Copy className="h-3.5 w-3.5" /> {copied ? "Đã copy" : "Copy link"}
           </button>
           <button
             onClick={() => void refetch()}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 hover:bg-slate-800"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800 sm:py-1.5"
           >
             <RefreshCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} /> Refresh
           </button>
@@ -1042,12 +1336,12 @@ function RadarScreen() {
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {data.clusters.map((cluster) => (
-              <div key={cluster.id} className="rounded-xl border border-slate-800 bg-slate-950/60 p-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-medium text-slate-200">{cluster.label}</p>
+              <div key={cluster.id} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 truncate text-xs font-medium text-slate-200">{cluster.label}</p>
                   <span
                     className={cn(
-                      "text-[11px] tabular-nums",
+                      "shrink-0 text-[11px] tabular-nums",
                       cluster.direction === "up" ? "text-emerald-400" : "text-rose-400"
                     )}
                   >
@@ -1059,7 +1353,7 @@ function RadarScreen() {
                     <button
                       key={member.symbol}
                       onClick={() => setSelected(member.symbol)}
-                      className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-violet-500/50 hover:text-violet-200"
+                      className="rounded border border-slate-700 px-2 py-1 text-[10px] text-slate-300 hover:border-violet-500/50 hover:text-violet-200"
                     >
                       ${member.symbol}{" "}
                       <span className={member.changePct >= 0 ? "text-emerald-400" : "text-rose-400"}>
@@ -1083,7 +1377,7 @@ function RadarScreen() {
                       event.preventDefault();
                       openCluster(cluster.id);
                     }}
-                    className="text-[10px] font-medium text-violet-300 hover:text-violet-200"
+                    className="inline-block py-1 text-[11px] font-medium text-violet-300 hover:text-violet-200"
                   >
                     Xem đủ {cluster.size} coin →
                   </a>

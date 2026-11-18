@@ -580,6 +580,20 @@ npm run build
 npm start
 ```
 
+### Radar UI smoke check (không cần PostgreSQL)
+
+Sau khi sửa RADAR-05/06 (cụm rotation, catalyst, card admin), chạy:
+
+```bash
+npm run check:radar-ui
+```
+
+Script tự dựng PostgreSQL tạm bằng PGlite (in-memory) + `next dev` ở port ngẫu nhiên với
+`RADAR_DEMO=1`, seed 1 catalyst fact, rồi kiểm tra: `/radar` 200, API cụm có member,
+`?cluster=<id>` ghim đúng cụm, track-record có `catalyst.labeled > 0`, và hai API
+`/api/admin/catalyst/sync|coverage` trả 200 không lỗi. Không dùng `.env` hay DB thật.
+Thêm `-- --browser` nếu đã cài `playwright` để kiểm tra DOM thật của hai bảng.
+
 ---
 
 # 🧪 Verification Baselines

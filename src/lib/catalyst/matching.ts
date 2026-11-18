@@ -1,6 +1,7 @@
 // RADAR-06 — ghép catalyst với một coin và quyết định có hiển thị panel
 // “vì sao volume bất thường” hay không. Pure, test được.
 
+import { peekRadarRuntimeConfig } from "@/lib/settings/radar-config";
 import { titleMentionsSymbol } from "./normalize";
 import type { CatalystFact, CatalystType } from "./types";
 
@@ -40,14 +41,11 @@ export interface CatalystTriggerOptions {
 }
 
 export function catalystTriggerOptions(): CatalystTriggerOptions {
-  const num = (name: string, fallback: number) => {
-    const value = Number(process.env[name]);
-    return Number.isFinite(value) && value >= 0 ? value : fallback;
-  };
+  const cfg = peekRadarRuntimeConfig();
   return {
-    volumeZ: num("CATALYST_TRIGGER_VOLUME_Z", 2),
-    volumeRatio: num("CATALYST_TRIGGER_VOLUME_RATIO", 2.2),
-    absChangePct: num("CATALYST_TRIGGER_ABS_CHANGE_PCT", 10),
+    volumeZ: cfg.catalystTriggerVolumeZ,
+    volumeRatio: cfg.catalystTriggerVolumeRatio,
+    absChangePct: cfg.catalystTriggerAbsChangePct,
   };
 }
 
