@@ -4,6 +4,7 @@
 // success reporting into the LLM monitor.
 
 import { chatCompletion, chatCompletionStream } from "../llm";
+import { llmHedgeMs } from "@/lib/llm/config";
 import { _resetGoogleKeyPool } from "@/lib/llm/google-key-pool";
 import { llmOutcomeSnapshot, _resetLlmMonitor } from "@/lib/llm/monitor";
 import { isolateLlmEnv, type LlmTestEnv } from "@/lib/llm/__tests__/llm-env";
@@ -280,6 +281,19 @@ describe("chat provider chain", () => {
     const [outcome] = llmOutcomeSnapshot().outcomes;
     expect(outcome).toMatchObject({ provider: "google", ok: true, status: 200 });
     expect(outcome.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  // LLM-HEDGE-01: hedging is opt-in; an unset env must not double-spend.
+  it("is disabled unless LLM_HEDGE_MS is set", () => {
+    const saved = process.env.LLM_HEDGE_MS;
+    delete process.env.LLM_HEDGE_MS;
+    expect(llmHedgeMs()).toBe(0);
+    process.env.LLM_HEDGE_MS = "0";
+    expect(llmHedgeMs()).toBe(0);
+    process.env.LLM_HEDGE_MS = "1200";
+    expect(llmHedgeMs()).toBe(1200);
+    if (saved === undefined) delete process.env.LLM_HEDGE_MS;
+    else process.env.LLM_HEDGE_MS = saved;
   });
 
   // LLM-HEDGE-01: a silent tier must not own the user's latency.

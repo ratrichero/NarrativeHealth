@@ -31,7 +31,6 @@ import { canarySnapshot } from "@/lib/llm/canary";
 import { breakerSnapshot, hydrateLlmBreakers } from "@/lib/llm/breaker";
 import { costSnapshot, hydrateLlmCost } from "@/lib/llm/cost";
 import { recentLlmTraces } from "@/lib/llm/trace";
-import { hydrateLlmShadow, shadowSnapshot } from "@/lib/llm/shadow";
 
 export const dynamic = "force-dynamic";
 
@@ -39,9 +38,9 @@ export async function GET() {
   try {
     // Both stores live in app_settings; hydrate before presenting a snapshot so
     // the panel is correct right after a restart.
-    await Promise.all([hydrateLlmBreakers(), hydrateLlmCost(), hydrateLlmShadow()]);
+    await Promise.all([hydrateLlmBreakers(), hydrateLlmCost()]);
     const telemetry = await llmTelemetrySnapshot();
-    const [traces] = await Promise.all([recentLlmTraces(12)]);
+    const traces = await recentLlmTraces(12);
     return NextResponse.json({
       success: true,
       data: {
@@ -49,8 +48,12 @@ export async function GET() {
         tiers: llmTierStats(),
         googlePool: googlePoolStats(),
         telemetry,
-        // Hourly p50/p95 per provider — the trend the alert banner cannot show.
-        telemetrySeries: telemetrySeries(telemetry.buckets, { hours: 12 }),
+        // Hourly p50/p95 for real traffic. Canary probes are excluded: a
+        // 1-token ping would drag the percentiles down and hide a slow tier.
+        telemetrySeries: telemetrySeries(telemetry.buckets, {
+          hours: 12,
+          sources: ["chat", "square", "movers"],
+        }),
         alerts: detectLlmStorms(telemetry.buckets),
         budget: budgetStats(),
         capabilities: capabilitiesSnapshot(),
@@ -58,7 +61,6 @@ export async function GET() {
         breakers: breakerSnapshot(),
         cost: costSnapshot(),
         traces,
-        shadow: shadowSnapshot(),
       },
     });
   } catch (error) {

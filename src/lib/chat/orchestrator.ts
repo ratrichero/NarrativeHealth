@@ -18,7 +18,12 @@ import {
   normalizeToolArguments,
   type ToolCallAccum,
 } from "./tool-call-accum";
-import { frameToolResult, sanitizeToolArgs, toolAllowed } from "./tool-schema";
+import {
+  dataAsOfFromPayload,
+  frameToolResult,
+  sanitizeToolArgs,
+  toolAllowed,
+} from "./tool-schema";
 import { getCachedAnswer, setCachedAnswer } from "./answer-cache";
 import { trimHistoryForBudget, estimateTokens } from "@/lib/llm/context";
 import { startLlmTrace, traceRef, type LlmTraceHandle } from "@/lib/llm/trace";
@@ -31,8 +36,7 @@ import {
   verifyGrounding,
 } from "@/lib/llm/grounding";
 import { chatQuotaFor, recordChatQuota } from "./quota";
-import { hydrateLlmCost, overDailyBudget } from "@/lib/llm/cost";
-import { maybeRunShadow } from "@/lib/llm/shadow";
+
 
 const MAX_TOOL_ROUNDS = 4;
 const HISTORY_LIMIT = 12; // last N messages sent to LLM as context
@@ -181,9 +185,12 @@ async function runToolCall(
   const result = await executeChatTool(name, sanitized.args);
   // Tool output is data, not instructions — frame it (with provenance) before
   // the model sees it. The model turns this into "theo dữ liệu lúc …".
-  const content = frameToolResult(JSON.stringify(result).slice(0, 4000), {
+  const payload = JSON.stringify(result).slice(0, 4000);
+  // Prefer the tool's own timestamp: stamping "now" on a periodic DB value is
+  // exactly the stale-data framing the prompt warns about.
+  const content = frameToolResult(payload, {
     tool: name,
-    asOf: new Date().toISOString(),
+    asOf: dataAsOfFromPayload(payload) ?? new Date().toISOString(),
     stale: /health|metrics|recommendation|narrative/i.test(name),
   });
   ctx?.cache.set(cacheKey, content);
@@ -267,11 +274,6 @@ export async function runChatTurn(
   const quota = chatQuotaFor(sessionId);
   if (quota.state === "hard") return { error: quotaRefusalMessage(quota.reason) };
 
-  // LLM-COST-01: a configured daily cap degrades chat (no tools, short answer)
-  // instead of silently spending past it. No cap → no behaviour change.
-  await hydrateLlmCost();
-  const budgetLimited = overDailyBudget();
-
   const trace = startLlmTrace("chat", { sessionId });
   const history = await loadHistory(sessionId);
   const { messages: trimmedHistory } = trimHistoryForBudget(history);
@@ -284,8 +286,8 @@ export async function runChatTurn(
   const executedTools: { name: string; latencyMs: number }[] = [];
   const toolOutputs: string[] = [];
   const toolCtx = newToolTurnContext();
-  const tools = quota.toolsAllowed && !budgetLimited ? CHAT_TOOLS_OPENAI_FORMAT : undefined;
-  const maxTokens = quota.maxTokens ?? (budgetLimited ? 400 : undefined);
+  const tools = quota.toolsAllowed ? CHAT_TOOLS_OPENAI_FORMAT : undefined;
+  const maxTokens = quota.maxTokens;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const result = await chatCompletion({ messages, tools, trace, maxTokens, hedgeMs: 0 });
@@ -306,7 +308,6 @@ export async function runChatTurn(
         messages
       );
       trace.finish({ ok: true, provider });
-      void maybeRunShadow({ messages, maxTokens: 500 }).catch(() => undefined);
       recordChatQuota(sessionId, {
         tokens: estimateTokens(messages.map((m) => m.content).join(" ")) + estimateTokens(reply),
         toolCalls: executedTools.length,
@@ -404,12 +405,8 @@ export async function runChatTurnStream(
     events.onError(quotaRefusalMessage(quota.reason));
     return;
   }
-  await hydrateLlmCost();
-  const budgetLimited = overDailyBudget();
   if (quota.state === "soft") {
     events.onStatus("Phiên chat gần hạn mức ngày — trả lời ngắn, không gọi tool.");
-  } else if (budgetLimited) {
-    events.onStatus("Đã chạm ngân sách LLM trong ngày — trả lời ngắn, không gọi tool.");
   }
 
   await persistUserMessage(sessionId, userMessage);
@@ -430,8 +427,8 @@ export async function runChatTurnStream(
   const executedTools: { name: string; latencyMs: number }[] = [];
   const toolOutputs: string[] = [];
   const toolCtx = newToolTurnContext();
-  const tools = quota.toolsAllowed && !budgetLimited ? CHAT_TOOLS_OPENAI_FORMAT : undefined;
-  const maxTokens = quota.maxTokens ?? (budgetLimited ? 400 : undefined);
+  const tools = quota.toolsAllowed ? CHAT_TOOLS_OPENAI_FORMAT : undefined;
+  const maxTokens = quota.maxTokens;
   let lastProvider = "unknown";
 
   try {
@@ -482,8 +479,6 @@ export async function runChatTurnStream(
           events.onDelta(text);
         });
         trace.finish({ ok: true, provider: lastProvider });
-        // LLM-SHADOW-01: evaluate a candidate tier silently (off by default).
-        void maybeRunShadow({ messages, maxTokens: 500 }).catch(() => undefined);
         recordChatQuota(sessionId, {
           tokens:
             estimateTokens(messages.map((m) => m.content).join(" ")) + estimateTokens(finalText),

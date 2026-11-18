@@ -61,4 +61,16 @@ describe("telemetrySeries", () => {
     expect(telemetrySeries([old], { hours: 12 })).toHaveLength(0);
     expect(telemetrySeries([bucket({ provider: "primary" })], { provider: "google" })).toHaveLength(0);
   });
+
+  it("keeps sources separate and can exclude canary probes", () => {
+    const points = telemetrySeries([bucket(), bucket({ source: "canary", calls: 30 })], { hours: 2 });
+    expect(points.map((point) => point.source).sort()).toEqual(["canary", "chat"]);
+
+    const realTraffic = telemetrySeries(
+      [bucket(), bucket({ source: "canary", calls: 30 })],
+      { hours: 2, sources: ["chat", "square", "movers"] }
+    );
+    expect(realTraffic).toHaveLength(1);
+    expect(realTraffic[0]).toMatchObject({ source: "chat", calls: 4 });
+  });
 });

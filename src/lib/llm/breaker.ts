@@ -17,6 +17,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { appSettings } from "@/db/schema";
 import type { LlmFailureKind } from "./errors";
+import { llmPersistenceDisabled } from "./persistence";
 
 export const LLM_BREAKER_KEY = "llm.breakers";
 const FAIL_WINDOW_MS = 5 * 60_000;
@@ -47,10 +48,6 @@ let hydrating: Promise<void> | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let warned = false;
 
-function dbDisabled(): boolean {
-  return process.env.NODE_ENV === "test" && process.env.LLM_OPS_TEST_DB !== "1";
-}
-
 function suffix(apiKey: string): string {
   return apiKey.length > 8 ? apiKey.slice(-4) : "?";
 }
@@ -69,7 +66,7 @@ function numberEnv(name: string, fallback: number): number {
 }
 
 function scheduleFlush(): void {
-  if (timer || dbDisabled()) return;
+  if (timer || llmPersistenceDisabled()) return;
   timer = setTimeout(() => {
     timer = null;
     void flushLlmBreakers();
@@ -79,7 +76,7 @@ function scheduleFlush(): void {
 
 /** Load persisted breakers once per process (idempotent, best effort). */
 export async function hydrateLlmBreakers(): Promise<void> {
-  if (hydrated || dbDisabled()) {
+  if (hydrated || llmPersistenceDisabled()) {
     hydrated = true;
     return;
   }
@@ -204,7 +201,7 @@ export async function resetLlmBreakers(tier?: string): Promise<number> {
 }
 
 export async function flushLlmBreakers(): Promise<void> {
-  if (dbDisabled()) return;
+  if (llmPersistenceDisabled()) return;
   const entries = [...open.values()].filter((entry) => entry.until > Date.now());
   try {
     await db

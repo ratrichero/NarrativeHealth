@@ -1,21 +1,26 @@
-// LLM-COST-01 — token spend in money, per day, against a daily cap.
+// LLM-COST-01 — token spend in money, per day, with a warning threshold.
 //
 // budget.ts limits tokens per key per MINUTE (free-tier 429 avoidance). It says
 // nothing about the daily bill, and the admin panel showed tokens only: the
 // google/primary keys can be paid while the free fallbacks cost nothing, so
 // "12k tokens" hides which tier actually costs money.
 //
-// Prices are USD per 1M tokens. Providers report only a total token count on
-// the OpenAI-compatible usage object, so the input/output split is estimated
-// (LLM_COST_INPUT_SHARE, default 0.7) — this is an estimate with a documented
-// assumption, not an invoice. Override the table with LLM_PRICE_TABLE (JSON:
-// [{ "pattern": "gemini", "input": 0.3, "output": 2.5 }]).
+// Prices are USD per 1M tokens, from a small built-in table. Providers report
+// only a total token count on the OpenAI-compatible usage object, so the
+// input/output split is estimated (LLM_COST_INPUT_SHARE, default 0.7) — this is
+// an estimate with a documented assumption, not an invoice.
 //
-// Ledger: `app_settings.llm.cost`, kept for 31 days, debounced writes.
+// LLM_DAILY_BUDGET_USD is a WARNING threshold only: the admin panel shows the
+// over-budget state, chat keeps working. Silently switching chat to short,
+// tool-less answers based on a guessed price was more surprising than useful.
+//
+// Ledger: `app_settings.llm.cost`, kept for 31 days, debounced writes. The
+// total is per instance (read-modify-write), so it is an estimate, not billing.
 
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { appSettings } from "@/db/schema";
+import { llmPersistenceDisabled } from "./persistence";
 
 export const LLM_COST_KEY = "llm.cost";
 const RETENTION_DAYS = 31;
@@ -40,7 +45,6 @@ const FALLBACK_PRICE = { input: 0.5, output: 1.5 };
 interface CostDay {
   totalUsd: number;
   tokens: number;
-  bySource: Record<string, number>;
   byProvider: Record<string, number>;
 }
 
@@ -55,35 +59,12 @@ let loadInFlight: Promise<void> | null = null;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let warned = false;
 
-function dbDisabled(): boolean {
-  return process.env.NODE_ENV === "test" && process.env.LLM_OPS_TEST_DB !== "1";
-}
-
 function dayKey(at = new Date()): string {
   return at.toISOString().slice(0, 10);
 }
 
-function customPrices(): Price[] {
-  const raw = process.env.LLM_PRICE_TABLE?.trim();
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as { pattern: string; input: number; output: number }[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((row) => typeof row?.pattern === "string")
-      .map((row) => ({
-        pattern: new RegExp(row.pattern, "i"),
-        input: Number(row.input) || 0,
-        output: Number(row.output) || 0,
-      }));
-  } catch {
-    return [];
-  }
-}
-
 export function priceFor(model: string): Price {
-  const prices = [...customPrices(), ...DEFAULT_PRICES];
-  const found = prices.find((price) => price.pattern.test(model));
+  const found = DEFAULT_PRICES.find((price) => price.pattern.test(model));
   return found ?? { pattern: /.*/, ...FALLBACK_PRICE };
 }
 
@@ -103,13 +84,12 @@ export function estimateCostUsd(
 }
 
 function emptyDay(): CostDay {
-  return { totalUsd: 0, tokens: 0, bySource: {}, byProvider: {} };
+  return { totalUsd: 0, tokens: 0, byProvider: {} };
 }
 
-function accumulate(day: CostDay, provider: string, source: string, tokens: number, usd: number): void {
+function accumulate(day: CostDay, provider: string, tokens: number, usd: number): void {
   day.totalUsd += usd;
   day.tokens += tokens;
-  day.bySource[source] = (day.bySource[source] ?? 0) + usd;
   day.byProvider[provider] = (day.byProvider[provider] ?? 0) + usd;
 }
 
@@ -117,7 +97,6 @@ function accumulate(day: CostDay, provider: string, source: string, tokens: numb
 export function recordLlmCost(input: {
   provider: string;
   model: string;
-  source: string;
   tokens: number;
   at?: Date;
 }): void {
@@ -126,16 +105,9 @@ export function recordLlmCost(input: {
   const usd = estimateCostUsd(input.model, tokens);
   const key = dayKey(input.at);
   const day = days.get(key) ?? emptyDay();
-  accumulate(day, input.provider, input.source, tokens, usd);
+  accumulate(day, input.provider, tokens, usd);
   days.set(key, day);
   scheduleFlush();
-}
-
-/** Admin-facing check used before escalating to paid tiers. */
-export function dailyBudgetRemainingUsd(): number {
-  const cap = dailyBudgetUsd();
-  if (cap <= 0) return Infinity;
-  return Math.max(0, cap - costTodayUsd());
 }
 
 export function costTodayUsd(): number {
@@ -154,7 +126,7 @@ export function overDailyBudget(now = new Date()): boolean {
 }
 
 function scheduleFlush(): void {
-  if (flushTimer || dbDisabled()) return;
+  if (flushTimer || llmPersistenceDisabled()) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
     void flushLlmCost();
@@ -164,7 +136,7 @@ function scheduleFlush(): void {
 
 /** Load the persisted ledger once per process (best effort). */
 export async function hydrateLlmCost(): Promise<void> {
-  if (loadedFromDb || dbDisabled()) {
+  if (loadedFromDb || llmPersistenceDisabled()) {
     loadedFromDb = true;
     return;
   }
@@ -185,9 +157,6 @@ export async function hydrateLlmCost(): Promise<void> {
         }
         existing.totalUsd += day.totalUsd;
         existing.tokens += day.tokens;
-        for (const [source, usd] of Object.entries(day.bySource ?? {})) {
-          existing.bySource[source] = (existing.bySource[source] ?? 0) + usd;
-        }
         for (const [provider, usd] of Object.entries(day.byProvider ?? {})) {
           existing.byProvider[provider] = (existing.byProvider[provider] ?? 0) + usd;
         }
@@ -206,7 +175,7 @@ export async function hydrateLlmCost(): Promise<void> {
 }
 
 export async function flushLlmCost(): Promise<void> {
-  if (dbDisabled() || days.size === 0) return;
+  if (llmPersistenceDisabled() || days.size === 0) return;
   const cutoff = Date.now() - RETENTION_DAYS * 86_400_000;
   const trimmed: Record<string, CostDay> = {};
   for (const [key, day] of days) {
@@ -232,19 +201,12 @@ export function costSnapshot(now = new Date()): {
   today: CostDay & { date: string };
   budgetUsd: number;
   overBudget: boolean;
-  history: { date: string; usd: number; tokens: number }[];
   priceNote: string;
 } {
-  const today = days.get(dayKey(now)) ?? emptyDay();
-  const history = [...days.entries()]
-    .sort((a, b) => b[0].localeCompare(a[0]))
-    .slice(0, 14)
-    .map(([date, day]) => ({ date, usd: day.totalUsd, tokens: day.tokens }));
   return {
-    today: { ...today, date: dayKey(now) },
+    today: { ...(days.get(dayKey(now)) ?? emptyDay()), date: dayKey(now) },
     budgetUsd: dailyBudgetUsd(),
     overBudget: overDailyBudget(now),
-    history,
     priceNote: "USD estimate: total tokens split by LLM_COST_INPUT_SHARE (default 0.7)",
   };
 }

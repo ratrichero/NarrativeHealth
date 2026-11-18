@@ -2,6 +2,7 @@
 
 import {
   _resetToolGuards,
+  dataAsOfFromPayload,
   frameToolResult,
   sanitizeToolArgs,
   scanToolOutput,
@@ -91,6 +92,17 @@ describe("tool result framing", () => {
   it("leaves clean data without an injection warning", () => {
     expect(scanToolOutput('{"price":64217}')).toEqual([]);
     expect(frameToolResult('{"price":64217}')).not.toContain("cụm giống chỉ thị");
+  });
+
+  it("reads the data timestamp from the payload instead of assuming now", () => {
+    expect(dataAsOfFromPayload('{"updatedAt":"2026-11-17T10:00:00.000Z"}')).toBe(
+      "2026-11-17T10:00:00.000Z"
+    );
+    expect(
+      dataAsOfFromPayload('{"rows":[{"asOf":"2026-11-17T09:00:00.000Z"},{"asOf":"2026-11-17T11:00:00.000Z"}]}')
+    ).toBe("2026-11-17T11:00:00.000Z");
+    expect(dataAsOfFromPayload('{"price":1}')).toBeNull();
+    expect(dataAsOfFromPayload("not json")).toBeNull();
   });
 });
 

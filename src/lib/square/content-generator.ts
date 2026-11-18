@@ -188,7 +188,7 @@ async function callOpenAICompatible(
   const usedTokens = Number(data.usage?.total_tokens ?? 0);
   if (usedTokens > 0) {
     recordTokenUsage(provider.apiKey, usedTokens);
-    recordLlmCost({ provider: provider.name, model: provider.model, source, tokens: usedTokens });
+    recordLlmCost({ provider: provider.name, model: provider.model, tokens: usedTokens });
   }
   noteTierSuccess(provider.name, provider.apiKey);
   const text = data.choices?.[0]?.message?.content;

@@ -4,7 +4,6 @@ import {
   _resetLlmCost,
   costSnapshot,
   costTodayUsd,
-  dailyBudgetRemainingUsd,
   estimateCostUsd,
   overDailyBudget,
   recordLlmCost,
@@ -29,8 +28,8 @@ describe("cost estimate", () => {
   });
 
   it("accumulates today's spend by provider and enforces the daily cap", () => {
-    recordLlmCost({ provider: "google", model: "gemini-3.5-flash-lite", source: "chat", tokens: 1_000_000 });
-    recordLlmCost({ provider: "primary", model: "qwen/qwen3.8-27b", source: "chat", tokens: 1_000_000 });
+    recordLlmCost({ provider: "google", model: "gemini-3.5-flash-lite", tokens: 1_000_000 });
+    recordLlmCost({ provider: "primary", model: "qwen/qwen3.8-27b", tokens: 1_000_000 });
     expect(costTodayUsd()).toBeGreaterThan(0.14);
 
     const snapshot = costSnapshot();
@@ -39,8 +38,8 @@ describe("cost estimate", () => {
     expect(snapshot.overBudget).toBe(false);
 
     process.env.LLM_DAILY_BUDGET_USD = "0.01";
+    // The budget is a warning: the flag is set, nothing is blocked here.
     expect(overDailyBudget()).toBe(true);
-    expect(dailyBudgetRemainingUsd()).toBe(0);
     expect(costSnapshot().overBudget).toBe(true);
   });
 });

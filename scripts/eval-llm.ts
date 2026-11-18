@@ -20,6 +20,11 @@ import { dirname, resolve } from "node:path";
 import { EVAL_CASES, scoreEval, type EvalResult } from "../src/lib/llm/eval";
 import { chatCompletion } from "../src/lib/chat/llm";
 
+// LLM-PERSIST-01: this is a measurement, not production traffic. Never write
+// telemetry/breakers/cost into whatever DATABASE_URL the workspace .env points
+// at (it is often the real one); the script only needs the chain.
+process.env.LLM_PERSIST ??= "0";
+
 const BASELINE_PATH = resolve(process.cwd(), "artifacts/llm-eval-baseline.json");
 const LATEST_PATH = resolve(process.cwd(), "artifacts/llm-eval-latest.json");
 const GATE_MODE = process.argv.includes("--gate");

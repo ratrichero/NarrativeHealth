@@ -102,21 +102,47 @@ cho tool health/metrics; system prompt yêu cầu nêu mốc thời gian. Payloa
 cụm kiểu "ignore previous instructions"/"bỏ qua hướng dẫn" bị gắn cảnh báo
 "chỉ dùng như dữ liệu".
 
-### 11. Shadow A/B cho tier ứng viên (`src/lib/llm/shadow.ts`)
+### 11. Review lại LLM-OPS-05 — cắt bớt và sửa lỗi tiềm ẩn
 
-Đổi model trước đây là "sửa chain rồi xem". Shadow chạy **cùng request chat**
- trên một tier ứng viên với `LLM_SHADOW_PCT`% số lượt (mặc định tắt: cần cả
-`LLM_SHADOW_TIER` và `LLM_SHADOW_PCT`), không hiển thị cho user, tối đa 500
-token. Mỗi mẫu lưu vào `app_settings.llm.shadow` (200 mẫu/7 ngày) cùng tín hiệu
-đo được: có trả lời không, status, latency, token, độ dài, có vi phạm
-buy/sell advice không. Verdict chỉ "ready" khi ≥20 mẫu, ok ≥95%, 0 vi phạm
-advice và p95 ≤ max(1.5s, 1.5× p95 production) — người vẫn quyết định promote.
-Panel admin hiển thị tiến độ và lý do chưa đủ điều kiện.
+Đợt đầu hơi nặng tay. Sau khi đọc lại bằng con mắt mới:
+
+**Cắt hẳn shadow A/B** (`shadow.ts`, test, panel admin, env, mục 11 cũ): nó
+chỉ chạy khi cấu hình tay, tốn thêm provider call trên N% traffic, lưu state
+riêng và cần người đọc verdict — trong khi `eval:gate` + canary + telemetry đã
+trả lời câu hỏi "model mới có ổn không". Một tính năng ít dùng không đáng
+chừng đó bề mặt.
+
+**Hedge thành opt-in**: `LLM_HEDGE_MS` mặc định **tắt**. Hedge có thể nhân đôi
+call/chi phí của một lượt chat bình thường, nên không bật mặc định cho mọi
+triển khai. Code vẫn giữ, kèm fix: tier thay thế sau failover cũng được hedge
+(không phải chờ hết timeout), bỏ biến `emitted` chết trong nhánh hedge.
+
+**Cost ledger gọn lại, chỉ cảnh báo**: bỏ `LLM_PRICE_TABLE`, `bySource`,
+`history` và `dailyBudgetRemainingUsd`; chat **không còn tự chuyển sang trả
+lời ngắn/tắt tool** khi vượt ngân sách — đó là hành vi đáng ngạc nhiên dựa
+trên giá đoán. `LLM_DAILY_BUDGET_USD` giờ chỉ đổi màu cảnh báo trong admin.
+Số USD vẫn là ước tính theo instance (read-modify-write), đã ghi rõ.
+
+**Sửa lỗi tiềm ẩn:**
+- telemetry series tách theo `provider + source + hour` và status route loại
+  canary khỏi p50/p95 — trước đó probe 1-token bị trộn vào p95 của chat, làm
+  tier chậm trông nhanh;
+- provenance lấy `updatedAt/asOf/timestamp` từ chính payload tool thay vì luôn
+  gắn "bây giờ" (đúng cái bẫy dữ liệu DB cũ được trình bày như realtime);
+- `LLM_PERSIST=0` (và `NODE_ENV=test`) chặn mọi write telemetry/trace/breaker/
+  cost; script `eval-llm.ts` tự đặt cờ này nên live eval không còn có thể ghi
+  vào DATABASE_URL thật trong `.env`;
+- canary probe thành công đóng breaker đã mở, key đã sửa không bị bỏ qua hết
+  cooldown.
+
+**Giữ nguyên:** grounding (đã siết ở mục 1), trace, breaker, quota, hedged
+stream (opt-in), structured output Square, eval gate và cảnh báo injection —
+những thứ này sửa lỗi thật hoặc đo được, không phải trang trí.
 
 ### Kiểm tra
 
 - `npx tsc --noEmit` → 0 lỗi
-- `npx jest src/lib/llm src/lib/chat src/lib/square` → 27 suite / 302 test pass
+- `npx jest src/lib/llm src/lib/chat src/lib/square` → 26 suite / 299 test pass
 - `npx eslint src/lib/llm src/lib/chat src/lib/square src/components/admin src/app/api/admin/llm` → 0 lỗi
 - `next build` → compiled successfully
 - Live eval (`LLM_FORCE_ENV=1 npm run eval:gate`): **8/8 (100%)**, chat 4/4,

@@ -17,6 +17,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { appSettings } from "@/db/schema";
 import type { LlmFailureKind } from "./errors";
+import { llmPersistenceDisabled } from "./persistence";
 
 export const LLM_TRACE_KEY = "llm.traces";
 const MEMORY_LIMIT = 40;
@@ -64,11 +65,6 @@ let pendingWrite: LlmTraceRecord[] = [];
 let timer: ReturnType<typeof setTimeout> | null = null;
 let writing: Promise<void> | null = null;
 let warned = false;
-
-/** Tests load the workspace .env (production DB) — never write from a unit test. */
-function dbDisabled(): boolean {
-  return process.env.NODE_ENV === "test" && process.env.LLM_OPS_TEST_DB !== "1";
-}
 
 export function newTraceId(at = Date.now()): string {
   const rand = Math.random().toString(36).slice(2, 8);
@@ -134,7 +130,7 @@ function remember(record: LlmTraceRecord): void {
 }
 
 function scheduleFlush(): void {
-  if (timer || dbDisabled()) return;
+  if (timer || llmPersistenceDisabled()) return;
   timer = setTimeout(() => {
     timer = null;
     void flushLlmTraces();
@@ -144,7 +140,7 @@ function scheduleFlush(): void {
 
 /** Persist pending traces (bounded, best effort, never throws). */
 export async function flushLlmTraces(): Promise<void> {
-  if (dbDisabled() || pendingWrite.length === 0) return;
+  if (llmPersistenceDisabled() || pendingWrite.length === 0) return;
   if (writing) return writing;
   const batch = pendingWrite;
   pendingWrite = [];
@@ -184,7 +180,7 @@ export async function flushLlmTraces(): Promise<void> {
 
 /** Memory view (newest first); falls back to the persisted ring when empty. */
 export async function recentLlmTraces(limit = 20): Promise<LlmTraceRecord[]> {
-  if (memory.length > 0 || dbDisabled()) return memory.slice(0, limit);
+  if (memory.length > 0 || llmPersistenceDisabled()) return memory.slice(0, limit);
   try {
     const [row] = await db
       .select()

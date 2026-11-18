@@ -201,7 +201,7 @@ function noteSuccess(
 ): void {
   const tokens = Math.max(0, Math.round(input.tokens ?? 0));
   if (tokens > 0) recordTokenUsage(provider.apiKey, tokens);
-  recordLlmCost({ provider: provider.name, model: provider.model, source: "chat", tokens });
+  recordLlmCost({ provider: provider.name, model: provider.model, tokens });
   noteTierSuccess(provider.name, provider.apiKey);
   recordLlmTelemetry({
     provider: provider.name,
@@ -724,7 +724,6 @@ async function streamHedged(
         const decoder = new TextDecoder();
         let buffer = "";
         let streamTokens = 0;
-        let emitted = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -737,14 +736,8 @@ async function streamHedged(
           for (const line of lines) {
             const tokens = handleStreamLine(
               line,
-              (text) => {
-                emitted = true;
-                emit(attempt, () => handlers.onContentDelta(text));
-              },
-              (fragments) => {
-                emitted = true;
-                emit(attempt, () => handlers.onToolCallDelta(fragments));
-              }
+              (text) => emit(attempt, () => handlers.onContentDelta(text)),
+              (fragments) => emit(attempt, () => handlers.onToolCallDelta(fragments))
             );
             if (tokens !== null) streamTokens = tokens;
           }
@@ -773,7 +766,6 @@ async function streamHedged(
           note: "hedge",
         });
         finish({ provider: provider.name });
-        void emitted;
       } catch (e) {
         if (attempt.abortedByUs || settled) return;
         console.warn(`[CHAT-LLM] ${provider.name} stream failed: ${String(e).slice(0, 150)}`);
@@ -803,9 +795,12 @@ async function streamHedged(
           // Half an answer is already on screen: clear it, then fail over.
           handlers.onReset?.();
           committed = null;
-          if (!startNext()) finish(null);
-        } else if (!committed) {
-          startNext();
+          if (startNext()) armTimer();
+          else finish(null);
+        } else if (!committed && startNext()) {
+          // A silent replacement tier must itself be hedged, not waited on for
+          // the full request timeout.
+          armTimer();
         }
       }
     };

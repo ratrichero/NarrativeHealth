@@ -116,6 +116,45 @@ export function scanToolOutput(content: string): string[] {
   );
 }
 
+const TIME_KEYS = /^(asOf|updatedAt|updated_at|timestamp|time|date|fetchedAt|lastUpdated)$/i;
+
+/**
+ * The newest data timestamp inside a tool payload, if it carries one.
+ *
+ * Provenance used to stamp "as of now" on every result, which let a model
+ * present a DB value refreshed hours ago as live. Reading the tool's own
+ * `updatedAt`/`asOf`/`timestamp` field is the honest label; only payloads with
+ * no timestamp fall back to the read time.
+ */
+export function dataAsOfFromPayload(payload: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return null;
+  }
+
+  let newest: number | null = null;
+  const walk = (node: unknown, depth = 0): void => {
+    if (node == null || depth > 4) return;
+    if (Array.isArray(node)) {
+      for (const item of node.slice(0, 20)) walk(item, depth + 1);
+      return;
+    }
+    if (typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (typeof value === "string" && TIME_KEYS.test(key)) {
+        const ms = Date.parse(value);
+        if (Number.isFinite(ms) && (newest === null || ms > newest)) newest = ms;
+        continue;
+      }
+      walk(value, depth + 1);
+    }
+  };
+  walk(parsed);
+  return newest === null ? null : new Date(newest).toISOString();
+}
+
 export interface ToolResultMeta {
   /** Tool name, shown as provenance. */
   tool?: string;

@@ -93,12 +93,12 @@ interface LiveStatus {
     };
     budgetUsd: number;
     overBudget: boolean;
-    history: { date: string; usd: number; tokens: number }[];
   };
   /** Hourly latency series for the trend chart (LLM-TELEMETRY-02). */
   telemetrySeries?: {
     hour: string;
     provider: string;
+    source: string;
     calls: number;
     ok: number;
     fail: number;
@@ -106,22 +106,6 @@ interface LiveStatus {
     p50Ms: number | null;
     p95Ms: number | null;
   }[];
-  /** Candidate-tier shadow samples (LLM-SHADOW-01). */
-  shadow?: {
-    enabled: boolean;
-    tier: string | null;
-    pct: number;
-    comparison: {
-      tier: string;
-      samples: number;
-      okRate: number;
-      adviceViolations: number;
-      avgChars: number;
-      p95Ms: number | null;
-      readyToPromote: boolean;
-      reason: string;
-    }[];
-  };
   /** Recent per-turn traces (LLM-TRACE-01). */
   traces?: {
     id: string;
@@ -841,7 +825,7 @@ function LlmProvidersForm({
           </p>
           {live.cost.overBudget && (
             <p className="text-[11px] text-red-300">
-              Đã chạm ngân sách: chat chuyển sang trả lời ngắn, tắt tool.
+              Đã vượt ngưỡng cảnh báo — chỉ hiển thị, không chặn chat hay pipeline.
             </p>
           )}
         </div>
@@ -865,6 +849,7 @@ function LlmProvidersForm({
                     {point.hour.slice(5, 16).replace("T", " ")}
                   </span>
                   <span className="w-20 shrink-0">{point.provider}</span>
+                  <span className="w-14 shrink-0 text-slate-500">{point.source}</span>
                   <span className="w-28 shrink-0 text-slate-400">
                     p50 {point.p50Ms ?? "-"} / p95 {point.p95Ms ?? "-"}ms
                   </span>
@@ -876,29 +861,6 @@ function LlmProvidersForm({
               );
             })}
           </div>
-        </div>
-      )}
-
-      {live?.shadow?.enabled && (
-        <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4 space-y-1">
-          <h4 className="text-sm font-semibold text-white">
-            Shadow A/B — tier ứng viên {live.shadow.tier} ({live.shadow.pct}% lượt chat)
-          </h4>
-          <p className="text-[11px] text-slate-500">
-            Câu trả lời shadow không hiển thị cho user; verdict chỉ để tham khảo trước khi đổi chain.
-          </p>
-          {(live.shadow.comparison ?? []).map((row) => (
-            <p
-              key={row.tier}
-              className={`text-[11px] font-mono ${row.readyToPromote ? "text-green-400" : "text-amber-300"}`}
-            >
-              {row.tier} · {row.samples} mẫu · ok {(row.okRate * 100).toFixed(0)}% ·{" "}
-              {row.adviceViolations} advice · p95 {row.p95Ms ?? "-"}ms · {row.reason}
-            </p>
-          ))}
-          {(live.shadow.comparison ?? []).length === 0 && (
-            <p className="text-[11px] text-slate-500">Chưa có mẫu shadow nào.</p>
-          )}
         </div>
       )}
 

@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { appSettings } from "@/db/schema";
 import type { LlmFailureKind } from "./errors";
+import { llmPersistenceDisabled } from "./persistence";
 
 export const LLM_TELEMETRY_KEY = "llm.telemetry";
 const RETENTION_HOURS = 48;
@@ -136,7 +137,7 @@ export function recordLlmTelemetry(input: {
     maxMs: input.durationMs,
   });
 
-  if (flushTimer) return;
+  if (flushTimer || llmPersistenceDisabled()) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
     void flushLlmTelemetry();
@@ -145,7 +146,7 @@ export function recordLlmTelemetry(input: {
 }
 
 export async function flushLlmTelemetry(): Promise<void> {
-  if (pending.length === 0) return;
+  if (llmPersistenceDisabled() || pending.length === 0) return;
   if (inFlight) return inFlight;
   const batch = pending;
   pending = [];
@@ -282,63 +283,74 @@ export interface TelemetrySeriesPoint {
 }
 
 /**
- * Hourly series for the admin charts: per provider, newest first, limited to
- * the requested window. Latency percentiles are histogram estimates.
+ * Hourly series for the admin charts: one point per provider+source+hour.
+ *
+ * Source is part of the key on purpose: merging a 1-token canary probe into the
+ * chat p95 makes a healthy tier look fast (or a slow one invisible). Callers
+ * pass `sources` to pick the traffic they care about. Latency percentiles are
+ * histogram estimates; avg comes from the bucket's own msSum.
  */
 export function telemetrySeries(
   buckets: LlmTelemetryBucket[],
-  options: { hours?: number; provider?: string } = {}
+  options: { hours?: number; provider?: string; sources?: string[] } = {}
 ): TelemetrySeriesPoint[] {
   const hours = options.hours ?? 12;
   const since = Date.now() - hours * 3600_000;
-  const byId = new Map<string, TelemetrySeriesPoint>();
+  const allowedSources = options.sources ? new Set(options.sources) : null;
+  const byId = new Map<
+    string,
+    { point: TelemetrySeriesPoint; hist: number[]; msSum: number }
+  >();
 
   for (const bucket of buckets) {
     if (new Date(bucket.hour).getTime() < since) continue;
     if (options.provider && bucket.provider !== options.provider) continue;
-    const id = `${bucket.hour}|${bucket.provider}`;
-    const point = byId.get(id) ?? {
-      hour: bucket.hour,
-      provider: bucket.provider,
-      source: bucket.source,
-      calls: 0,
-      ok: 0,
-      fail: 0,
-      tokens: 0,
-      avgMs: null,
-      p50Ms: null,
-      p95Ms: null,
-      maxMs: null,
+    if (allowedSources && !allowedSources.has(bucket.source)) continue;
+    const id = `${bucket.hour}|${bucket.provider}|${bucket.source}`;
+    const entry = byId.get(id) ?? {
+      point: {
+        hour: bucket.hour,
+        provider: bucket.provider,
+        source: bucket.source,
+        calls: 0,
+        ok: 0,
+        fail: 0,
+        tokens: 0,
+        avgMs: null,
+        p50Ms: null,
+        p95Ms: null,
+        maxMs: null,
+      },
+      hist: emptyHistogram(),
+      msSum: 0,
     };
-    point.calls += bucket.calls;
-    point.ok += bucket.ok;
-    point.fail += bucket.fail;
-    point.tokens += bucket.tokens;
+    entry.point.calls += bucket.calls;
+    entry.point.ok += bucket.ok;
+    entry.point.fail += bucket.fail;
+    entry.point.tokens += bucket.tokens;
+    entry.point.maxMs = Math.max(entry.point.maxMs ?? 0, bucket.maxMs ?? 0);
+    entry.msSum += bucket.msSum;
     const hist = histogramOf(bucket);
-    const previous = (point as TelemetrySeriesPoint & { _hist?: number[] })._hist ?? emptyHistogram();
-    for (let i = 0; i < hist.length; i++) previous[i] += hist[i];
-    (point as TelemetrySeriesPoint & { _hist?: number[] })._hist = previous;
-    point.maxMs = Math.max(point.maxMs ?? 0, bucket.maxMs ?? 0);
-    byId.set(id, point);
+    for (let i = 0; i < hist.length; i++) entry.hist[i] += hist[i];
+    byId.set(id, entry);
   }
 
   return [...byId.values()]
-    .map((point) => {
-      const hist = (point as TelemetrySeriesPoint & { _hist?: number[] })._hist ?? [];
+    .map(({ point, hist, msSum }) => {
       const total = hist.reduce((sum, count) => sum + count, 0);
-      const sumMs = buckets
-        .filter((b) => b.hour === point.hour && b.provider === point.provider)
-        .reduce((sum, b) => sum + b.msSum, 0);
-      const clean = { ...point };
-      delete (clean as TelemetrySeriesPoint & { _hist?: number[] })._hist;
       return {
-        ...clean,
-        avgMs: total > 0 ? Math.round(sumMs / total) : null,
+        ...point,
+        avgMs: total > 0 ? Math.round(msSum / total) : null,
         p50Ms: percentileFromHistogram(hist, 0.5),
         p95Ms: percentileFromHistogram(hist, 0.95),
       };
     })
-    .sort((a, b) => b.hour.localeCompare(a.hour) || a.provider.localeCompare(b.provider));
+    .sort(
+      (a, b) =>
+        b.hour.localeCompare(a.hour) ||
+        a.provider.localeCompare(b.provider) ||
+        a.source.localeCompare(b.source)
+    );
 }
 
 /** Test-only. */
