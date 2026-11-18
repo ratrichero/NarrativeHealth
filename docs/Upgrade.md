@@ -4,6 +4,65 @@
 
 ---
 
+## RADAR-01 — Market Radar: top gain/lose 24h + tín hiệu sớm (2026-11-18)
+
+Màn hình riêng `/radar` quét toàn bộ Binance Futures USDT perpetual (kể cả coin
+ngoài narrative), sàng lọc thanh khoản, chấm bias và tìm cơ hội trước breakout.
+Không thêm migration: track record dùng `app_settings.radar.signals`.
+
+### 1. Vì sao không chỉ là bảng top gain/lose
+
+Top gain 24h là dữ liệu quá khứ; +40% rồi thì entry sớm đã hết. Vì vậy mỗi coin
+nhận **bias** thay vì một "buy score":
+- `continuation` — trend 4h + volume 1.5–6× + OI tăng + funding chưa nóng.
+- `exhaustion` — move ≥4 ATR, funding ≥0.05%/8h, OI giảm, RSI ≥75.
+- `flush-bounce` — OI giảm mạnh + funding âm + RSI ≤30 (long bị thanh lý).
+- `breakdown` — trend giảm nhưng OI vẫn tăng (short mới).
+- `breakout` / `accumulation` — tab Radar sớm: volume z-score ≥2, OI tăng,
+giá chưa chạy, biên độ 7 ngày nén.
+
+Kèm `entryQuality` (move còn mới hay đã xa) và `composite = 0.6×score + 0.4×entryQuality`.
+
+### 2. Dữ liệu & lọc
+
+- Nguồn: `fapi/v1/ticker/24hr` (1 request toàn market), `exchangeInfo`
+(contractType/onboardDate), klines 1d/4h, funding, OI history 1h — dùng lại
+collector `src/lib/collectors/binance.ts`.
+- Universe: USDT perpetual TRADING, volume ≥ `RADAR_MIN_VOLUME_USD` (mặc định
+$10M), list ≥21 ngày, loại stablecoin/token leveraged. Coin ngoài DB vẫn hiện;
+DB chỉ gắn badge hệ thống + narrative.
+- Top 10 mỗi bên + 12 candidate radar được enrich sâu (concurrency 8), cache
+snapshot 60s, detail 45s. Enrich lỗi → metric `—`, row vẫn hiện.
+
+### 3. API + UI
+
+- `GET /api/market/movers?side=gainer|loser|unusual&sort=&minVolume=&excludeSystem=`
+- `GET /api/market/movers/[symbol]` — metrics, chart 4h, setup ATR.
+- `POST /api/market/movers/[symbol]/brief` — LLM brief opt-in (profile `movers`,
+cache 10 phút, luôn kèm disclaimer, system prompt cấm lời khuyên tuyệt đối).
+- `GET /api/market/radar/track-record` — hit rate/forward return theo bias.
+- UI `src/app/radar/page.tsx`: 3 tab, lọc volume/sort/ngoài hệ thống, bảng
+range–volume–OI–funding–bias–độ mới, drawer chi tiết + AI brief, panel track
+record, mục "Cách đọc". Thêm tab **Market Radar** vào Navigation.
+
+### 4. Tái sử dụng
+
+`buildSetup` chuyển từ `src/lib/chat/tools.ts` sang `src/lib/market/setup.ts`
+để chat và radar dùng chung công thức entry/TP/SL theo ATR (không đổi hành vi).
+
+### 5. Cấu hình
+
+`RADAR_MIN_VOLUME_USD`, `RADAR_ENRICH_PER_SIDE` (5–15),
+`RADAR_UNUSUAL_CANDIDATES` (6–20), `RADAR_LLM_ENABLED=0` để tắt brief,
+`RADAR_DEMO=1` để xem UI bằng dữ liệu mẫu khi server bị Binance geo-block
+(mặc định tắt; API trả `demo: true` và UI hiện banner, không ghi track record).
+
+### 6. Kiểm tra
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` 4 suite / 23 test pass
+(metrics, scoring, setup, universe); `next build` pass. Chưa có ảnh chụp UI
+trước khi chạy preview; dữ liệu phụ thuộc quyền truy cập Binance của server.
+
 ## LLM-OPS-05 — Grounding, trace, breaker, chi phí, hedge, quota, eval CI (2026-11-18)
 
 Mười một khoảng trống còn lại sau LLM-OPS-04, xử lý trọn một đợt. Không thêm
