@@ -2912,7 +2912,12 @@ rate limit catalyst theo IP, cooldown cảnh báo STALE; bật/tắt job catalys
 announcements/news/unlocks (`SCHEDULER_CATALYST_*`). Nút **Gửi webhook thử** trong
 tab gửi payload mẫu tới đúng URL đang gõ (kể cả chưa lưu) qua
 `POST /api/admin/radar/config/test-webhook`, trả HTTP status/lỗi để phát hiện URL
-rỗng/sai thay vì alert tắt im lặng. Giá trị DB hỏng/ngoài biên bị
+rỗng/sai thay vì alert tắt im lặng.
+
+`?minVolume` của `/api/market/movers` được chuẩn hoá về bucket cố định
+(`normalizeMinVolume`: 5M/10M/25M/50M/100M, làm tròn lên) trước khi làm cache key,
+vì mỗi key là một lần build Binance đầy đủ — giá trị tuỳ ý trước đây tạo cache key
+vô hạn. Giá trị DB hỏng/ngoài biên bị
 bỏ qua và rơi về env/default tương ứng. API: `GET/PUT /api/admin/radar/config`
 (admin session; PUT nhận `{ values: { ... } }`).
 

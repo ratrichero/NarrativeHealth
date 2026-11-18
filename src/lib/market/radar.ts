@@ -36,6 +36,34 @@ import { peekRadarRuntimeConfig, readRadarRuntimeConfig } from "@/lib/settings/r
 const FUTURES_API = "https://fapi.binance.com/fapi/v1";
 
 export const DEFAULT_MIN_VOLUME_USD = 10_000_000;
+
+/**
+ * Bucket cố định cho `minVolume` (USD), khớp các lựa chọn trong UI.
+ *
+ * `minVolume` là một phần cache key của snapshot — mỗi key là một lần build
+ * đầy đủ (ticker + enrich klines/OI/funding cho ~30 coin). Nhận giá trị tuỳ ý
+ * nghĩa là cache key vô hạn: người dùng chỉ cần đổi `?minVolume=10000001` là
+ * có thêm một lần build Binance. Chuẩn hoá về 5 mốc dưới đây chặn việc đó.
+ */
+export const MIN_VOLUME_BUCKETS = [
+  5_000_000,
+  10_000_000,
+  25_000_000,
+  50_000_000,
+  100_000_000,
+] as const;
+
+/**
+ * Làm tròn LÊN mốc gần nhất để filter không bao giờ lỏng hơn mức người dùng
+ * yêu cầu; vượt mốc cao nhất thì giữ mốc cao nhất. Giá trị thiếu/không hợp lệ
+ * dùng default của hệ thống (`RADAR_MIN_VOLUME_USD` hoặc 10M).
+ */
+export function normalizeMinVolume(raw?: number | null): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return minVolumeDefault();
+  const bucket = MIN_VOLUME_BUCKETS.find((candidate) => candidate >= value);
+  return bucket ?? MIN_VOLUME_BUCKETS[MIN_VOLUME_BUCKETS.length - 1];
+}
 const UNUSUAL_POOL_VOLUME_USD = 20_000_000;
 const CLUSTER_CACHE_MS = 5 * 60_000;
 
@@ -1043,7 +1071,12 @@ export function shapeRadarSnapshot(snapshot: RadarSnapshot, query: RadarQuery): 
 
 export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSnapshot> {
   const side = query.side ?? "gainer";
-  const minVolume = query.minVolume && query.minVolume > 0 ? query.minVolume : minVolumeDefault();
+  // Chuẩn hoá về bucket cố định: `?minVolume` tuỳ ý không được tạo cache key mới
+  // (mỗi key là một lần build Binance đầy đủ).
+  const minVolume =
+    query.minVolume && query.minVolume > 0
+      ? normalizeMinVolume(query.minVolume)
+      : minVolumeDefault();
 
   if (process.env.RADAR_DEMO === "1") {
     return shapeRadarSnapshot(buildDemoSnapshot(side), query);
