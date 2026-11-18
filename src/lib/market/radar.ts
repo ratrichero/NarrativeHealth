@@ -19,7 +19,7 @@ import {
 } from "@/lib/collectors/binance";
 import { computeMarketMetrics, emaLast, type MarketMetrics } from "@/lib/market/metrics";
 import { computeSpotLeadership, fetchSpotTickers, type SpotLeadership } from "@/lib/market/spot";
-import { computeClusters } from "@/lib/market/cluster";
+import { computeClusters, type ClusterInfo } from "@/lib/market/cluster";
 import { computeLiquidity, netRiskReward, type LiquidityMetrics } from "@/lib/market/liquidity";
 import {
   compositeScore,
@@ -37,6 +37,13 @@ export const DEFAULT_MIN_VOLUME_USD = 10_000_000;
 const PER_SIDE_ENRICH = Math.min(15, Math.max(5, Number(process.env.RADAR_ENRICH_PER_SIDE ?? 10)));
 const UNUSUAL_CANDIDATES = Math.min(20, Math.max(6, Number(process.env.RADAR_UNUSUAL_CANDIDATES ?? 12)));
 const UNUSUAL_POOL_VOLUME_USD = 20_000_000;
+// Quét thêm coin ngoài top enrich để bắt cụm/rotation, nhưng chỉ lấy 1h closes
+// (weight thấp) và cache 5 phút; 0 = tắt.
+const CLUSTER_EXTRA_RAW = Number(process.env.RADAR_CLUSTER_EXTRA ?? 20);
+const CLUSTER_EXTRA = Number.isFinite(CLUSTER_EXTRA_RAW)
+  ? Math.min(30, Math.max(0, Math.floor(CLUSTER_EXTRA_RAW)))
+  : 20;
+const CLUSTER_CACHE_MS = 5 * 60_000;
 
 export interface FuturesTicker {
   symbol: string;
@@ -120,10 +127,29 @@ export interface RadarRow {
   warnings: string[];
 }
 
+export interface RadarClusterMember {
+  symbol: string;
+  changePct: number;
+  quoteVolumeUsd: number;
+}
+
+export interface RadarClusterSummary {
+  id: string;
+  label: string;
+  size: number;
+  avgChangePct: number;
+  totalVolumeUsd: number;
+  leader: string | null;
+  direction: "up" | "down";
+  members: RadarClusterMember[];
+}
+
 export interface RadarSnapshot {
   side: MoverSide;
   rows: RadarRow[];
   market: RadarMarketContext;
+  /** Cụm phát hiện trên universe quét rộng (gồm coin ngoài top rows). */
+  clusters?: RadarClusterSummary[];
   collectedAt: string;
   /** true khi RADAR_DEMO=1 và dữ liệu là mẫu, không phải Binance thật. */
   demo?: boolean;
@@ -466,6 +492,144 @@ function buildMarket(
   };
 }
 
+interface ClusterCandidate {
+  symbol: string;
+  closes: number[];
+  composite: number;
+  narratives: string[];
+  changePct: number;
+  quoteVolumeUsd: number;
+}
+
+const clusterClosesCache = new Map<string, { value: number[]; expires: number }>();
+const clusterClosesInflight = new Map<string, Promise<number[]>>();
+
+async function getClusterCloses(symbol: string): Promise<number[]> {
+  const cached = clusterClosesCache.get(symbol);
+  if (cached && cached.expires > Date.now()) return cached.value;
+  const inflight = clusterClosesInflight.get(symbol);
+  if (inflight) return inflight;
+
+  const promise = fetchBinanceFuturesKlines(symbol, 30, "1h")
+    .then((candles) =>
+      candles.map((candle) => Number(candle.close)).filter((close) => Number.isFinite(close) && close > 0)
+    )
+    .catch((error) => {
+      console.warn(
+        `[RADAR-CLUSTER] Không lấy được 1h ${symbol}:`,
+        error instanceof Error ? error.message : String(error)
+      );
+      return [] as number[];
+    })
+    .then((closes) => {
+      clusterClosesCache.set(symbol, {
+        value: closes,
+        expires: Date.now() + (closes.length >= 25 ? CLUSTER_CACHE_MS : 60_000),
+      });
+      return closes;
+    })
+    .finally(() => clusterClosesInflight.delete(symbol));
+
+  clusterClosesInflight.set(symbol, promise);
+  return promise;
+}
+
+/**
+ * Chọn universe quét cluster rộng hơn top enrich: ưu tiên volume, nhưng vẫn
+ * dành quota cho top tăng/giảm để không bỏ sót cụm nhỏ.
+ * Loại các symbol đã enrich để không fetch trùng.
+ */
+export function selectClusterPool(
+  eligible: FuturesTicker[],
+  excluded: Set<string>,
+  limit = CLUSTER_EXTRA
+): FuturesTicker[] {
+  if (limit <= 0) return [];
+  const seen = new Set(excluded);
+  const picked: FuturesTicker[] = [];
+  const volumeSorted = [...eligible].sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume));
+  const gainers = [...eligible].sort(
+    (a, b) => Number(b.priceChangePercent) - Number(a.priceChangePercent)
+  );
+  const losers = [...eligible].sort(
+    (a, b) => Number(a.priceChangePercent) - Number(b.priceChangePercent)
+  );
+
+  const add = (ticker: FuturesTicker) => {
+    if (picked.length >= limit || seen.has(ticker.symbol)) return;
+    seen.add(ticker.symbol);
+    picked.push(ticker);
+  };
+  const volumeQuota = Math.ceil(limit * 0.6);
+  const gainerQuota = Math.ceil(limit * 0.8);
+
+  for (const ticker of volumeSorted) {
+    if (picked.length >= volumeQuota) break;
+    add(ticker);
+  }
+  for (const ticker of gainers) {
+    if (picked.length >= gainerQuota) break;
+    add(ticker);
+  }
+  for (const ticker of losers) {
+    if (picked.length >= limit) break;
+    add(ticker);
+  }
+  for (const ticker of volumeSorted) {
+    if (picked.length >= limit) break;
+    add(ticker);
+  }
+  return picked;
+}
+
+/** Gộp kết quả cluster thành summary cho panel cụm/rotation (gồm cả coin ngoài rows). */
+export function summarizeClusters(
+  items: Array<{ symbol: string; changePct: number; quoteVolumeUsd: number }>,
+  clusters: Map<string, ClusterInfo | null>,
+  limit = 6
+): RadarClusterSummary[] {
+  const groups = new Map<
+    string,
+    { info: ClusterInfo; members: Array<RadarClusterMember & { leader: boolean }> }
+  >();
+
+  for (const item of items) {
+    const info = clusters.get(item.symbol);
+    if (!info) continue;
+    const group = groups.get(info.clusterId) ?? { info, members: [] };
+    group.members.push({
+      symbol: item.symbol,
+      changePct: item.changePct,
+      quoteVolumeUsd: item.quoteVolumeUsd,
+      leader: info.leader,
+    });
+    groups.set(info.clusterId, group);
+  }
+
+  return [...groups.values()]
+    .map(({ info, members }) => {
+      const sorted = [...members].sort((a, b) => b.changePct - a.changePct);
+      const avgChangePct =
+        members.reduce((sum, member) => sum + member.changePct, 0) / Math.max(1, members.length);
+      return {
+        id: info.clusterId,
+        label: info.label,
+        size: members.length,
+        avgChangePct: Number(avgChangePct.toFixed(2)),
+        totalVolumeUsd: members.reduce((sum, member) => sum + member.quoteVolumeUsd, 0),
+        leader: members.find((member) => member.leader)?.symbol ?? null,
+        direction: avgChangePct >= 0 ? ("up" as const) : ("down" as const),
+        members: sorted.slice(0, 6).map(({ symbol, changePct, quoteVolumeUsd }) => ({
+          symbol,
+          changePct,
+          quoteVolumeUsd,
+        })),
+      } satisfies RadarClusterSummary;
+    })
+    .sort((a, b) => b.size - a.size || Math.abs(b.avgChangePct) - Math.abs(a.avgChangePct))
+    .slice(0, limit);
+}
+
 async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarSnapshot> {
   const [tickers, info, system, spotMap, btcTrend] = await Promise.all([
     fetchFuturesTickers(),
@@ -515,36 +679,65 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     chosen = pool;
   }
 
-  const enriched = await mapLimit(chosen, 8, (ticker) =>
-    enrichTicker(
-      ticker,
-      info.get(ticker.symbol),
-      side,
-      system,
-      spotMap.get(ticker.symbol),
-      btcChangePct
-    ).catch((error) => {
-      console.warn(
-        `[RADAR] Enrich ${ticker.symbol} lỗi:`,
-        error instanceof Error ? error.message : String(error)
-      );
-      return null;
-    })
+  const extraPool = selectClusterPool(
+    eligible,
+    new Set(chosen.map((ticker) => ticker.symbol))
   );
+  const extraPromise: Promise<ClusterCandidate[]> =
+    CLUSTER_EXTRA > 0 && extraPool.length > 0
+      ? mapLimit(extraPool, 6, async (ticker) => {
+          const closes = await getClusterCloses(ticker.symbol);
+          if (closes.length < 25) return null;
+          const symbol = ticker.symbol.replace(/USDT$/, "");
+          const changePct = Number(ticker.priceChangePercent);
+          return {
+            symbol,
+            closes,
+            composite: Math.min(100, Math.abs(changePct) * 6),
+            narratives: system.get(symbol)?.narratives.slice(0, 3) ?? [],
+            changePct,
+            quoteVolumeUsd: Number(ticker.quoteVolume) || 0,
+          } satisfies ClusterCandidate;
+        }).then((items) => items.filter((item): item is ClusterCandidate => item !== null))
+      : Promise.resolve([]);
+
+  const [enriched, extraItems] = await Promise.all([
+    mapLimit(chosen, 8, (ticker) =>
+      enrichTicker(
+        ticker,
+        info.get(ticker.symbol),
+        side,
+        system,
+        spotMap.get(ticker.symbol),
+        btcChangePct
+      ).catch((error) => {
+        console.warn(
+          `[RADAR] Enrich ${ticker.symbol} lỗi:`,
+          error instanceof Error ? error.message : String(error)
+        );
+        return null;
+      })
+    ),
+    extraPromise,
+  ]);
 
   const clean = enriched.filter((r): r is EnrichedRow => r !== null);
   for (const entry of clean) {
     entry.row.rsPercentile = percentileRank(changeRanks, entry.row.changePct);
   }
 
-  const clusters = computeClusters(
-    clean.map((entry) => ({
+  const clusterItems: ClusterCandidate[] = [
+    ...clean.map((entry) => ({
       symbol: entry.row.symbol,
       closes: entry.closes,
       composite: entry.row.composite,
       narratives: entry.row.narratives,
-    }))
-  );
+      changePct: entry.row.changePct,
+      quoteVolumeUsd: entry.row.quoteVolume,
+    })),
+    ...extraItems,
+  ];
+  const clusters = computeClusters(clusterItems);
   for (const entry of clean) {
     const cluster = clusters.get(entry.row.symbol) ?? null;
     entry.row.clusterId = cluster?.clusterId ?? null;
@@ -553,6 +746,14 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     entry.row.clusterLeader = cluster?.leader ?? false;
     entry.row.clusterLaggard = cluster ? !cluster.leader : false;
   }
+  const clusterSummaries = summarizeClusters(
+    clusterItems.map(({ symbol, changePct, quoteVolumeUsd }) => ({
+      symbol,
+      changePct,
+      quoteVolumeUsd,
+    })),
+    clusters
+  );
 
   let rows = clean.map((entry) => entry.row);
   if (side === "unusual") {
@@ -569,6 +770,7 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     side,
     rows,
     market,
+    clusters: clusterSummaries,
     collectedAt: new Date().toISOString(),
   };
 }

@@ -737,6 +737,53 @@ function RadarScreen() {
         <Stat label="Universe đủ điều kiện" value={data ? `${data.market.universe} coin` : "—"} />
       </section>
 
+      {data?.clusters && data.clusters.length > 0 ? (
+        <section className="rounded-2xl border border-violet-500/20 bg-violet-500/5 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="flex items-center gap-1.5 text-sm font-semibold text-violet-200">
+              <Layers className="h-4 w-4" /> Cụm rotation — quét ngoài top
+            </h2>
+            <span className="text-[11px] text-slate-500">
+              Tương quan 1h · gồm coin ngoài {rows.length} rows
+            </span>
+          </div>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {data.clusters.map((cluster) => (
+              <div key={cluster.id} className="rounded-xl border border-slate-800 bg-slate-950/60 p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-slate-200">{cluster.label}</p>
+                  <span
+                    className={cn(
+                      "text-[11px] tabular-nums",
+                      cluster.direction === "up" ? "text-emerald-400" : "text-rose-400"
+                    )}
+                  >
+                    {cluster.size} coin · {formatPct(cluster.avgChangePct)}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {cluster.members.map((member) => (
+                    <button
+                      key={member.symbol}
+                      onClick={() => setSelected(member.symbol)}
+                      className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-violet-500/50 hover:text-violet-200"
+                    >
+                      ${member.symbol}{" "}
+                      <span className={member.changePct >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                        {formatPct(member.changePct)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                {cluster.leader ? (
+                  <p className="mt-1.5 text-[10px] text-slate-500">Leader: ${cluster.leader}</p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex rounded-xl border border-slate-800 bg-slate-900/60 p-1">
           {SIDE_TABS.map((tab) => (

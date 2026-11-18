@@ -31,10 +31,15 @@ Không có spot pair → null, không kết luận.
 
 ### 4. Cluster/rotation
 
-`computeClusters` lấy return 1h của các coin đã enrich, correlation ≥0.75,
-gộp bằng union-find; label theo narrative chung (nếu ≥2 coin) hoặc “Cụm N”,
-chọn leader theo composite; các coin còn lại là laggard (ứng viên rotation).
-UI hiện badge cluster + size + leader/laggard.
+`computeClusters` lấy return 1h, correlation ≥0.75, gộp bằng union-find; label
+theo narrative chung (nếu ≥2 coin) hoặc “Cụm N”, chọn leader theo composite;
+các coin còn lại là laggard (ứng viên rotation).
+
+Ngoài top enrich, radar quét thêm tối đa `RADAR_CLUSTER_EXTRA` coin (mặc định
+20) theo quota volume + top tăng/giảm, chỉ fetch 30 nến 1h, cache 5 phút và
+dedupe request đang chạy — khoảng 20 call weight 1 mỗi snapshot, không đụng
+top gainer/loser đã enrich. Snapshot trả `clusters` summary gồm cả coin ngoài
+rows; UI có panel “Cụm rotation — quét ngoài top” với member click được.
 
 ### 5. Liquidity, slippage, net R:R
 
@@ -57,11 +62,12 @@ symbol` để mở đúng tab/coin, nút Copy link.
 
 `RADAR_ALERT_WEBHOOK_URL`, `RADAR_ALERT_MIN_SCORE` (75),
 `RADAR_ALERT_MIN_ENTRY` (50), `RADAR_ALERT_MAX_IMPULSE_HOURS` (12),
-`RADAR_ALERT_COOLDOWN_HOURS` (6 — cùng symbol không lặp trong cooldown).
+`RADAR_ALERT_COOLDOWN_HOURS` (6 — cùng symbol không lặp trong cooldown),
+`RADAR_CLUSTER_EXTRA` (20 — số coin quét thêm cho cluster, 0 = tắt).
 
 ### 9. Kiểm tra
 
-`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **10 suite / 65 test pass**;
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **11 suite / 68 test pass**;
 eslint 0 lỗi; build pass. Preview vẫn `RADAR_DEMO=1` vì Binance futures bị
 chặn (451); spot vision truy cập được nhưng radar thật chưa chạy live. Alert
 webhook chưa được gửi thử vì không cấu hình URL.

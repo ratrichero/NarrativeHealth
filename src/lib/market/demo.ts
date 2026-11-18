@@ -6,7 +6,7 @@ import type { MarketMetrics } from "@/lib/market/metrics";
 import { compositeScore, scoreForSide, type MoverSide } from "@/lib/market/scoring";
 import { buildSetup } from "@/lib/market/setup";
 import { netRiskReward } from "@/lib/market/liquidity";
-import type { RadarDetail, RadarRow, RadarSnapshot } from "@/lib/market/radar";
+import type { RadarClusterSummary, RadarDetail, RadarRow, RadarSnapshot } from "@/lib/market/radar";
 import {
   HORIZONS,
   LEDGER_NOTE,
@@ -182,10 +182,46 @@ function demoRows(side: MoverSide): RadarRow[] {
   return rows;
 }
 
+function demoClusters(): RadarClusterSummary[] {
+  const bySymbol = new Map<string, RadarRow>();
+  for (const row of [...demoRows("gainer"), ...demoRows("loser"), ...demoRows("unusual")]) {
+    if (row.clusterLabel) bySymbol.set(row.symbol, row);
+  }
+  const groups = new Map<string, RadarRow[]>();
+  for (const row of bySymbol.values()) {
+    const list = groups.get(row.clusterLabel!) ?? [];
+    list.push(row);
+    groups.set(row.clusterLabel!, list);
+  }
+  return [...groups.entries()]
+    .filter(([, rows]) => rows.length >= 2)
+    .map(([label, rows]) => {
+      const sorted = [...rows].sort((a, b) => b.changePct - a.changePct);
+      const avg = rows.reduce((sum, row) => sum + row.changePct, 0) / rows.length;
+      return {
+        id: `demo-${label}`,
+        label,
+        size: rows.length,
+        avgChangePct: Number(avg.toFixed(2)),
+        totalVolumeUsd: rows.reduce((sum, row) => sum + row.quoteVolume, 0),
+        leader: [...rows].sort((a, b) => b.score - a.score)[0]?.symbol ?? null,
+        direction: avg >= 0 ? ("up" as const) : ("down" as const),
+        members: sorted.slice(0, 6).map((row) => ({
+          symbol: row.symbol,
+          changePct: row.changePct,
+          quoteVolumeUsd: row.quoteVolume,
+        })),
+      } satisfies RadarClusterSummary;
+    })
+    .sort((a, b) => b.size - a.size || Math.abs(b.avgChangePct) - Math.abs(a.avgChangePct))
+    .slice(0, 4);
+}
+
 export function buildDemoSnapshot(side: MoverSide): RadarSnapshot {
   return {
     side,
     rows: demoRows(side),
+    clusters: demoClusters(),
     market: {
       gainers: 182,
       losers: 96,
