@@ -1,8 +1,342 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-11-17
+## Ngày cập nhật: 2026-11-18
 
 ---
+
+## RADAR-03 — Đợt 2+3: impulse, regime, spot, cluster, liquidity, alert, mobile (2026-11-18)
+
+Bảy nhóm follow-up còn lại của Market Radar. Không thêm migration; track record,
+quota và alert dedupe vẫn dùng `app_settings`.
+
+### 1. Impulse age + multi-timeframe freshness
+
+`computeImpulse` đọc klines 1h (48h gần nhất), tìm nến ignition (volume ≥2.5×
+baseline, range ≥0.8 ATR, body ≥0.3 ATR), rồi tính tuổi impulse, extension từ
+origin theo ATR, số nến consolidation, retest EMA20 1h và volume climax.
+Scoring cộng điểm khi impulse ≤3h, trừ điểm/entryQuality khi >6–12h.
+
+### 2. Market regime + relative strength
+
+Market context có `regime` (risk-on/off/neutral), `btcTrend` 4h (EMA20/50),
+`breadthPct`. Mỗi row có `relativeStrengthPct` so BTC và `rsPercentile` trong
+universe. Scoring dùng RS như tín hiệu xác nhận, không thay thế bias.
+
+### 3. Spot leadership + basis
+
+`src/lib/market/spot.ts` lấy spot ticker từ `data-api.binance.vision` (vẫn
+hoạt động khi `fapi` bị geo-block), tính spot change, basis perp/spot và cờ
+`spotLed`. Spot dẫn được cộng điểm continuation/breakout; perp dẫn bị trừ nhẹ.
+Không có spot pair → null, không kết luận.
+
+### 4. Cluster/rotation
+
+`computeClusters` lấy return 1h của các coin đã enrich, correlation ≥0.75,
+gộp bằng union-find; label theo narrative chung (nếu ≥2 coin) hoặc “Cụm N”,
+chọn leader theo composite; các coin còn lại là laggard (ứng viên rotation).
+UI hiện badge cluster + size + leader/laggard.
+
+### 5. Liquidity, slippage, net R:R
+
+Detail fetch order book futures, tính spread bps, depth ±1%, slippage mua/bán
+cho $1k/$10k/$50k, cờ “sổ lệnh mỏng”. Setup có thêm net R:R đã trừ phí taker
+0.1%. List không gọi depth để giữ weight.
+
+### 6. Alert webhook
+
+`RADAR_ALERT_WEBHOOK_URL` (generic JSON có `text`) + ngưỡng score/freshness/
+impulse. Dedupe `symbol+bias+ngày` + cooldown theo symbol lưu `app_settings.radar.alerts.sent` (7 ngày,
+200 bản), gửi sau cohort, lỗi webhook/DB không ảnh hưởng radar.
+
+### 7. Mobile + permalink
+
+Dưới `md` dùng card thay bảng; URL nhận `side/sort/minVolume/excludeSystem/
+symbol` để mở đúng tab/coin, nút Copy link.
+
+### 8. Cấu hình
+
+`RADAR_ALERT_WEBHOOK_URL`, `RADAR_ALERT_MIN_SCORE` (75),
+`RADAR_ALERT_MIN_ENTRY` (50), `RADAR_ALERT_MAX_IMPULSE_HOURS` (12),
+`RADAR_ALERT_COOLDOWN_HOURS` (6 — cùng symbol không lặp trong cooldown).
+
+### 9. Kiểm tra
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **10 suite / 65 test pass**;
+eslint 0 lỗi; build pass. Preview vẫn `RADAR_DEMO=1` vì Binance futures bị
+chặn (451); spot vision truy cập được nhưng radar thật chưa chạy live. Alert
+webhook chưa được gửi thử vì không cấu hình URL.
+
+## RADAR-02 — Signal Ledger 2.0 + quota/rate limit (2026-11-18)
+
+Đợt 1 của follow-up radar: đo hiệu quả thật của scoring và chặn lạm dụng
+route public trước khi mở rộng. Vẫn không thêm migration (`app_settings`).
+
+### 1. Signal Ledger 2.0 (`src/lib/market/ledger.ts`)
+
+Track record cũ chỉ so giá hiện tại, không biết tín hiệu thắng ở horizon nào
+và không lưu ứng viên neutral. Nay mỗi cohort ngày lưu tối đa 12 row/bên,
+**gồm cả neutral/watch**, cùng setup TP/SL tại thời điểm ghi và giá BTC.
+
+Đo cho từng tín hiệu:
+- return tại **1h / 4h / 24h / 3d / 7d**;
+- MFE/MAE trong horizon;
+- TP1/SL có chạm không, thứ tự chạm (`tp`, `sl`, `ambiguous` cùng nến);
+- **relative return so với BTC** cùng horizon (dùng `btcPrice` lúc ghi);
+- pending nếu horizon chưa đủ tuổi.
+
+TP/SL được tính đúng chiều: long TP khi high ≥ tp1, SL khi low ≤ stopLoss;
+short ngược lại. Dữ liệu giá lấy từ klines 1h bắt đầu tại thời điểm signal
+(`startTime` mới trong `fetchBinanceFuturesKlines`), tối đa 60 signal/lần đọc,
+cache 5 phút, giữ 8 ngày để đủ horizon 7d.
+
+UI `/radar` có tab horizon, bảng hit rate/return/vs BTC/MFE-MAE/TP-SL theo
+bias, và bảng tín hiệu gần đây kèm cờ `watch` cho neutral.
+
+### 2. Cohort độc lập filter + luôn có neutral
+
+Route list trước đây ghi cohort từ `rows` đã bị filter/sort/limit theo request,
+nên mỗi người xem tạo một cohort khác nhau và chỉ side đang mở được ghi. Nay
+`recordAllRadarCohorts` chạy **sau response** (`after` của Next), tự lấy snapshot
+chuẩn cho **cả gainer/loser/unusual** (`limit 30`, sort composite, min volume
+mặc định), rồi `planCohorts` giữ tối đa 12 non-neutral mỗi side + **một cohort
+neutral riêng** (tối đa 6, dedupe symbol) để neutral không bị nhân bản 3 lần.
+Dedupe theo symbol+side+ngày, throttle 30 phút/lần, không phụ thuộc tab người xem.
+
+### 3. Rate limit + quota LLM brief
+
+- `src/lib/market/rate-limit.ts`: sliding window trong RAM; list 30/phút/IP,
+track-record 15/phút/IP, brief 10/giờ/IP; trả 429 + `Retry-After` +
+`X-RateLimit-*`.
+- **Không tin `X-Forwarded-For` client gửi.** Chỉ dùng `cf-connecting-ip`
+và `x-real-ip` do edge/proxy ghi đè. `RADAR_TRUST_XFF=1` mới đọc XFF và lấy
+hop phải nhất. Không có header tin cậy → key `unknown`.
+- `src/lib/market/brief-quota.ts`: trần brief/ngày toàn hệ thống (mặc định
+200) lưu `app_settings.radar.brief.usage`, reset theo ngày UTC, fail-open khi
+DB lỗi.
+- Quota chỉ bị trừ **bên trong `getMoverBrief`, ngay trước khi gọi LLM**: cache
+hit, symbol không tồn tại hoặc `RADAR_LLM_ENABLED=0` không tiêu quota.
+- Brief route chặn thêm `Sec-Fetch-Site: cross-site`.
+
+### 4. Cấu hình
+
+`RADAR_LIST_PER_IP_PER_MIN`, `RADAR_TRACK_RECORD_PER_IP_PER_MIN`,
+`RADAR_BRIEF_PER_IP_PER_HOUR`, `RADAR_BRIEF_DAILY_LIMIT`, `RADAR_TRUST_XFF`
+(mặc định 0). Rate limit là theo instance (RAM), không thay WAF/Redis khi chạy
+nhiều replica.
+
+### 5. Kiểm tra
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **7 suite / 52 test pass**
+(ledger, 3-side cohort, brief quota, rate limit, scoring, metrics, setup, universe);
+eslint 0 lỗi. Preview dùng `RADAR_DEMO=1` nên track record hiển thị fixture có
+cờ demo; chưa đo được forward return thật vì server bị Binance geo-block.
+
+## RADAR-01 — Market Radar: top gain/lose 24h + tín hiệu sớm (2026-11-18)
+
+Màn hình riêng `/radar` quét toàn bộ Binance Futures USDT perpetual (kể cả coin
+ngoài narrative), sàng lọc thanh khoản, chấm bias và tìm cơ hội trước breakout.
+Không thêm migration: track record dùng `app_settings.radar.signals`.
+
+### 1. Vì sao không chỉ là bảng top gain/lose
+
+Top gain 24h là dữ liệu quá khứ; +40% rồi thì entry sớm đã hết. Vì vậy mỗi coin
+nhận **bias** thay vì một "buy score":
+- `continuation` — trend 4h + volume 1.5–6× + OI tăng + funding chưa nóng.
+- `exhaustion` — move ≥4 ATR, funding ≥0.05%/8h, OI giảm, RSI ≥75.
+- `flush-bounce` — OI giảm mạnh + funding âm + RSI ≤30 (long bị thanh lý).
+- `breakdown` — trend giảm nhưng OI vẫn tăng (short mới).
+- `breakout` / `accumulation` — tab Radar sớm: volume z-score ≥2, OI tăng,
+giá chưa chạy, biên độ 7 ngày nén.
+
+Kèm `entryQuality` (move còn mới hay đã xa) và `composite = 0.6×score + 0.4×entryQuality`.
+
+### 2. Dữ liệu & lọc
+
+- Nguồn: `fapi/v1/ticker/24hr` (1 request toàn market), `exchangeInfo`
+(contractType/onboardDate), klines 1d/4h, funding, OI history 1h — dùng lại
+collector `src/lib/collectors/binance.ts`.
+- Universe: USDT perpetual TRADING, volume ≥ `RADAR_MIN_VOLUME_USD` (mặc định
+$10M), list ≥21 ngày, loại stablecoin/token leveraged. Coin ngoài DB vẫn hiện;
+DB chỉ gắn badge hệ thống + narrative.
+- Top 10 mỗi bên + 12 candidate radar được enrich sâu (concurrency 8), cache
+snapshot 60s, detail 45s. Enrich lỗi → metric `—`, row vẫn hiện.
+
+### 3. API + UI
+
+- `GET /api/market/movers?side=gainer|loser|unusual&sort=&minVolume=&excludeSystem=`
+- `GET /api/market/movers/[symbol]` — metrics, chart 4h, setup ATR.
+- `POST /api/market/movers/[symbol]/brief` — LLM brief opt-in (profile `movers`,
+cache 10 phút, luôn kèm disclaimer, system prompt cấm lời khuyên tuyệt đối).
+- `GET /api/market/radar/track-record` — hit rate/forward return theo bias.
+- UI `src/app/radar/page.tsx`: 3 tab, lọc volume/sort/ngoài hệ thống, bảng
+range–volume–OI–funding–bias–độ mới, drawer chi tiết + AI brief, panel track
+record, mục "Cách đọc". Thêm tab **Market Radar** vào Navigation.
+
+### 4. Tái sử dụng
+
+`buildSetup` chuyển từ `src/lib/chat/tools.ts` sang `src/lib/market/setup.ts`
+để chat và radar dùng chung công thức entry/TP/SL theo ATR (không đổi hành vi).
+
+### 5. Cấu hình
+
+`RADAR_MIN_VOLUME_USD`, `RADAR_ENRICH_PER_SIDE` (5–15),
+`RADAR_UNUSUAL_CANDIDATES` (6–20), `RADAR_LLM_ENABLED=0` để tắt brief,
+`RADAR_DEMO=1` để xem UI bằng dữ liệu mẫu khi server bị Binance geo-block
+(mặc định tắt; API trả `demo: true` và UI hiện banner, không ghi track record).
+
+### 6. Kiểm tra
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` 4 suite / 23 test pass
+(metrics, scoring, setup, universe); `next build` pass. Chưa có ảnh chụp UI
+trước khi chạy preview; dữ liệu phụ thuộc quyền truy cập Binance của server.
+
+## LLM-OPS-05 — Grounding, trace, breaker, chi phí, hedge, quota, eval CI (2026-11-18)
+
+Mười một khoảng trống còn lại sau LLM-OPS-04, xử lý trọn một đợt. Không thêm
+migration: mọi state mới nằm trong `app_settings` (jsonb) và đều tự tắt DB khi
+`NODE_ENV=test`.
+
+### 1. Grounding verifier (`src/lib/llm/grounding.ts`)
+
+System prompt cấm bịa số nhưng không có gì kiểm tra câu trả lời cuối. Thêm bộ
+kiểm tra tất định: trích số từ câu trả lời (chuẩn hoá `$`, `%`, dấu phẩy,
+hậu tố K/M/B, chống nhầm chữ Việt như "tăng" thành hậu tố T), so với mọi số
+trong tool output của cùng lượt với dung sai 25% cho làm tròn.
+
+**LLM-GROUND-02 (siết lại):** verifier đợt đầu flag cả số model **tự tính**
+từ tool (entry→TP +15%, funding 0.00008 → 0.008%, R:R) nên gần như lượt chat
+nào cũng lệch và có thể tốn thêm một completion để sửa. Nay:
+- số suy ra bằng số học từ tool (tổng, hiệu, tỉ lệ %, % thay đổi, ×/÷100,
+tích với số nhỏ) được chấp nhận với dung sai 3% → không còn flag;
+- sửa dung sai tương đối: scale không còn bị chặn ở 1, nên 0.008 không còn
+được coi là "gần" 0.00008 (lỗi 100 lần);
+- **mặc định không gọi lượt sửa**: chỉ caveat khi lệch "đáng kể" (≥2 số không
+truy được, hoặc một số `%`/`$`/≥1000). Bật `LLM_GROUNDING_REPAIR=1` mới sửa,
+và tối đa 1 lần / 10 phút (`LLM_GROUNDING_REPAIR_INTERVAL_MS`).
+
+Nối vào cả `runChatTurn` và `runChatTurnStream`; stream gửi `reset` + toàn bộ
+câu đã sửa (nếu có sửa) để client không nối hai bản.
+
+### 2. Trace mỗi lượt (`src/lib/llm/trace.ts`)
+
+Telemetry theo giờ trả lời "bao nhiêu fail", không trả lời "lượt này đi qua
+tier nào, mất bao lâu". Mỗi lượt có `traceId` (hiện trong lỗi như "mã tra
+cứu"), lưu ring 40 trong RAM + 25 bản/24h trong `app_settings.llm.traces`.
+Chỉ metadata: tier, model, status, kind, ms, token, fingerprint — không câu
+hỏi, không key.
+
+### 3. Circuit breaker bền (`src/lib/llm/breaker.ts`)
+
+2 lỗi provider thật trong 5 phút (auth/rate-limit/capacity/transport/timeout)
+→ mở breaker 5 phút (auth 30 phút), lưu DB nên restart không thử lại key chết.
+Key theo tier + 4 ký tự cuối, nên một key google chết không loại cả pool.
+`request_invalid`/`content_policy` **không** mở breaker (lỗi payload của mình).
+Chain builder bỏ tier đang mở; nếu tất cả bị lọc thì trả chain gốc để không
+biến suy giảm thành sập. Admin có nút đóng breaker; test tắt gate bằng
+`LLM_BREAKER_TEST` để không rò state giữa suite.
+
+### 4. Cost ledger USD (`src/lib/llm/cost.ts`)
+
+`budget.ts` chỉ giới hạn token/phút. Thêm bảng giá theo model (flash-lite,
+gemini, deepseek, qwen, gpt; override `LLM_PRICE_TABLE`), quy đổi token → USD
+với giả định 70/30 input/output (`LLM_COST_INPUT_SHARE`), ledger ngày trong
+`app_settings.llm.cost` (31 ngày). `LLM_DAILY_BUDGET_USD` đặt trần: vượt trần
+→ chat trả lời ngắn + tắt tool, không chặn pipeline Square/Movers.
+
+### 5. Eval vào CI + gate hồi quy
+
+`npm run eval:gate` ghi `artifacts/llm-eval-latest.json` và so với baseline
+commit sẵn (`artifacts/llm-eval-baseline.json`, 7/8 đo thật ở LLM-OPS-03):
+fail khi tụt >5 điểm hoặc một case từng pass nay fail. Scorer có test offline
+(`eval-suite.test.ts`, 8 fixture + advice/negation). Workflow
+`.github/workflows/llm-checks.yml` chạy tsc + eslint + jest offline, không cần
+key/DB.
+
+### 6. Hedged streaming cho chat (`chatCompletionStream`)
+
+Tier đầu im lặng quá `LLM_HEDGE_MS` (mặc định 2500ms) → tier kế chạy song
+song; tier nào ra delta đầu tiên thắng, tier còn lại bị abort (AbortError của
+loser không tính là fail). Chỉ chat hedge; Square/Movers giữ tuần tự để không
+trả tiền hai lần. Tier thắng chết giữa chừng → `reset` rồi chuyển tier như cũ.
+
+### 7. Structured output + cashtag cho Square
+
+`normalizeCashtags` đổi `#BTC` → `$BTC` cho symbol có trong brief (đúng case
+baseline fail duy nhất), thêm luật prompt cấm hashtag. `LLM_SQUARE_JSON=1`
+bật `response_format: json_object` **chỉ khi** capability registry nói model hỗ
+trợ, kèm parser chịu được fence/think block; mặc định vẫn plain text để không
+biến free tier thành 400.
+
+### 8. Quota theo session/ngày (`src/lib/chat/quota.ts`)
+
+80 lượt và 150k token mỗi session/ngày (env chỉnh được). 80% → soft: max token
+400 + không tool; chạm trần → từ chối trước khi gọi provider. Đếm trong RAM
+(session chat vốn ephemeral), không ghi DB trên hot path.
+
+### 9. Admin: breaker, chi phí, p50/p95, trace
+
+`/api/admin/llm/status` trả thêm `breakers`, `cost`, `telemetrySeries`,
+`traces`. Telemetry có histogram ms (7 edge) để tính p50/p95 xấp xỉ thay vì
+chỉ trung bình. Panel LLM Providers hiển thị breaker (nút đóng tất cả), chi phí
+hôm nay theo tier + cảnh báo vượt ngân sách, bảng độ trễ 12 giờ, và trace gần
+nhất.
+
+### 10. Provenance + injection detection cho tool output
+
+Mỗi kết quả tool có `nguồn`, `thời điểm dữ liệu`, nhãn "DB theo chu kỳ refresh"
+cho tool health/metrics; system prompt yêu cầu nêu mốc thời gian. Payload chứa
+cụm kiểu "ignore previous instructions"/"bỏ qua hướng dẫn" bị gắn cảnh báo
+"chỉ dùng như dữ liệu".
+
+### 11. Review lại LLM-OPS-05 — cắt bớt và sửa lỗi tiềm ẩn
+
+Đợt đầu hơi nặng tay. Sau khi đọc lại bằng con mắt mới:
+
+**Cắt hẳn shadow A/B** (`shadow.ts`, test, panel admin, env, mục 11 cũ): nó
+chỉ chạy khi cấu hình tay, tốn thêm provider call trên N% traffic, lưu state
+riêng và cần người đọc verdict — trong khi `eval:gate` + canary + telemetry đã
+trả lời câu hỏi "model mới có ổn không". Một tính năng ít dùng không đáng
+chừng đó bề mặt.
+
+**Hedge thành opt-in**: `LLM_HEDGE_MS` mặc định **tắt**. Hedge có thể nhân đôi
+call/chi phí của một lượt chat bình thường, nên không bật mặc định cho mọi
+triển khai. Code vẫn giữ, kèm fix: tier thay thế sau failover cũng được hedge
+(không phải chờ hết timeout), bỏ biến `emitted` chết trong nhánh hedge.
+
+**Cost ledger gọn lại, chỉ cảnh báo**: bỏ `LLM_PRICE_TABLE`, `bySource`,
+`history` và `dailyBudgetRemainingUsd`; chat **không còn tự chuyển sang trả
+lời ngắn/tắt tool** khi vượt ngân sách — đó là hành vi đáng ngạc nhiên dựa
+trên giá đoán. `LLM_DAILY_BUDGET_USD` giờ chỉ đổi màu cảnh báo trong admin.
+Số USD vẫn là ước tính theo instance (read-modify-write), đã ghi rõ.
+
+**Sửa lỗi tiềm ẩn:**
+- telemetry series tách theo `provider + source + hour` và status route loại
+  canary khỏi p50/p95 — trước đó probe 1-token bị trộn vào p95 của chat, làm
+  tier chậm trông nhanh;
+- provenance lấy `updatedAt/asOf/timestamp` từ chính payload tool thay vì luôn
+  gắn "bây giờ" (đúng cái bẫy dữ liệu DB cũ được trình bày như realtime);
+- `LLM_PERSIST=0` (và `NODE_ENV=test`) chặn mọi write telemetry/trace/breaker/
+  cost; script `eval-llm.ts` tự đặt cờ này nên live eval không còn có thể ghi
+  vào DATABASE_URL thật trong `.env`;
+- canary probe thành công đóng breaker đã mở, key đã sửa không bị bỏ qua hết
+  cooldown.
+
+**Giữ nguyên:** grounding (đã siết ở mục 1), trace, breaker, quota, hedged
+stream (opt-in), structured output Square, eval gate và cảnh báo injection —
+những thứ này sửa lỗi thật hoặc đo được, không phải trang trí.
+
+### Kiểm tra
+
+- `npx tsc --noEmit` → 0 lỗi
+- `npx jest src/lib/llm src/lib/chat src/lib/square` → 26 suite / 299 test pass
+- `npx eslint src/lib/llm src/lib/chat src/lib/square src/components/admin src/app/api/admin/llm` → 0 lỗi
+- `next build` → compiled successfully
+- Live eval (`LLM_FORCE_ENV=1 npm run eval:gate`): **8/8 (100%)**, chat 4/4,
+  square 4/4, p95 ~2.3s — case `square-cashtag-percent` từng fail nay pass nhờ
+  luật prompt `$SYM`. Baseline commit vẫn giữ 7/8 (0.875) làm sàn chịu dao
+  động: một case flaky không làm đỏ CI, nhưng tụt >5 điểm hoặc case từng pass
+  nay fail thì gate báo.
+- Artifact mỗi lần chạy: `artifacts/llm-eval-latest.json`.
 
 ## LLM-OPS-04 — Canary không còn báo fail giả cho tier chậm/quota thấp (2026-11-17)
 

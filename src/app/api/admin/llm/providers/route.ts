@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { keyHint, buildChainFromSettings, resolveProviderChain } from "@/lib/llm/provider-chain";
 import { resetGooglePoolCooldowns } from "@/lib/llm/google-key-pool";
 import { canarySnapshot, runLlmCanary } from "@/lib/llm/canary";
+import { resetLlmBreakers } from "@/lib/llm/breaker";
 import { envForTier, mergeTiers, previewChain, type TierInput } from "@/lib/llm/tier-input";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth/session";
 import {
@@ -290,6 +291,14 @@ export async function POST(request: NextRequest) {
     if (body.action === "resetCooldown") {
       resetGooglePoolCooldowns();
       return NextResponse.json({ success: true, data: await buildView() });
+    }
+
+    if (body.action === "resetBreaker") {
+      // LLM-BREAKER-01: close the persisted breaker(s) for one tier, or all
+      // tiers when no tier is given (after fixing a key, before a cooldown ends).
+      const tier = body.tier && LLM_TIER_IDS.includes(body.tier) ? body.tier : undefined;
+      const closed = await resetLlmBreakers(tier);
+      return NextResponse.json({ success: true, data: { closed, view: await buildView() } });
     }
 
     if (body.action === "test") {

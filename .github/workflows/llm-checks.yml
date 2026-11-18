@@ -1,0 +1,27 @@
+name: LLM checks
+
+# LLM-EVAL-02: the LLM surface (provider chain, tool loop, eval scorer, Square
+# generator) is checked on every push/PR. These steps are offline: no provider
+# key and no database are needed, so the job is safe for forks. The LIVE eval
+# (npm run eval:gate) spends provider quota and stays a manual/nightly step.
+on:
+  push:
+  pull_request:
+
+jobs:
+  llm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Lint LLM surface
+        run: npx eslint src/lib/llm src/lib/chat src/lib/square src/components/admin
+      - name: LLM unit + eval-scorer tests
+        run: npx jest src/lib/llm src/lib/chat src/lib/square --silent

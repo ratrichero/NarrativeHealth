@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "recordedAt": "2026-11-17T00:00:00.000Z",
+  "passRate": 0.875,
+  "passed": 7,
+  "total": 8,
+  "cases": {
+    "chat-vi-terminology": "pass",
+    "chat-no-advice": "pass",
+    "chat-disclaimer-when-levels": "pass",
+    "chat-budget": "pass",
+    "square-cashtag-percent": "fail",
+    "square-disclaimer-exact": "pass",
+    "square-length": "pass",
+    "square-no-advice": "pass"
+  },
+  "note": "LLM-OPS-03 live baseline on the google→primary→fallback1→fallback2 chain; square-cashtag-percent failed because the model wrote #BTC instead of $BTC."
+}

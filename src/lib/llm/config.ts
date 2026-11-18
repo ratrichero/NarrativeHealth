@@ -55,3 +55,18 @@ export function retryDelayMs(response: Response, attempt: number): number {
 }
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * LLM-HEDGE-01: how long the first tier may stay silent before the next tier
+ * is started in parallel. Only the chat stream uses it, and it is OPT-IN: an
+ * unset LLM_HEDGE_MS means no hedge (0). A slow tier can otherwise double the
+ * provider calls and the spend of a normal chat turn, so the operator decides
+ * when that trade is worth it.
+ */
+export function llmHedgeMs(): number {
+  const raw = process.env.LLM_HEDGE_MS?.trim();
+  if (!raw) return 0;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return clamp(Math.round(value), 300, 20_000);
+}

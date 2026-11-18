@@ -25,6 +25,7 @@ import { recordLlmOutcome } from "./monitor";
 import { recordLlmTelemetry } from "./telemetry";
 import { classifyLlmFailure, type LlmFailureKind } from "./errors";
 import { llmRequestTimeoutMs, sleep } from "./config";
+import { noteTierSuccess } from "./breaker";
 
 export interface CanaryResult {
   provider: string;
@@ -193,8 +194,12 @@ async function persistResult(provider: LlmProvider, attempt: Attempt): Promise<C
     attempt.kind === "request_invalid" ||
     attempt.kind === "content_policy";
   const consecutiveMisses = attempt.ok ? 0 : previous + 1;
-  if (attempt.ok) misses.delete(provider.name);
-  else misses.set(provider.name, consecutiveMisses);
+  if (attempt.ok) {
+    misses.delete(provider.name);
+    // LLM-BREAKER-01: a healthy probe closes a breaker opened by stale traffic,
+    // so a fixed key does not stay skipped for the rest of its cooldown.
+    noteTierSuccess(provider.name, provider.apiKey);
+  } else misses.set(provider.name, consecutiveMisses);
 
   // A single timeout/5xx is a slow tier, not a dead one. Auth errors are not.
   const degraded = !attempt.ok && !fatal && consecutiveMisses < MISSES_BEFORE_FAIL;

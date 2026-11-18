@@ -6,6 +6,10 @@
  *  1. Live call outcomes (in-memory ring buffer, both square + chat chains).
  *  2. Google key pool state (rotation + cooldowns, GKEY-01).
  *
+ * LLM-TRACE-01 adds recent per-turn traces; LLM-BREAKER-01 the persisted
+ * breakers; LLM-COST-01 today's USD estimate; LLM-TELEMETRY-02 the hourly
+ * latency series behind the admin charts.
+ *
  * The long-term llm/template ratio stays available from the existing
  * /api/admin/square/analytics endpoint; the UI links there instead of
  * duplicating the aggregation here.
@@ -16,16 +20,27 @@
 import { NextResponse } from "next/server";
 import { llmOutcomeSnapshot, llmTierStats } from "@/lib/llm/monitor";
 import { googlePoolStats } from "@/lib/llm/google-key-pool";
-import { detectLlmStorms, llmTelemetrySnapshot } from "@/lib/llm/telemetry";
+import {
+  detectLlmStorms,
+  llmTelemetrySnapshot,
+  telemetrySeries,
+} from "@/lib/llm/telemetry";
 import { budgetStats } from "@/lib/llm/budget";
 import { capabilitiesSnapshot } from "@/lib/llm/capabilities";
 import { canarySnapshot } from "@/lib/llm/canary";
+import { breakerSnapshot, hydrateLlmBreakers } from "@/lib/llm/breaker";
+import { costSnapshot, hydrateLlmCost } from "@/lib/llm/cost";
+import { recentLlmTraces } from "@/lib/llm/trace";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    // Both stores live in app_settings; hydrate before presenting a snapshot so
+    // the panel is correct right after a restart.
+    await Promise.all([hydrateLlmBreakers(), hydrateLlmCost()]);
     const telemetry = await llmTelemetrySnapshot();
+    const traces = await recentLlmTraces(12);
     return NextResponse.json({
       success: true,
       data: {
@@ -33,10 +48,19 @@ export async function GET() {
         tiers: llmTierStats(),
         googlePool: googlePoolStats(),
         telemetry,
+        // Hourly p50/p95 for real traffic. Canary probes are excluded: a
+        // 1-token ping would drag the percentiles down and hide a slow tier.
+        telemetrySeries: telemetrySeries(telemetry.buckets, {
+          hours: 12,
+          sources: ["chat", "square", "movers"],
+        }),
         alerts: detectLlmStorms(telemetry.buckets),
         budget: budgetStats(),
         capabilities: capabilitiesSnapshot(),
         canary: canarySnapshot(),
+        breakers: breakerSnapshot(),
+        cost: costSnapshot(),
+        traces,
       },
     });
   } catch (error) {

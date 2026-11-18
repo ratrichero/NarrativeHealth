@@ -26,6 +26,7 @@ import {
   fetchBinanceOIHistory,
   type BinanceInterval,
 } from "@/lib/collectors/binance";
+import { buildSetup } from "@/lib/market/setup";
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -77,37 +78,6 @@ function computeAtr(rows: { high: string; low: string; close: string }[]): numbe
   let emaVal = tr[0];
   for (let i = 1; i < tr.length; i++) emaVal = alpha * tr[i] + (1 - alpha) * emaVal;
   return Number.isFinite(emaVal) && emaVal > 0 ? emaVal : null;
-}
-
-interface SetupLevels {
-  direction: "BULLISH" | "BEARISH";
-  entryLow: number;
-  entryHigh: number;
-  tp1: number;
-  tp2: number;
-  stopLoss: number;
-  riskRewardRatio: number | null;
-}
-
-function buildSetup(direction: "BULLISH" | "BEARISH", price: number, atr: number): SetupLevels {
-  const sign = direction === "BULLISH" ? 1 : -1;
-  const eLow = +(price - atr * 0.5 * sign).toFixed(6);
-  const eHigh = +(price + atr * 0.5 * sign).toFixed(6);
-  const mid = (Math.min(eLow, eHigh) + Math.max(eLow, eHigh)) / 2;
-  const t1 = +(mid + sign * atr * 1.5).toFixed(6);
-  const t2 = +(mid + sign * atr * 3).toFixed(6);
-  const sl = +(mid - sign * atr * 1.5).toFixed(6);
-  const risk = Math.abs(mid - sl);
-  const reward = Math.abs(t1 - mid);
-  return {
-    direction,
-    entryLow: Math.min(eLow, eHigh),
-    entryHigh: Math.max(eLow, eHigh),
-    tp1: t1,
-    tp2: t2,
-    stopLoss: sl,
-    riskRewardRatio: risk > 0 ? +(reward / risk).toFixed(1) : null,
-  };
 }
 
 // ─── Simple TTL cache for Binance calls ─────────────────

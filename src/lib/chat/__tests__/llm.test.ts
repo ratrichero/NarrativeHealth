@@ -4,6 +4,7 @@
 // success reporting into the LLM monitor.
 
 import { chatCompletion, chatCompletionStream } from "../llm";
+import { llmHedgeMs } from "@/lib/llm/config";
 import { _resetGoogleKeyPool } from "@/lib/llm/google-key-pool";
 import { llmOutcomeSnapshot, _resetLlmMonitor } from "@/lib/llm/monitor";
 import { isolateLlmEnv, type LlmTestEnv } from "@/lib/llm/__tests__/llm-env";
@@ -280,5 +281,68 @@ describe("chat provider chain", () => {
     const [outcome] = llmOutcomeSnapshot().outcomes;
     expect(outcome).toMatchObject({ provider: "google", ok: true, status: 200 });
     expect(outcome.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  // LLM-HEDGE-01: hedging is opt-in; an unset env must not double-spend.
+  it("is disabled unless LLM_HEDGE_MS is set", () => {
+    const saved = process.env.LLM_HEDGE_MS;
+    delete process.env.LLM_HEDGE_MS;
+    expect(llmHedgeMs()).toBe(0);
+    process.env.LLM_HEDGE_MS = "0";
+    expect(llmHedgeMs()).toBe(0);
+    process.env.LLM_HEDGE_MS = "1200";
+    expect(llmHedgeMs()).toBe(1200);
+    if (saved === undefined) delete process.env.LLM_HEDGE_MS;
+    else process.env.LLM_HEDGE_MS = saved;
+  });
+
+  // LLM-HEDGE-01: a silent tier must not own the user's latency.
+  const withPrimaryTier = () => {
+    process.env.OPENAI_API_KEY = "primary-hedge-key-1234";
+    process.env.MODEL_NAME = "primary-hedge-model";
+    process.env.OPENAI_BASE_URL = "https://primary.test/v1";
+  };
+
+  it("starts the next tier when the first stays silent, then uses it", async () => {
+    withPrimaryTier();
+    process.env.LLM_HEDGE_MS = "120";
+    const fetchMock = jest.fn().mockImplementation((url: string) => {
+      if (String(url).includes("primary.test")) {
+        return Promise.resolve(
+          new Response(sseStream(['data: {"choices":[{"delta":{"content":"from primary"}}]}\n\n']))
+        );
+      }
+      return new Promise<Response>(() => undefined); // google never answers
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const deltas: string[] = [];
+    const result = await chatCompletionStream(
+      { messages: MESSAGES },
+      { onContentDelta: (text) => deltas.push(text), onToolCallDelta: () => undefined }
+    );
+
+    expect(result).toEqual({ provider: "primary" });
+    expect(deltas).toEqual(["from primary"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    delete process.env.LLM_HEDGE_MS;
+  }, 10_000);
+
+  it("does not hedge when the first tier answers immediately", async () => {
+    withPrimaryTier();
+    process.env.LLM_HEDGE_MS = "500";
+    const fetchMock = jest.fn().mockResolvedValue(
+      new Response(sseStream(['data: {"choices":[{"delta":{"content":"fast"}}]}\n\n']))
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const result = await chatCompletionStream(
+      { messages: MESSAGES },
+      { onContentDelta: () => undefined, onToolCallDelta: () => undefined }
+    );
+
+    expect(result).toEqual({ provider: "google" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    delete process.env.LLM_HEDGE_MS;
   });
 });

@@ -75,7 +75,8 @@ export async function fetchBinanceSpotKlines(
 export async function fetchBinanceFuturesKlines(
   symbol: string,
   limit: number = 200,
-  interval: BinanceInterval = "1d"
+  interval: BinanceInterval = "1d",
+  startTime?: number
 ): Promise<KlineData[]> {
   try {
     const response = await axios.get(`${BINANCE_FUTURES_API}/klines`, {
@@ -83,6 +84,7 @@ export async function fetchBinanceFuturesKlines(
         symbol,
         interval,
         limit,
+        ...(startTime ? { startTime } : {}),
       },
       timeout: 10000,
     });
@@ -255,6 +257,27 @@ export async function fetchBinanceTopLongShortRatio(
   } catch (error) {
     console.error(`Binance top trader long/short ratio error for ${symbol}:`, error);
     return { longAccount: null, shortAccount: null, longShortRatio: null };
+  }
+}
+
+/**
+ * Order book futures (depth) cho slippage/spread.
+ */
+export async function fetchBinanceFuturesDepth(
+  symbol: string,
+  limit: number = 50
+): Promise<{ bids: [string, string][]; asks: [string, string][] } | null> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_API}/depth`, {
+      params: { symbol, limit },
+      timeout: 10_000,
+    });
+    if (!Array.isArray(response.data?.bids) || !Array.isArray(response.data?.asks)) return null;
+    return { bids: response.data.bids, asks: response.data.asks };
+  } catch (error: any) {
+    const status = error.response?.status;
+    console.error(`Binance futures depth error for ${symbol}: [HTTP ${status || "N/A"}] ${error.message}`);
+    return null;
   }
 }
 
