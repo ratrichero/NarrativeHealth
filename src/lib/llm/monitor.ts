@@ -19,7 +19,7 @@ export interface LlmCallOutcome {
   /** Model id as configured for that tier. */
   model: string;
   /** Which consumer made the call: square | chat | movers | canary (LLM-CANARY-01). */
-  source: "square" | "chat" | "movers" | "canary";
+  source: "square" | "chat" | "movers" | "catalyst" | "canary";
   ok: boolean;
   /**
    * Alive but slow (a single canary timeout): counted as reachable, never as a

@@ -2,7 +2,7 @@
 
 > **NarrativeHealth** — hệ thống đo lường sức khoẻ của Crypto Narratives + Coins, phát hiện tín hiệu/xu hướng sớm và chuyển dữ liệu tổng hợp thành intelligence, decision support và nội dung phân tích có giá trị.
 >
-> **Current status:** P4-P5 Product Baseline **CLOSED / FROZEN** · Binance Square Monetization **LIVE / OPERATIONAL** · Square Analytics **NEXT UPGRADE** · P6 **SPECIFIED / NOT STARTED**.
+> **Current status:** P4-P5 Product Baseline **CLOSED / FROZEN** · Binance Square Monetization **LIVE / OPERATIONAL** · Square Analytics **UI SHIPPED / VERIFICATION PENDING** · Market Radar **ACTIVE (RADAR-01 → RADAR-05)** · P6 **P6-01 FROZEN / P6-02 NOT STARTED**.
 
 ![Next.js](https://img.shields.io/badge/Next.js-16-black)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
@@ -61,6 +61,8 @@ Future: P6 — stronger trend & early-warning intelligence
 - P4 decision support
 - P5 advisory decision layer
 - Binance Square automated analysis publishing
+- Market Radar — Binance Futures 24h movers, bias scoring, cluster/rotation, signal ledger
+- Track record & snapshots (`/track-record`, `/snapshots`)
 
 The system works around periodic data refreshes and opportunity detection rather than continuous trade execution.
 
@@ -298,15 +300,16 @@ Reference: `docs/Binance_Square_Upgrade/SQ-LIVE-04_FINAL_AUDIT.md`.
 
 ---
 
-# 📊 Square Analytics — Next Upgrade
+# 📊 Square Analytics — Shipped UI (verification pending)
 
-A dedicated **Square Analytics / Monetization UI** is now planned as a peer-level menu item:
+A dedicated **Square Analytics / Monetization UI** is shipped as a peer-level menu item
+(analytics verification SQ-DEPLOY-06 is still waiting for a natural eligible window):
 
 ```text
 Dashboard | WatchList | Binance Square | Square Analytics | Admin
 ```
 
-The analytics upgrade will measure only data that can be reliably sourced and attributed.
+The analytics layer measures only data that can be reliably sourced and attributed.
 
 Target questions include:
 
@@ -325,6 +328,61 @@ Target questions include:
 Master specification:
 
 `docs/Binance_Square_Upgrade/SQ_ANALYTICS_MASTER_SPECIFICATION.md`
+
+---
+
+# 📡 Market Radar — Active Workstream
+
+`/radar` quét toàn bộ Binance Futures USDT perpetual (kể cả coin ngoài narrative), sàng lọc
+thanh khoản và chấm **bias** thay vì một “buy score”: `continuation`, `flush-bounce`,
+`breakout`, `accumulation`, `exhaustion`, `breakdown`, `neutral`. Mỗi row có score, entry
+quality, impulse, regime, relative strength so BTC và cụm/rotation.
+
+```text
+Binance Futures ticker 24h
+      ↓ lọc universe (USDT perp, volume ≥ RADAR_MIN_VOLUME_USD, listing ≥ 21d)
+Top gainer / loser / unusual  →  enrich (klines 1h/4h/1d, funding, OI, spot, depth)
+      ↓
+Bias + score + entry quality  →  /radar
+      ↓
+Signal Ledger  →  forward return 1h/4h/24h/3d/7d, MFE/MAE, TP/SL, vs BTC
+      ↓
+Cluster/rotation  →  correlation return 1h ≥ 0.75, label theo narrative
+```
+
+- **API:** `GET /api/market/movers`, `GET /api/market/movers/[symbol]`,
+  `GET /api/market/movers/[symbol]/brief`, `GET /api/market/radar/track-record`.
+- **Signal Ledger:** chọn mẫu theo tuổi horizon (tối đa 200 tín hiệu/lần đọc) để 3d/7d
+  không bị tín hiệu mới đẩy ra ngoài mà vẫn chặn weight/latency. Tín hiệu được gắn nhãn
+  `hasCatalyst`/`catalystTypes`/`catalystSources` + `clusterId` khi ghi (RADAR-06-LEDGER) và có
+  báo cáo so sánh forward return **có/không catalyst** theo horizon — chỉ phân tích, không vào scoring.
+- **Cluster/rotation:** hiện là **nhãn** (leader/laggard), chưa phải tín hiệu rotation độc lập.
+  Các khoảng trống đã audit: `docs/RADAR-05_CLUSTER_ROTATION_AUDIT.md`.
+- **Catalyst layer (V1 implemented, live verify pending):** giải thích “vì sao volume bất thường”
+  bằng facts có link nguồn — Binance announcement (listing/delisting/futures launch), RSS news,
+  unlock đọc từ `event_risks`. LLM chỉ tóm tắt facts, validator chặn suy đoán; không có catalyst
+  thì hiển thị “chưa tìm thấy”. Sync tự động: FastAPI APScheduler → `POST /api/catalyst/sync`
+  (announcement 5 phút, RSS 15 phút, unlock 60 phút); chạy tay `POST /api/admin/catalyst/sync`.
+  Panel trong detail `/radar`. Trạng thái sync theo từng nguồn (lần chạy cuối, fact đã lưu, lỗi)
+  xem ở **Admin → Analytics → “Catalyst sync”** — không cần query `app_settings` bằng SQL.
+  **Catalyst coverage** (cùng tab): % outlier có ≥1 catalyst, tách nguồn announcement/RSS/unlock và
+  loại outlier, kèm danh sách outlier không catalyst để đọc tay — đọc từ ledger +
+  `catalyst_events`, không gọi mạng. Feed chết âm thầm (quá hạn nhịp scope hoặc 2 lượt liền 0 fact)
+  hiện **STALE** trong card và tự gửi cảnh báo qua kênh alert sẵn có (`ALERT_WEBHOOK_URL`).
+  Outlier `catalystTriggered` đạt ngưỡng alert RADAR-03 gửi kèm 1–3 fact có link, dedupe theo
+  `symbol + externalId` nên announcement sync 5 phút không spam.
+  Spec + runbook: `docs/RADAR-06_CATALYST_LAYER_SPEC.md` (§7.1–7.4).
+- **Catalyst API:** `GET /api/market/movers/[symbol]/catalysts` (facts + summary, cache 30 phút).
+- **Verify live:** `docs/RADAR-04_LIVE_VERIFICATION.md` (sandbox bị Binance geo-block 451 nên
+  preview dùng `RADAR_DEMO=1`; production không bật demo).
+- **Env chính:** `RADAR_DEMO`, `RADAR_MIN_VOLUME_USD`, `RADAR_ENRICH_PER_SIDE`,
+  `RADAR_UNUSUAL_CANDIDATES`, `RADAR_CLUSTER_EXTRA`, `RADAR_LLM_ENABLED`,
+  `RADAR_ALERT_*`, `RADAR_*_PER_IP_*`, `RADAR_BRIEF_DAILY_LIMIT`,
+  `CATALYST_TRIGGER_VOLUME_Z`, `CATALYST_TRIGGER_VOLUME_RATIO`, `CATALYST_TRIGGER_ABS_CHANGE_PCT`,
+  `CATALYST_LLM_ENABLED`, `CATALYST_LLM_DAILY_LIMIT`, `CATALYST_PER_IP_PER_MIN`,
+  `SCHEDULER_CATALYST_*`.
+
+Radar là công cụ đo lường/quan sát: bias và setup chỉ là phân tích tham khảo, không phải lệnh.
 
 ---
 
@@ -349,7 +407,10 @@ Planned capabilities include:
 - Aggregated intelligence
 - User-facing warnings and explanations
 
-The P6 Master Specification is defined, but **implementation has not started**.
+Trạng thái thực tế: **P6-01 (observation contract, source registry, freshness, quality,
+production ingestion wiring) đã FROZEN** và lớp hiển thị P6 đã mount ở Coin/Narrative detail;
+**P6-02 Narrative Health Engine chưa bắt đầu**. Xem `docs/P6_Upgrade/P6_CURRENT_STATE_ASSESSMENT.md`
+và `P6_NEXT_EXECUTION_PLAN.md` (hai tài liệu này có mốc 2026-08-26, trước các mục P6-UI-*/SEMANTIC-*).
 
 P4-P5 invariants are protected through the P4-P5 handoff contract.
 
@@ -381,6 +442,8 @@ Current primary application architecture:
              │                         │
        Core market data         P5 + Square artifacts
 ```
+
+Screens in addition to the diagram: `/radar` (Market Radar), `/track-record`, `/square-analytics`, `/snapshots`, plus auth pages (`/login`, `/register`).
 
 FastAPI remains available as legacy/backup infrastructure where applicable. Next.js is the current primary application/API path.
 
@@ -541,6 +604,15 @@ Latest operational baseline:
 
 Phase-specific documents under `docs/Binance_Square_Upgrade/` are authoritative for exact historical verification counts.
 
+### Market Radar
+
+- `src/lib/market` suite: **17 suites / 111 tests PASS** (ledger, scoring, cluster, liquidity, rate limit, alert, cost/window regressions, catalyst trigger sau khi gán cụm, detail gán cụm, so sánh catalyst trong ledger, alert catalyst-driven, clusterId ổn định)
+- Typecheck: clean
+- Signal Ledger 3d/7d: covered by regression test (window + chọn mẫu theo tuổi horizon)
+- Live verification: **pending** — sandbox bị Binance Futures chặn (451); runbook ở `docs/RADAR-04_LIVE_VERIFICATION.md`
+- Cluster/rotation: audit xong, **chưa sửa** — `docs/RADAR-05_CLUSTER_ROTATION_AUDIT.md`
+- Catalyst: **9 suite / 56 test** (parser Binance/RSS, matching, validator, TTL, scope sync theo nhịp scheduler, cap LLM/ngày, trạng thái nguồn) — live verify pending
+
 ---
 
 # 📚 Documentation Map
@@ -566,6 +638,10 @@ docs/
     └── SQ_ANALYTICS_MASTER_SPECIFICATION.md
 ```
 
+Market Radar docs: `docs/RADAR-04_LIVE_VERIFICATION.md` (runbook verify live + chi phí đo),
+`docs/RADAR-05_CLUSTER_ROTATION_AUDIT.md` (audit cluster/rotation),
+`docs/RADAR-06_CATALYST_LAYER_SPEC.md` (spec catalyst layer).
+
 ### Upgrade working principle
 
 1. Master Specification defines scope and invariants.
@@ -586,8 +662,11 @@ docs/
 | P4 Decision Support | **CLOSED / FROZEN** |
 | P5 Advisory Decision Layer | **CLOSED / FROZEN** |
 | Binance Square Monetization | **LIVE / OPERATIONAL** |
-| Square Analytics UI | **NEXT UPGRADE — AUDIT / PLANNING** |
-| P6 Narrative Early Warning | **SPECIFIED — NOT STARTED** |
+| Square Analytics UI | **UI SHIPPED — SQ-DEPLOY-06 VERIFICATION PENDING** |
+| Market Radar (movers + signal ledger) | **ACTIVE — DEMO-VERIFIED, LIVE VERIFY PENDING** |
+| Market Radar cluster/rotation | **PARTIAL — AUDITED (RADAR-05)** |
+| Radar Catalyst layer (why abnormal volume) | **V1 IMPLEMENTED — LIVE VERIFY PENDING** |
+| P6 Narrative Early Warning | **P6-01 FROZEN · P6-02 NOT STARTED** |
 | Auto Trading / Bot Trading | **OUT OF SCOPE** |
 
 ---

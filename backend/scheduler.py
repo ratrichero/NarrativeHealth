@@ -130,6 +130,54 @@ class DataRefreshScheduler:
         else:
             print("P3 scheduler disabled in config")
 
+        # RADAR-06-SCHED: Catalyst layer sync (announcement / RSS / unlock).
+        # Không có job này thì panel “Vì sao volume bất thường?” luôn trống ở
+        # production — bảng catalyst_events chỉ được ghi bởi endpoint sync.
+        # Tách 3 job thay vì 1 job “all” để mỗi nguồn giữ đúng nhịp: Binance
+        # announcement cần 5 phút, RSS 15 phút, unlock (chỉ đọc event_risks)
+        # 60 phút. Mỗi job độc lập: một job lỗi không chặn job còn lại.
+        if settings.scheduler_catalyst_enabled:
+            catalyst_jobs = (
+                (
+                    'catalyst_announcements',
+                    'announcements',
+                    settings.scheduler_catalyst_announcements_minutes,
+                    'Catalyst announcements (Binance CMS)',
+                ),
+                (
+                    'catalyst_news',
+                    'news',
+                    settings.scheduler_catalyst_news_minutes,
+                    'Catalyst news (RSS)',
+                ),
+                (
+                    'catalyst_unlocks',
+                    'unlocks',
+                    settings.scheduler_catalyst_unlocks_minutes,
+                    'Catalyst unlocks (event_risks read-only)',
+                ),
+            )
+            for job_id, scope, minutes, name in catalyst_jobs:
+                if minutes <= 0:
+                    print(f"Catalyst job '{job_id}' disabled (interval={minutes})")
+                    continue
+                self.scheduler.add_job(
+                    self._run_catalyst_sync,
+                    trigger='interval',
+                    minutes=minutes,
+                    id=job_id,
+                    name=f'{name} every {minutes}m',
+                    args=[scope],
+                    # Một lượt sync không được chồng lên lượt trước (upsert vốn
+                    # idempotent, nhưng overlap chỉ tạo tải vô ích lên Binance).
+                    max_instances=1,
+                    coalesce=True,
+                    replace_existing=True,
+                )
+                print(f"Catalyst scheduler started - '{scope}' every {minutes} minutes")
+        else:
+            print("Catalyst scheduler disabled in config")
+
         self.scheduler.start()
         jobs = self.scheduler.get_jobs()
         logger.info(
@@ -161,6 +209,11 @@ class DataRefreshScheduler:
                 self.scheduler.remove_job('movers_cron')
             except:
                 pass
+            for job_id in ('catalyst_announcements', 'catalyst_news', 'catalyst_unlocks'):
+                try:
+                    self.scheduler.remove_job(job_id)
+                except Exception:
+                    pass
             self.scheduler.shutdown()
             self.scheduler = None
             print("Scheduler stopped")
@@ -345,6 +398,65 @@ class DataRefreshScheduler:
             logger.error("Movers pipeline failed: %s", error_message)
         else:
             logger.info("Movers pipeline completed in %ds: %s", duration, result_message)
+
+    async def _run_catalyst_sync(self, scope: str):
+        """Run one catalyst sync scope via POST /api/catalyst/sync.
+
+        Scope tách theo nhịp nguồn (announcements/news/unlocks). Endpoint trả
+        200 kèm summary từng nguồn; nguồn lỗi không làm hỏng cả lượt — chỉ
+        failedSources > 0 và log warning để biết nguồn nào đang chết.
+        """
+        started_at = datetime.now(self.vietnam_tz)
+        timeout = max(30, settings.scheduler_catalyst_timeout)
+        error_message = None
+        result_message = None
+
+        try:
+            async with httpx.AsyncClient() as client:
+                headers = {}
+                token = (settings.scheduler_catalyst_token or "").strip()
+                if token:
+                    headers["X-Scheduler-Token"] = token
+                response = await client.post(
+                    "http://localhost:3000/api/catalyst/sync",
+                    json={"scope": scope},
+                    headers=headers,
+                    timeout=timeout,
+                )
+                if response.status_code == 200:
+                    data = response.json().get('data', {}) or {}
+                    totals = data.get('totals', {}) or {}
+                    sources = data.get('sources', []) or []
+                    failed = [
+                        s.get('name') for s in sources
+                        if isinstance(s, dict) and s.get('error')
+                    ]
+                    result_message = (
+                        f"scope={data.get('scope', scope)} sources={len(sources)} "
+                        f"fetched={totals.get('fetched')} stored={totals.get('stored')} "
+                        f"purged={data.get('purged')}"
+                        + (f" failed={failed}" if failed else "")
+                    )
+                    if failed:
+                        logger.warning("Catalyst sync %s: nguồn lỗi %s", scope, failed)
+                    else:
+                        logger.info("Catalyst sync completed in %ds: %s",
+                                    int((datetime.now(self.vietnam_tz) - started_at).total_seconds()),
+                                    result_message)
+                else:
+                    error_message = (
+                        f"Catalyst API returned status {response.status_code}: {response.text}"
+                    )
+        except ConnectError as e:
+            error_message = f"Catalyst API connection failed: {e}"
+        except TimeoutException as e:
+            error_message = f"Catalyst API timeout: {e}"
+        except Exception as e:
+            error_message = f"Catalyst API error: {e}"
+
+        if error_message:
+            logger.error("Catalyst sync (%s) failed: %s", scope, error_message)
+            print(f"Catalyst sync ({scope}) failed: {error_message}")
 
     async def _run_p3_execution(self):
         """Run the P3 historical execution loop via the Next.js API."""

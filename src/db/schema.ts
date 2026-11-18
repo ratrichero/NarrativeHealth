@@ -464,6 +464,33 @@ export const eventRisks = pgTable("event_risks", {
   dateIdx: index("event_risks_date_idx").on(table.eventDate),
 }));
 
+// ==================== CATALYST_EVENTS (RADAR-06) ====================
+// Lớp giải thích “vì sao volume bất thường”: announcement Binance, RSS news, unlock.
+// Cố ý KHÔNG tái dùng event_risks vì bảng đó là đầu vào P4 assembler (frozen).
+// Không FK coins: radar phủ cả coin ngoài narrative, chỉ lưu ticker.
+export const catalystEvents = pgTable("catalyst_events", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  type: varchar("type", { length: 24 }).notNull(),
+  source: varchar("source", { length: 32 }).notNull(),
+  externalId: varchar("external_id", { length: 200 }).notNull(),
+  title: varchar("title", { length: 300 }).notNull(),
+  sourceUrl: text("source_url").notNull(),
+  symbols: jsonb("symbols").notNull().$type<string[]>(),
+  publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
+  eventDate: date("event_date"),
+  facts: jsonb("facts"),
+  raw: jsonb("raw"),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (table) => ({
+  sourceExternalUnique: unique("catalyst_events_source_external_unique").on(
+    table.source,
+    table.externalId
+  ),
+  publishedIdx: index("catalyst_events_published_idx").on(table.publishedAt),
+  typeIdx: index("catalyst_events_type_idx").on(table.type),
+}));
+
 // ==================== COIN_CORRELATIONS ====================
 export const coinCorrelations = pgTable("coin_correlations", {
   id: serial("id").primaryKey(),

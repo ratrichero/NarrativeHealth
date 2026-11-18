@@ -1,9 +1,11 @@
 import type { KlineData } from "@/lib/collectors/binance";
 import {
   aggregateHorizon,
+  compareCatalystOutcomes,
   evaluateSignal,
   planCohorts,
   selectCohort,
+  selectSignalsForEvaluation,
   summarizeByBias,
   summarizeByCluster,
   type RadarSignalRecord,
@@ -125,6 +127,26 @@ describe("evaluateSignal", () => {
     expect(h?.slHit).toBe(false);
   });
 
+  it("MFE/MAE theo chiều short: đáy là thuận, đỉnh là ngược", () => {
+    const signal: RadarSignalRecord = {
+      ...baseSignal,
+      bias: "exhaustion",
+      setup: {
+        direction: "BEARISH",
+        entryLow: 99,
+        entryHigh: 101,
+        tp1: 95,
+        tp2: 90,
+        stopLoss: 105,
+      },
+    };
+    const tracked = evaluateSignal(signal, [candle(T0, 100, 108, 94, 96)], btcCandles, T0 + 2 * HOUR);
+    const h = tracked.horizons["1h"];
+    expect(h?.returnPct).toBe(-4);
+    expect(h?.mfePct).toBe(6); // giảm 6% là biên độ thuận của short
+    expect(h?.maePct).toBe(-8); // tăng 8% là biên độ ngược của short
+  });
+
   it("neutral được lưu nhưng không có win", () => {
     const tracked = evaluateSignal(
       { ...baseSignal, bias: "neutral", setup: null, actionable: false },
@@ -177,6 +199,109 @@ describe("summarizeByCluster", () => {
   it("bỏ qua tín hiệu không thuộc cụm", () => {
     const tracked = evaluateSignal(baseSignal, coinCandles, btcCandles, T0 + 2 * HOUR);
     expect(summarizeByCluster([tracked])).toEqual([]);
+  });
+});
+
+describe("compareCatalystOutcomes", () => {
+  function tracked(hasCatalyst: boolean | undefined, returnPct: number): TrackedSignal {
+    return {
+      ...baseSignal,
+      hasCatalyst,
+      ageHours: 30,
+      horizons: {
+        "1h": {
+          returnPct,
+          btcReturnPct: 0,
+          relativePct: returnPct,
+          mfePct: Math.max(returnPct, 0) + 1,
+          maePct: Math.min(returnPct, 0) - 1,
+          tp1Hit: null,
+          slHit: null,
+          firstEvent: null,
+          win: returnPct > 0,
+          pending: false,
+        },
+      },
+    };
+  }
+
+  it("so sánh forward return có/không catalyst và bỏ qua tín hiệu chưa gắn nhãn", () => {
+    const comparison = compareCatalystOutcomes([
+      tracked(true, 5),
+      tracked(true, 3),
+      tracked(false, -1),
+      tracked(undefined, 10),
+    ]);
+
+    expect(comparison.withCatalyst).toBe(2);
+    expect(comparison.withoutCatalyst).toBe(1);
+    expect(comparison.labeled).toBe(3);
+    expect(comparison.unlabeled).toBe(1);
+
+    const h1 = comparison.horizons.find((row) => row.horizon === "1h");
+    expect(h1?.withCatalyst.n).toBe(2);
+    expect(h1?.withCatalyst.avgReturnPct).toBe(4);
+    expect(h1?.withCatalyst.hitRate).toBe(100);
+    expect(h1?.withoutCatalyst.n).toBe(1);
+    expect(h1?.withoutCatalyst.avgReturnPct).toBe(-1);
+    expect(h1?.deltaAvgReturnPct).toBe(5);
+    expect(h1?.deltaHitRate).toBe(100);
+  });
+
+  it("một phía chưa có mẫu → n = 0, delta null (không bịa số 0)", () => {
+    const comparison = compareCatalystOutcomes([tracked(true, 5)]);
+    const h1 = comparison.horizons.find((row) => row.horizon === "1h");
+    expect(h1?.withoutCatalyst.n).toBe(0);
+    expect(h1?.withoutCatalyst.avgReturnPct).toBeNull();
+    expect(h1?.deltaAvgReturnPct).toBeNull();
+    expect(h1?.deltaHitRate).toBeNull();
+
+    const h24 = comparison.horizons.find((row) => row.horizon === "24h");
+    expect(h24?.withCatalyst.n).toBe(0);
+    expect(h24?.deltaAvgReturnPct).toBeNull();
+  });
+});
+
+describe("selectSignalsForEvaluation", () => {
+  const at = (ageHours: number) => new Date(T0 - ageHours * HOUR).toISOString();
+  const bucketSignals = (ageHours: number, count: number, prefix: string) =>
+    Array.from({ length: count }, (_, i) => ({ at: at(ageHours + i * 0.1), id: `${prefix}${i}` }));
+
+  it("giữ mẫu ở cả 4 nhóm tuổi thay vì chỉ lấy tín hiệu mới", () => {
+    const selected = selectSignalsForEvaluation(
+      [
+        ...bucketSignals(0.5, 80, "fresh"),
+        ...bucketSignals(30, 70, "d1"),
+        ...bucketSignals(100, 70, "d3"),
+        ...bucketSignals(172, 50, "d7"),
+      ],
+      T0
+    );
+    const ids = selected.map((s) => s.id);
+    expect(ids.filter((id) => id.startsWith("fresh"))).toHaveLength(60);
+    expect(ids.filter((id) => id.startsWith("d1"))).toHaveLength(50);
+    expect(ids.filter((id) => id.startsWith("d3"))).toHaveLength(50);
+    expect(ids.filter((id) => id.startsWith("d7"))).toHaveLength(40);
+    expect(selected).toHaveLength(200);
+    // Vẫn trả về thứ tự mới → cũ cho phần hiển thị `recent`.
+    expect(Date.parse(selected[0].at)).toBeGreaterThan(Date.parse(selected[selected.length - 1].at));
+  });
+
+  it("tín hiệu 7 ngày không bị 200 tín hiệu mới đẩy ra ngoài", () => {
+    const selected = selectSignalsForEvaluation(
+      [...bucketSignals(0.5, 200, "fresh"), ...bucketSignals(170, 5, "old")],
+      T0
+    );
+    expect(selected.filter((s) => s.id.startsWith("old"))).toHaveLength(5);
+    expect(selected.filter((s) => s.id.startsWith("fresh"))).toHaveLength(60);
+  });
+
+  it("bỏ qua tín hiệu có `at` không hợp lệ", () => {
+    const selected = selectSignalsForEvaluation(
+      [{ at: "not-a-date", id: "bad" }, { at: at(1), id: "ok" }],
+      T0
+    );
+    expect(selected.map((s) => s.id)).toEqual(["ok"]);
   });
 });
 

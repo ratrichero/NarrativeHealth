@@ -771,6 +771,396 @@ function LlmMonitorSection() {
   );
 }
 
+// ─── RADAR-06: card "Catalyst sync" (tab Analytics, module OPS) ───
+// Ops thấy ngay nguồn nào chết (announcement/RSS/unlock) mà không phải query
+// app_settings.catalyst.sync bằng SQL. GET /api/admin/catalyst/sync đã hợp các
+// scope (announcements 5m / news 15m / unlocks 60m) và trả lần chạy mới nhất của
+// từng nguồn + số fact đã lưu + lỗi.
+
+interface CatalystSyncSourceRow {
+  name: string;
+  label: string;
+  scope: string;
+  lastRunAt: string | null;
+  fetched: number;
+  stored: number;
+  skipped: number;
+  failing: boolean;
+  error: string | null;
+  // RADAR-06-STALE — quá hạn nhịp scope hoặc 2 lượt liền 0 fact.
+  stale: boolean;
+  staleReasons: Array<"overdue" | "zero_facts">;
+  minutesLate: number | null;
+  minutesSince: number | null;
+  emptyStreak: number;
+}
+
+interface CatalystSyncData {
+  info: {
+    state: "never_synced" | "sources_failed" | "synced";
+    lastSyncAt: string | null;
+    failedSources: string[];
+    checkedSources: string[];
+  };
+  sources: CatalystSyncSourceRow[];
+  staleCount?: number;
+  // Tổng fact còn hạn trong catalyst_events (không phải upsert của lần chạy cuối).
+  live?: {
+    total: number;
+    bySource: Array<{ source: string; label: string; live: number }>;
+    error?: string;
+  };
+}
+
+function CatalystSyncSection() {
+  const { data, isLoading, error } = useQuery<CatalystSyncData>({
+    queryKey: ["admin", "catalyst-sync", "status"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/catalyst/sync");
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as CatalystSyncData;
+    },
+    refetchInterval: 60_000,
+  });
+
+  const fmtTime = (iso: string | null | undefined) =>
+    iso ? new Date(iso).toLocaleString("vi-VN", { hour12: false, timeZone: "Asia/Ho_Chi_Minh" }) : "—";
+
+  const info = data?.info;
+  const rows = data?.sources ?? [];
+  const failing = rows.filter((row) => row.failing);
+  const stale = rows.filter((row) => row.stale);
+
+  const staleDetail = (row: CatalystSyncSourceRow) =>
+    [
+      row.staleReasons.includes("zero_facts") ? `0 fact ${row.emptyStreak} lượt liền` : null,
+      row.staleReasons.includes("overdue")
+        ? row.minutesSince === null
+          ? "chưa có lần chạy nào"
+          : `quá hạn ${row.minutesLate ?? 0} phút`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+  const stateBadge = () => {
+    if (!info) return <Badge variant="neutral">—</Badge>;
+    if (info.state === "never_synced") return <Badge variant="warning">Chưa đồng bộ nguồn</Badge>;
+    if (info.state === "sources_failed") return <Badge variant="danger">Tất cả nguồn lỗi</Badge>;
+    if (failing.length > 0) return <Badge variant="warning">{failing.length} nguồn lỗi</Badge>;
+    if (stale.length > 0) return <Badge variant="danger">{stale.length} nguồn STALE</Badge>;
+    return <Badge variant="success">Nguồn OK</Badge>;
+  };
+
+  return (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Zap className="h-5 w-5 text-violet-400" />
+          <h3 className="text-base font-semibold text-white">Catalyst sync</h3>
+          {stateBadge()}
+          <span title="Tổng fact còn hạn trong catalyst_events (mọi nguồn)">
+            <Badge variant="neutral">
+              Fact còn hạn: {data?.live?.error ? "?" : (data?.live?.total ?? 0)}
+            </Badge>
+          </span>
+        </div>
+        <p className="text-xs text-slate-500">
+          Lần sync mới nhất: {fmtTime(info?.lastSyncAt)} · tự cập nhật mỗi 60s
+        </p>
+      </div>
+
+      {data?.live && data.live.bySource.length > 0 && (
+        <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
+          {data.live.bySource.map((row) => (
+            <span
+              key={row.source}
+              className="rounded border border-slate-700 bg-slate-900/60 px-2 py-0.5"
+              title={`Source ${row.source} trong catalyst_events còn hạn (expires_at > now)`}
+            >
+              {row.label}: <span className="text-slate-200">{row.live}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {data?.live?.error ? (
+        <p className="text-[11px] text-yellow-400">
+          Không đếm được fact còn hạn: {data.live.error}
+        </p>
+      ) : null}
+
+      {isLoading ? (
+        <div className="py-6 text-center">
+          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+        </div>
+      ) : error ? (
+        <p className="text-xs text-red-300">
+          {error instanceof Error ? error.message : "Không đọc được trạng thái catalyst."}
+        </p>
+      ) : rows.length === 0 ? (
+        <div className="text-xs text-slate-400 space-y-1">
+          <p>Chưa có lần sync nào được ghi nhận.</p>
+          <p className="text-slate-500">
+            Kiểm tra job FastAPI (<code className="text-slate-400">catalyst_announcements</code>,
+            <code className="text-slate-400"> catalyst_news</code>,
+            <code className="text-slate-400"> catalyst_unlocks</code>) và
+            <code className="text-slate-400"> SCHEDULER_CATALYST_ENABLED</code>. Chạy tay:
+            POST /api/admin/catalyst/sync.
+          </p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-slate-500 text-left border-b border-slate-700">
+                <th className="py-1.5 pr-3 font-medium">Nguồn</th>
+                <th className="py-1.5 pr-3 font-medium">Scope</th>
+                <th className="py-1.5 pr-3 font-medium">Lần chạy cuối</th>
+                <th className="py-1.5 pr-3 font-medium text-right">Lấy</th>
+                <th
+                  className="py-1.5 pr-3 font-medium text-right"
+                  title="Số fact upsert trong lần chạy gần nhất (gồm cả update dòng đã có), không phải tổng còn hạn"
+                >
+                  Lưu (lần cuối)
+                </th>
+                <th
+                  className="py-1.5 font-medium"
+                  title="STALE = quá hạn nhịp (announcement 5', RSS 15', unlock 60') hoặc 2 lượt liền 0 fact"
+                >
+                  Trạng thái
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.name} className="border-b border-slate-800/60 last:border-0">
+                  <td className="py-1.5 pr-3 text-slate-200">
+                    {row.label}
+                    <span className="ml-1.5 text-[10px] text-slate-600">{row.name}</span>
+                  </td>
+                  <td className="py-1.5 pr-3 text-slate-400">{row.scope}</td>
+                  <td className="py-1.5 pr-3 text-slate-400">{fmtTime(row.lastRunAt)}</td>
+                  <td className="py-1.5 pr-3 text-right text-slate-300">{row.fetched}</td>
+                  <td className="py-1.5 pr-3 text-right text-slate-300">{row.stored}</td>
+                  <td className="py-1.5">
+                    {row.failing ? (
+                      <span className="text-red-300" title={row.error ?? undefined}>
+                        LỖI · {row.error ?? "không rõ"}
+                      </span>
+                    ) : row.stale ? (
+                      <span
+                        className="font-semibold text-red-300"
+                        title="Nguồn không lỗi nhưng không còn cập nhật đủ nhịp — kiểm tra feed/adapter"
+                      >
+                        STALE{staleDetail(row) ? ` · ${staleDetail(row)}` : ""}
+                      </span>
+                    ) : (
+                      <span className="text-green-400">OK</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── RADAR-06-COVERAGE: card "Catalyst coverage" (tab Analytics) ───
+// % outlier radar có ít nhất một catalyst, tách nguồn (announcement/RSS/unlock)
+// và loại outlier, kèm danh sách outlier không catalyst để đọc tay. Chỉ đọc
+// signal ledger + catalyst_events — không gọi mạng.
+
+interface CatalystCoverageGroup {
+  key: string;
+  label: string;
+  total: number;
+  covered: number;
+  coveragePct: number | null;
+  bySource: { announcement: number; rss: number; unlock: number };
+  sourcePct: { announcement: number | null; rss: number | null; unlock: number | null };
+}
+
+interface CatalystCoverageData {
+  generatedAt: string;
+  totalSignals: number;
+  outliers: number;
+  factsAvailable: number;
+  totals: CatalystCoverageGroup;
+  bySide: CatalystCoverageGroup[];
+  gaps: Array<{
+    symbol: string;
+    side: string;
+    bias: string;
+    score: number;
+    at: string;
+    occurrences: number;
+  }>;
+  gapTotal: number;
+  note: string;
+}
+
+function CatalystCoverageSection() {
+  const { data, isLoading, error } = useQuery<CatalystCoverageData>({
+    queryKey: ["admin", "catalyst-coverage"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/catalyst/coverage");
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      return json.data as CatalystCoverageData;
+    },
+    refetchInterval: 5 * 60_000,
+  });
+
+  const fmtTime = (iso: string | null | undefined) =>
+    iso ? new Date(iso).toLocaleString("vi-VN", { hour12: false, timeZone: "Asia/Ho_Chi_Minh" }) : "—";
+
+  const totals = data?.totals;
+  const coverageVariant =
+    totals?.coveragePct === null || totals?.coveragePct === undefined
+      ? "neutral"
+      : totals.coveragePct >= 50
+        ? "success"
+        : totals.coveragePct >= 25
+          ? "warning"
+          : "danger";
+
+  const sourceCell = (count: number, pct: number | null) =>
+    count > 0 ? `${count} (${pct ?? "—"}%)` : "—";
+
+  return (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="h-5 w-5 text-cyan-400" />
+          <h3 className="text-base font-semibold text-white">Catalyst coverage</h3>
+          <Badge variant={coverageVariant}>
+            {totals?.coveragePct ?? "—"}% outlier có catalyst
+          </Badge>
+        </div>
+        <p className="text-xs text-slate-500">
+          {data?.outliers ?? 0} outlier / {data?.totalSignals ?? 0} tín hiệu ·{" "}
+          {data?.factsAvailable ?? 0} fact còn hạn · tự cập nhật mỗi 5 phút
+        </p>
+      </div>
+
+      {isLoading ? (
+        <div className="py-6 text-center">
+          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-cyan-500 mx-auto" />
+        </div>
+      ) : error ? (
+        <p className="text-xs text-red-300">
+          {error instanceof Error ? error.message : "Không đọc được báo cáo độ phủ."}
+        </p>
+      ) : !data || data.outliers === 0 ? (
+        <div className="text-xs text-slate-400 space-y-1">
+          <p>Chưa có outlier nào trong signal ledger.</p>
+          <p className="text-slate-500">
+            Ledger ghi cohort radar mỗi 30 phút khi có tín hiệu; cần ít nhất một cohort 1h đủ tuổi để
+            báo cáo có mẫu.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-slate-500 text-left border-b border-slate-700">
+                  <th className="py-1.5 pr-3 font-medium">Nhóm</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Outlier</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Có catalyst</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">% phủ</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">Announcement</th>
+                  <th className="py-1.5 pr-3 font-medium text-right">RSS</th>
+                  <th className="py-1.5 font-medium text-right">Unlock</th>
+                </tr>
+              </thead>
+              <tbody className="text-slate-300">
+                {[data.totals, ...data.bySide].map((group) => (
+                  <tr key={group.key} className="border-b border-slate-800/60 last:border-0">
+                    <td className={group.key === "all" ? "py-1.5 pr-3 font-medium text-slate-100" : "py-1.5 pr-3"}>
+                      {group.label}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums">{group.total}</td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums">{group.covered}</td>
+                    <td
+                      className={
+                        "py-1.5 pr-3 text-right tabular-nums " +
+                        ((group.coveragePct ?? 0) >= 50
+                          ? "text-green-400"
+                          : (group.coveragePct ?? 0) >= 25
+                            ? "text-yellow-400"
+                            : "text-red-300")
+                      }
+                    >
+                      {group.coveragePct === null ? "—" : `${group.coveragePct}%`}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums text-slate-400">
+                      {sourceCell(group.bySource.announcement, group.sourcePct.announcement)}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums text-slate-400">
+                      {sourceCell(group.bySource.rss, group.sourcePct.rss)}
+                    </td>
+                    <td className="py-1.5 text-right tabular-nums text-slate-400">
+                      {sourceCell(group.bySource.unlock, group.sourcePct.unlock)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-xs font-semibold text-slate-200">
+                Outlier không có catalyst để đọc tay
+              </h4>
+              <span className="text-[11px] text-slate-500">
+                {data.gapTotal} symbol · hiện {data.gaps.length}
+              </span>
+            </div>
+            {data.gaps.length === 0 ? (
+              <p className="text-xs text-green-400">Mọi outlier trong cửa sổ ledger đều có ít nhất một catalyst.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-slate-500 text-left border-b border-slate-700">
+                      <th className="py-1.5 pr-3 font-medium">Coin</th>
+                      <th className="py-1.5 pr-3 font-medium">Loại</th>
+                      <th className="py-1.5 pr-3 font-medium">Bias</th>
+                      <th className="py-1.5 pr-3 font-medium text-right">Score</th>
+                      <th className="py-1.5 pr-3 font-medium">Lần cuối</th>
+                      <th className="py-1.5 font-medium text-right">Số lần</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-300">
+                    {data.gaps.map((gap) => (
+                      <tr key={gap.symbol} className="border-b border-slate-800/60 last:border-0">
+                        <td className="py-1.5 pr-3 font-mono text-slate-200">${gap.symbol}</td>
+                        <td className="py-1.5 pr-3 text-slate-400">{gap.side}</td>
+                        <td className="py-1.5 pr-3 text-slate-400">{gap.bias}</td>
+                        <td className="py-1.5 pr-3 text-right tabular-nums">{gap.score}</td>
+                        <td className="py-1.5 pr-3 text-slate-400">{fmtTime(gap.at)}</td>
+                        <td className="py-1.5 text-right tabular-nums text-slate-400">{gap.occurrences}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <p className="text-[11px] leading-relaxed text-slate-500">{data.note}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── SQ-MOVERS Phase 4: card "Top Movers Pipeline" (tab Analytics, module OPS) ───
 // Status lần chạy cuối đọc từ square_pipeline_executions (trigger MOVERS_CRON /
 // MOVERS_MANUAL — do movers pipeline ghi riêng, không lẫn với luồng setup).
@@ -4067,6 +4457,8 @@ export default function AdminPage() {
           {activeTab === "analytics" && (
             <div className="space-y-6">
               <MoversPipelineSection />
+              <CatalystSyncSection />
+              <CatalystCoverageSection />
               <div>
                 <h2 className="text-lg font-semibold text-white mb-4">Rule Effectiveness</h2>
                 {ruleEffectivenessLoading ? (

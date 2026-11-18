@@ -68,6 +68,29 @@ interface UsableClusterInput extends ClusterInput {
   residuals: number[];
 }
 
+/** FNV-1a 32-bit — hash thuần JS, ổn định giữa các lần chạy và giữa client/server. */
+function clusterHash(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36).padStart(7, "0");
+}
+
+/** Đoạn id đọc được từ top narrative (bỏ dấu tiếng Việt); rỗng → "mixed". */
+function clusterSlug(value: string): string {
+  const slug = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/gi, "d")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 16);
+  return slug || "mixed";
+}
+
 /**
  * Bỏ phần return giải thích bởi BTC khỏi từng coin. Correlation của residual
  * là partial correlation kiểm soát beta BTC, thay vì correlation thô.
@@ -100,6 +123,12 @@ function residualReturns(returns: number[], btcReturns: number[]): number[] {
  * Một cạnh A~B chỉ được gộp nếu mọi cặp giữa hai group đều đạt threshold,
  * nên chuỗi A~B, B~C không thể kéo A và C vào cùng cụm khi A~C yếu.
  * Chỉ nhóm size >= 2; singleton trả clusterId null.
+ *
+ * clusterId ổn định (RADAR-05 E1): hash của **tập member đã sort** + slug của
+ * top narrative, không phải thứ tự duyệt `groups`. Cùng một tập member ở hai
+ * lần quét (hoặc đảo thứ tự input) cho cùng id — điều kiện để so sánh cụm giữa
+ * các lần và để signal ledger lưu clusterId. Id chỉ đổi khi member/narrative
+ * đổi, hoặc một lần khi deploy bản này (id cũ `cluster-<số>`).
  */
 export function computeClusters(
   items: ClusterInput[],
@@ -196,10 +225,8 @@ export function computeClusters(
   const result = new Map<string, ClusterInfo | null>();
   items.forEach((item) => result.set(item.symbol, null));
 
-  let labelIndex = 0;
   for (const group of groups.values()) {
     if (group.length < 2) continue;
-    labelIndex += 1;
     const counts = new Map<string, number>();
     for (const item of group) {
       for (const narrative of item.narratives) {
@@ -207,9 +234,14 @@ export function computeClusters(
       }
     }
     const topNarrative = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
-    const label = topNarrative && topNarrative[1] >= 2 ? topNarrative[0] : `Cụm ${labelIndex}`;
+    const dominant = topNarrative && topNarrative[1] >= 2 ? topNarrative[0] : null;
+
+    // Thứ tự input/union-find không được ảnh hưởng tới id hay label.
+    const members = [...group].map((item) => item.symbol.toUpperCase()).sort();
+    const hash = clusterHash(members.join("|"));
+    const clusterId = `cluster-${clusterSlug(dominant ?? "mixed")}-${hash}`;
+    const label = dominant ?? `Cụm ${hash.slice(0, 6)}`;
     const leader = [...group].sort((a, b) => b.composite - a.composite)[0];
-    const clusterId = `cluster-${labelIndex}`;
     const avgChangePct =
       group.reduce((sum, item) => sum + item.changePct, 0) / Math.max(1, group.length);
     const direction = avgChangePct >= 0 ? 1 : -1;

@@ -53,6 +53,14 @@ export interface RadarSignalRecord {
   clusterLaggard?: boolean;
   /** Đủ mạnh để coi là tín hiệu hành động tại thời điểm ghi. */
   actionable: boolean;
+  /**
+   * RADAR-06-LEDGER: nhãn catalyst tại thời điểm ghi — CHỈ để phân tích,
+   * không tham gia score/bias/entryQuality và không đổi hành vi P4/P5.
+   * `undefined` = chưa gắn nhãn (tín hiệu cũ hoặc lúc ghi chưa có dữ liệu catalyst).
+   */
+  hasCatalyst?: boolean;
+  catalystTypes?: string[];
+  catalystSources?: string[];
 }
 
 export interface HorizonResult {
@@ -103,9 +111,32 @@ export interface ClusterPerformanceSummary {
   horizons: HorizonSummary[];
 }
 
+export interface CatalystHorizonComparison {
+  horizon: HorizonId;
+  withCatalyst: HorizonSummary;
+  withoutCatalyst: HorizonSummary;
+  /** avgReturnPct(có) − avgReturnPct(không); null khi một phía chưa có mẫu. */
+  deltaAvgReturnPct: number | null;
+  /** hitRate(có) − hitRate(không), đơn vị điểm phần trăm. */
+  deltaHitRate: number | null;
+}
+
+export interface CatalystComparison {
+  horizons: CatalystHorizonComparison[];
+  /** Tín hiệu có nhãn hasCatalyst (ghi từ RADAR-06-LEDGER trở đi). */
+  labeled: number;
+  withCatalyst: number;
+  withoutCatalyst: number;
+  /** Tín hiệu cũ chưa có nhãn — không được tính vào phía nào. */
+  unlabeled: number;
+  note: string;
+}
+
 export interface TrackRecordResult {
   summaries: BiasSummary[];
   clusterSummaries?: ClusterPerformanceSummary[];
+  /** RADAR-06-LEDGER: so sánh forward return của outlier có/không catalyst. */
+  catalyst?: CatalystComparison;
   recent: TrackedSignal[];
   total: number;
   actionable: number;
@@ -189,8 +220,17 @@ function evaluateHorizon(
     maxHigh = Math.max(maxHigh, Number(candle.high));
     minLow = Math.min(minLow, Number(candle.low));
   }
-  const mfePct = ((maxHigh - signal.price) / signal.price) * 100;
-  const maePct = ((minLow - signal.price) / signal.price) * 100;
+  // MFE/MAE phải theo chiều của bias: long coi đỉnh là thuận, short coi đáy là thuận.
+  // Giữ quy ước dấu của UI: MFE dương khi đi đúng chiều, MAE âm khi đi ngược chiều.
+  const bearishBias = BEARISH.includes(signal.bias);
+  const favorableMove = bearishBias
+    ? (signal.price - minLow) / signal.price
+    : (maxHigh - signal.price) / signal.price;
+  const adverseMove = bearishBias
+    ? (signal.price - maxHigh) / signal.price
+    : (minLow - signal.price) / signal.price;
+  const mfePct = favorableMove * 100;
+  const maePct = adverseMove * 100;
 
   let tp1Hit: boolean | null = null;
   let slHit: boolean | null = null;
@@ -359,6 +399,92 @@ export function summarizeByCluster(rows: TrackedSignal[]): ClusterPerformanceSum
     });
 }
 
+export const CATALYST_COMPARISON_NOTE =
+  "Chỉ tín hiệu có nhãn catalyst (ghi từ RADAR-06-LEDGER trở đi) mới được so sánh; tín hiệu cũ không có nhãn bị loại khỏi cả hai phía. " +
+  "Đây là thống kê mô tả trên cohort radar, không phải backtest đủ mẫu và không tham gia scoring.";
+
+/**
+ * So sánh forward return của tín hiệu có catalyst vs không, theo từng horizon.
+ * Neutral vẫn được tính (cùng quy ước với summarizeByBias: neutral không có win
+ * nên chỉ đóng góp return/MFE/MAE, không đóng góp hit rate).
+ */
+export function compareCatalystOutcomes(rows: TrackedSignal[]): CatalystComparison {
+  const labeled = rows.filter((row) => typeof row.hasCatalyst === "boolean");
+  const withCatalyst = labeled.filter((row) => row.hasCatalyst === true);
+  const withoutCatalyst = labeled.filter((row) => row.hasCatalyst === false);
+
+  const horizons = HORIZONS.map<CatalystHorizonComparison>((horizon) => {
+    const yes = aggregateHorizon(withCatalyst, horizon.id);
+    const no = aggregateHorizon(withoutCatalyst, horizon.id);
+    return {
+      horizon: horizon.id,
+      withCatalyst: yes,
+      withoutCatalyst: no,
+      deltaAvgReturnPct:
+        yes.avgReturnPct === null || no.avgReturnPct === null ? null : round(yes.avgReturnPct - no.avgReturnPct),
+      deltaHitRate:
+        yes.hitRate === null || no.hitRate === null ? null : yes.hitRate - no.hitRate,
+    };
+  });
+
+  return {
+    horizons,
+    labeled: labeled.length,
+    withCatalyst: withCatalyst.length,
+    withoutCatalyst: withoutCatalyst.length,
+    unlabeled: rows.length - labeled.length,
+    note: CATALYST_COMPARISON_NOTE,
+  };
+}
+
+export interface EvaluationBucket {
+  id: "fresh" | "1d" | "3d" | "7d";
+  /** Tuổi tối thiểu (giờ, tính cả). */
+  minAgeHours: number;
+  /** Tuổi tối đa (giờ, không tính); null = không giới hạn. */
+  maxAgeHours: number | null;
+  /** Số tín hiệu tối đa lấy từ bucket này. */
+  max: number;
+}
+
+/**
+ * RADAR-04: chọn tín hiệu để đo theo tuổi horizon thay vì lấy hết cohort.
+ * Mỗi bucket phục vụ một nhóm horizon (fresh → 1h/4h, 1d → 24h, 3d → 3d, 7d → 7d),
+ * nên horizon dài không bị tín hiệu mới đẩy ra ngoài, mà số symbol phải fetch
+ * vẫn bị chặn (~200 tín hiệu → tối đa ~200 symbol thay vì 336).
+ */
+export const EVALUATION_BUCKETS: EvaluationBucket[] = [
+  { id: "fresh", minAgeHours: 0, maxAgeHours: 24, max: 60 },
+  { id: "1d", minAgeHours: 24, maxAgeHours: 72, max: 50 },
+  { id: "3d", minAgeHours: 72, maxAgeHours: 168, max: 50 },
+  { id: "7d", minAgeHours: 168, maxAgeHours: null, max: 40 },
+];
+
+export function selectSignalsForEvaluation<T extends { at: string }>(
+  signals: T[],
+  now = Date.now(),
+  buckets: EvaluationBucket[] = EVALUATION_BUCKETS
+): T[] {
+  const aged = signals
+    .map((signal) => ({ signal, age: (now - Date.parse(signal.at)) / 3_600_000 }))
+    .filter((entry) => Number.isFinite(entry.age));
+
+  const picked = new Set<T>();
+  for (const bucket of buckets) {
+    const rows = aged
+      .filter(
+        (entry) =>
+          Math.max(0, entry.age) >= bucket.minAgeHours &&
+          (bucket.maxAgeHours === null || Math.max(0, entry.age) < bucket.maxAgeHours)
+      )
+      .sort((a, b) => a.age - b.age) // mới nhất trong bucket trước
+      .slice(0, bucket.max);
+    for (const row of rows) picked.add(row.signal);
+  }
+
+  return [...picked].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
 export const DEFAULT_COHORT_SIZE = 12;
 export const DEFAULT_NEUTRAL_SLOTS = 3;
 
@@ -434,6 +560,6 @@ export function planCohorts(
 }
 
 export const LEDGER_NOTE =
-  "Return tính từ giá lúc ghi đến close nến 1h gần mốc horizon; MFE/MAE lấy high/low trong horizon. " +
+  "Return tính từ giá lúc ghi đến close nến 1h gần mốc horizon; MFE là biên độ thuận chiều bias (long: high, short: low), MAE là biên độ ngược chiều. " +
   "Continuation/breakout/accumulation/flush-bounce thắng khi giá tăng, exhaustion/breakdown thắng khi giá giảm; neutral chỉ lưu để tham chiếu. " +
   "Relative = return coin − return BTC cùng horizon. Tín hiệu chưa đủ tuổi horizon được tính là pending.";

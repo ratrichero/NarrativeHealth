@@ -17,6 +17,12 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || "",
   },
+  // Cloud preview: dev server chạy sau proxy của Freebuff nên phải cho phép
+  // đúng host preview (truyền qua env, không hardcode hostname vào repo).
+  allowedDevOrigins: (process.env.NEXT_ALLOWED_DEV_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
   experimental: {
     // BUILD-STABILITY: "Collecting page data" spawns one worker per route
     // (63 on this app). Each worker imports its route module including the

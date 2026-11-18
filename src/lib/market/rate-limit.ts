@@ -101,6 +101,14 @@ export const listLimiter = new SlidingWindowLimiter(listLimitPerMinute(), 60_000
 export const briefIpLimiter = new SlidingWindowLimiter(briefLimitPerHour(), 3_600_000);
 export const trackRecordLimiter = new SlidingWindowLimiter(trackRecordLimitPerMinute(), 60_000);
 
+function catalystLimitPerMinute(): number {
+  const value = Number(process.env.CATALYST_PER_IP_PER_MIN);
+  return Number.isFinite(value) && value > 0 ? value : 20;
+}
+
+/** RADAR-06: endpoint catalyst gọi LLM/DB nên có trần riêng theo IP. */
+export const catalystLimiter = new SlidingWindowLimiter(catalystLimitPerMinute(), 60_000);
+
 export function rateLimitHeaders(result: RateLimitResult): Record<string, string> {
   const headers: Record<string, string> = {
     "X-RateLimit-Limit": String(result.limit),

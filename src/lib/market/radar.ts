@@ -28,6 +28,7 @@ import {
   type MoverSide,
 } from "@/lib/market/scoring";
 import { buildSetup, type SetupLevels } from "@/lib/market/setup";
+import { shouldExplainCatalyst } from "@/lib/catalyst/matching";
 import { isEligibleTicker, listingAgeDays } from "@/lib/market/universe";
 import { buildDemoSnapshot, getDemoDetail } from "@/lib/market/demo";
 
@@ -131,6 +132,8 @@ export interface RadarRow {
   clusterSize?: number;
   clusterLeader?: boolean;
   clusterLaggard?: boolean;
+  /** RADAR-06: row đủ bất thường để hiển thị panel “vì sao volume bất thường”. */
+  catalystTriggered?: boolean;
   bias: Bias;
   label: string;
   score: number;
@@ -390,6 +393,11 @@ function toRow(
     clusterSize: 1,
     clusterLeader: false,
     clusterLaggard: false,
+    catalystTriggered: shouldExplainCatalyst({
+      volumeZ: metrics.volumeZ,
+      volumeRatio7d: metrics.volumeRatio7d,
+      changePct: metrics.changePct,
+    }),
     bias: score.bias,
     label: score.label,
     score: score.score,
@@ -520,6 +528,29 @@ export interface ClusterCandidate {
   narratives: string[];
   changePct: number;
   quoteVolumeUsd: number;
+}
+
+/**
+ * RADAR-06: gán cụm rồi tính lại `catalystTriggered`.
+ *
+ * `toRow()` chạy trước khi biết cluster nên `clusterLeader` luôn false ở đó —
+ * nếu giữ nguyên cờ đã tính ở `toRow()`, nhánh `clusterLeader` của
+ * `shouldExplainCatalyst` không bao giờ bật. Mọi nơi gán cụm cho row phải đi
+ * qua hàm này để cờ được tính lại với `clusterLeader` thật.
+ */
+export function applyClusterAssignments(
+  rows: RadarRow[],
+  clusters: ReturnType<typeof computeClusters>
+): void {
+  for (const row of rows) {
+    applyClusterInfo(row, clusters.get(row.symbol) ?? null);
+    row.catalystTriggered = shouldExplainCatalyst({
+      volumeZ: row.volumeZ,
+      volumeRatio7d: row.volumeRatio7d,
+      changePct: row.changePct,
+      clusterLeader: row.clusterLeader,
+    });
+  }
 }
 
 const clusterClosesCache = new Map<string, { value: number[]; expires: number }>();
@@ -706,17 +737,6 @@ export function applyClusterInfo(row: ClusterInfoFields, info: ClusterInfo | nul
   row.clusterLaggard = info?.laggard ?? false;
 }
 
-/** ID ổn định theo membership để permalink cụm không trỏ nhầm cụm sau refresh. */
-function stableClusterId(members: RadarClusterMember[]): string {
-  const signature = members.map((member) => member.symbol).sort().join("|");
-  let hash = 2166136261;
-  for (let i = 0; i < signature.length; i += 1) {
-    hash ^= signature.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `cluster-${(hash >>> 0).toString(36)}`;
-}
-
 /** Gộp kết quả cluster thành summary cho panel cụm/rotation (gồm cả coin ngoài rows). */
 export function summarizeClusters(
   items: Array<{ symbol: string; changePct: number; quoteVolumeUsd: number }>,
@@ -748,7 +768,9 @@ export function summarizeClusters(
       const avgChangePct =
         members.reduce((sum, member) => sum + member.changePct, 0) / Math.max(1, members.length);
       return {
-        id: stableClusterId(members),
+        // Dùng đúng id của computeClusters (hash member + narrative) để permalink,
+        // cluster-history và clusterId trong signal ledger là một id duy nhất.
+        id: info.clusterId,
         label: info.label,
         size: members.length,
         avgChangePct: Number(avgChangePct.toFixed(2)),
@@ -927,6 +949,11 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
   for (const entry of clean) {
     applyClusterInfo(entry.row, clusterBase.clusters.get(entry.row.symbol) ?? null);
   }
+  // Cụm chỉ biết sau computeClusters → cờ catalyst phải tính lại ở đây (RADAR-06).
+  applyClusterAssignments(
+    clean.map((entry) => entry.row),
+    clusterBase.clusters
+  );
   const clusterSummaries = clusterBase.summaries;
 
   let rows = clean.map((entry) => entry.row);
@@ -1034,6 +1061,16 @@ async function getClusterInfoForSymbol(symbol: string): Promise<ClusterInfo | nu
 
 const detailCache = new Map<string, { expires: number; promise: Promise<RadarDetail | null> }>();
 
+/**
+ * Gán cụm cho row detail bằng chính computation của list.
+ * RADAR-05 E5: detail trước đây không tính cụm nên mở từ panel cụm bị mất
+ * clusterId/label/leader và cờ catalyst ở detail không bao giờ xét nhánh
+ * `clusterLeader`.
+ */
+export function applyDetailCluster(row: RadarRow, cluster: ClusterInfo | null): void {
+  applyClusterAssignments([row], new Map([[row.symbol, cluster]]));
+}
+
 export function normalizeSymbol(raw: string): string {
   return raw.toUpperCase().replace(/^\$/, "").replace(/USDT$/, "").replace(/[^A-Z0-9]/g, "");
 }
@@ -1097,7 +1134,9 @@ export async function getMoverDetail(rawSymbol: string): Promise<RadarDetail | n
       tickers.map((t) => Number(t.priceChangePercent)).filter(Number.isFinite).sort((a, b) => a - b),
       row.changePct
     );
-    applyClusterInfo(row, await getClusterInfoForSymbol(symbol));
+    // Cụm phải gán trước khi trả row: panel cụm → detail cần giữ label/leader,
+    // và cờ catalyst phải được tính lại với clusterLeader thật (RADAR-05 E5).
+    applyDetailCluster(row, await getClusterInfoForSymbol(symbol));
 
     const bullish: Bias[] = ["continuation", "flush-bounce", "breakout", "accumulation"];
     const bearish: Bias[] = ["exhaustion", "breakdown"];

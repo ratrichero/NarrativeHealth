@@ -36,7 +36,7 @@ const MAX_TEXT_LENGTH = 1400;
 // ─── Types ─────────────────────────────────────────────
 
 /** SQ-MOVERS: "movers" là source thứ ba — LLM Monitor hiển thị riêng. */
-export type LlmSource = "square" | "chat" | "movers";
+export type LlmSource = "square" | "chat" | "movers" | "catalyst";
 
 export interface GeneratedContent {
   text: string;

@@ -4,6 +4,522 @@
 
 ---
 
+## RADAR-05-E1 — clusterId ổn định (2026-11-18)
+
+Audit RADAR-05 E1: `clusterId = cluster-${labelIndex}` tăng theo thứ tự duyệt `groups`, mà thứ tự
+đó phụ thuộc ticker Binance trả về và `chosen` của từng tab → cùng một cụm đổi số giữa các lần
+quét, không so sánh được giữa các lần và không dùng làm khoá cho ledger.
+
+- `src/lib/market/cluster.ts`: `clusterId = cluster-<slug(top narrative|mixed)>-<hash8>`, hash
+  FNV-1a 32-bit của **tập member đã sort**. Label fallback bỏ số thứ tự (`Cụm <hash>`).
+- Id không phụ thuộc thứ tự input/union-find/tab; chỉ đổi khi tập member hoặc top narrative đổi.
+- **Deploy đổi id một lần**: `cluster-1`, `cluster-2` → dạng hash. Signal ledger ghi trước deploy
+  giữ id cũ; không so sánh cụm xuyên mốc deploy (đã ghi trong `docs/RADAR-05_CLUSTER_ROTATION_AUDIT.md`
+  mục E1).
+- Tests `cluster-id.test.ts`: đảo thứ tự input → cùng id/label; id không còn dạng số thứ tự; member
+  khác → id khác; cụm không narrative trội vẫn ổn định; singleton vẫn null.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **17 suite / 111 test pass** sau khi
+merge nhánh (universe cluster cố định + cluster history + cluster alert của upstream); eslint
+0 lỗi. `summarizeClusters` dùng luôn `info.clusterId` của `computeClusters` nên permalink,
+cluster-history và ledger chung một id. **Chưa verify live:** chưa so sánh id giữa hai snapshot
+thật (sandbox không có Binance/DB).
+
+## RADAR-06-ALERT — Alert “catalyst-driven outlier” (2026-11-18)
+
+Panel đã giải thích outlier bằng catalyst nhưng alert radar vẫn chỉ là “LONG watch” không kèm lý do,
+người dùng phải mở web để biết vì sao.
+
+- `src/lib/market/alerts.ts`: `selectAlertCandidates()` + `buildRadarAlertText()`; `dispatchRadarAlerts`
+  đọc 1 lần `readRecentCatalystFacts` (8 ngày, 500 fact) rồi match theo symbol tại `now` — không
+  gọi mạng.
+- Row `catalystTriggered` **và** đạt ngưỡng RADAR-03 (`RADAR_ALERT_MIN_SCORE/MIN_ENTRY/MAX_IMPULSE_HOURS`,
+  bias bullish/bearish) → alert kèm **1–3 fact** có tiêu đề + link nguồn, sort ưu tiên loại.
+- Dedupe: key `catalyst|<SYMBOL>|<externalId>` trong `radar.alerts.sent` (7 ngày). Announcement sync
+  5 phút/lần không spam; externalId mới → báo lại. Cooldown per symbol `RADAR_ALERT_COOLDOWN_HOURS`
+  vẫn áp trước dedupe. Không có fact khớp → alert thường như cũ.
+- Webhook payload thêm `catalyst: true` + `facts: [{ externalId, type, source, title, url }]`.
+- Không thêm env/kênh/bảng; `RADAR_ALERT_WEBHOOK_URL` không cấu hình → no-op như cũ.
+- Tests `alerts.test.ts`: cap 3 fact, key `symbol+externalId`, cùng externalId bị chặn, fact mới
+  vẫn báo dù key ngày đã ghi, cooldown symbol chặn, row không trigger dùng dedupe ngày, chưa đạt
+  ngưỡng không gửi, text có link và không vượt 3 fact. Sửa luôn header đếm `fact.length` (4)
+  trong khi chỉ render 3.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **14 suite / 88 test pass**; eslint
+0 lỗi. **Chưa verify live:** chưa gửi webhook thật (không có URL/sandbox), chưa xem alert trên
+Slack/Discord thật.
+
+## RADAR-06-STALE — Phát hiện feed chết âm thầm (2026-11-18)
+
+Nguồn trả 200 nhưng rỗng (RSS đổi endpoint, Binance đổi payload, unlock query sai) không hiện
+LỖI, chỉ làm panel im lặng — không ai biết feed đã chết.
+
+- `src/lib/catalyst/health.ts`: STALE khi (a) quá **2.5 nhịp** scope — nhịp đọc từ
+  `SCHEDULER_CATALYST_*_MINUTES`, sàn nhịp + 5 phút — hoặc (b) **2 lượt liền** fetch thành công
+  mà `fetched = 0`. Lỗi HTTP reset chuỗi 0 fact (đã có cột LỖI). Nguồn chưa chạy lần nào → overdue.
+- `emptyStreak` tính lúc sync từ trạng thái lượt trước, lưu trong `catalyst.sync`
+  (`sources[].emptyStreak`) — không cần migration/bảng mới. Scope suy từ tên nguồn nên lượt chạy
+  tay `all` không làm mất ngưỡng của scope thật.
+- Card **Catalyst sync**: badge đỏ `N nguồn STALE` (thay cho “Nguồn OK” khi có nguồn chết) và cột
+  Trạng thái `STALE · 0 fact 2 lượt liền` / `STALE · quá hạn N phút`; API GET trả thêm
+  `stale`, `staleReasons`, `minutesLate`, `minutesSince`, `emptyStreak`, `staleCount`.
+- Cảnh báo: sau mỗi lượt sync, các nguồn STALE gộp thành **một** message qua
+  `dispatchCustomText` (kênh alert-delivery sẵn có, `ALERT_WEBHOOK_URL`), dedupe theo nguồn ở
+  `app_settings.catalyst.stale.alerts`, cooldown `CATALYST_STALE_ALERT_COOLDOWN_HOURS` (mặc định
+  6 giờ). Không có kênh nào nhận → không đánh dấu đã gửi. Unlock 0 fact liên tiếp là dấu hiệu
+  query/mapping `event_risks` hỏng.
+- Tests `health.test.ts`: ngưỡng theo scope (10/30/120 phút), 2 lượt 0 fact, 1 lượt chưa đủ, lỗi
+  mạng không tính, vừa quá hạn vừa 0 fact → cả hai lý do, nguồn lạ không áp ngưỡng, message gộp.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/catalyst/__tests__/health.test.ts` **8 test
+pass**; eslint 0 lỗi (health, sync, route, admin page). **Chưa verify live:** chưa có sync/DB
+thật trong sandbox, chưa xem card và chưa gửi webhook thật.
+
+## RADAR-06-COVERAGE — Báo cáo độ phủ catalyst (2026-11-18)
+
+Chưa biết layer catalyst giải thích được bao nhiêu % outlier, nguồn nào gánh phần phủ, và outlier
+nào không có catalyst để đọc tay.
+
+- `src/lib/catalyst/coverage.ts`: `buildCatalystCoverageReport(signals, facts)` (pure) +
+  `readCatalystCoverageReport()` chỉ đọc `app_settings.radar.signals` + `catalyst_events` —
+  **không gọi mạng**.
+- Nhãn: ưu tiên `hasCatalyst/catalystSources` đã lưu khi ghi; tín hiệu cũ match lại tại đúng thời
+  điểm ghi bằng facts còn hạn (matching pure). Outlier = side gainer/loser/unusual (bỏ neutral).
+- Kết quả: `totals` + `bySide` với `total/covered/coveragePct` và `bySource/sourcePct`
+  (announcement/RSS/unlock); `gaps` gộp theo symbol (occurrences + lần mới nhất, tối đa 40,
+  `gapTotal` là tổng thật). Ledger rỗng → `coveragePct = null` (không báo 0%).
+- `GET /api/admin/catalyst/coverage` + card **“Catalyst coverage”** (Admin → Analytics, dưới
+  “Catalyst sync”): badge % phủ, bảng nhóm × nguồn, bảng outlier không catalyst; refetch 5 phút.
+- Tests `coverage.test.ts`: % phủ + tách nguồn/loại đúng (67% / announcement 33% / RSS 17% /
+  unlock 17%), gap gộp symbol + occurrences, không match ngược thời gian (tin đăng sau thời điểm
+  ghi), ưu tiên nhãn đã lưu, ledger rỗng → null.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/catalyst/__tests__/coverage.test.ts` **5 test
+pass**; eslint 0 lỗi (coverage, route, admin page). **Chưa verify live:** chưa có ledger/DB thật
+ở sandbox và card chưa xem trên trình duyệt.
+
+## RADAR-06-LEDGER — Nhãn catalyst trong signal ledger + báo cáo có/không catalyst (2026-11-18)
+
+Layer catalyst hiện chỉ hiển thị; chưa có bằng chứng outlier có catalyst đi tiếp khác outlier không
+có catalyst. Ledger đã có forward return 1h/4h/24h/3d/7d, MFE/MAE, TP/SL — chỉ thiếu nhãn.
+
+- `RadarSignalRecord` thêm (optional) `hasCatalyst`, `catalystTypes`, `catalystSources`,
+  `clusterId`. Signals vẫn lưu trong `app_settings.radar.signals` — **không cần migration**.
+- `recordAllRadarCohorts` đọc catalyst facts **một lần** cho cả cohort rồi match theo symbol
+  (`matchCatalystsForSymbol`) tại đúng thời điểm ghi; chỉ lưu loại/nguồn, không lưu toàn văn fact.
+  Không có dữ liệu catalyst (chưa sync / DB lỗi / 0 fact) → **không gắn nhãn** thay vì ghi `false`
+  sai; `clusterId` vẫn luôn được ghi.
+- `compareCatalystOutcomes(rows)` (pure, ledger.ts): chia tín hiệu đã gắn nhãn thành có/không
+  catalyst, dùng lại `aggregateHorizon` cho từng horizon, trả `n`, `avgReturnPct`, `hitRate`,
+  `deltaAvgReturnPct`, `deltaHitRate`; delta = null khi một phía chưa có mẫu (không bịa 0).
+- `evaluateRadarSignals` trả thêm `catalyst` trong `TrackRecordResult` → API
+  `/api/market/radar/track-record` và block “Catalyst có giúp outlier đi tiếp?” trong Signal Ledger
+  ở `/radar` (badge nhãn + bảng 5 horizon, ghi rõ “chỉ phân tích, không vào scoring”).
+- Không đụng `score`, `entryQuality`, `composite`, `bias`, P4/P5; invariant §1.4 của RADAR-06 cập
+  nhật để ghi rõ ngoại lệ “nhãn để phân tích”.
+- Tests `ledger.test.ts`: chia nhóm + delta đúng (có 2 mẫu return TB 4/hit 100 vs 1 mẫu −1/hit 0 →
+  delta +5 / +100), tín hiệu chưa gắn nhãn bị loại khỏi cả hai phía, phía thiếu mẫu → delta null.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market/__tests__/ledger.test.ts` **21 test pass**;
+eslint 0 lỗi. **Chưa verify live:** chưa có cohort gắn nhãn thật (sandbox không có PostgreSQL/Binance);
+nhãn chỉ có từ lần ghi đầu tiên sau deploy, dữ liệu cũ hiển thị “chưa gắn nhãn”.
+
+## RADAR-06-DETAIL — Detail gán cụm (RADAR-05 E5) (2026-11-18)
+
+`getMoverDetail` không tính cụm và set cứng `clusterLaggard = false`, nên mở detail từ panel cụm
+mất `clusterId/label/size/leader`; kéo theo cờ catalyst ở detail không bao giờ xét nhánh
+`clusterLeader` (chỉ volume/change).
+
+- `buildSnapshot` lưu map phân cụm vừa tính vào `clusterAssignmentCache` theo `side|minVolume`
+  (cùng cửa sổ 60s với snapshot), để detail dùng đúng computation của list thay vì tự fetch
+  klines cho từng peer.
+- `getMoverDetail` gọi `resolveDetailCluster(side, symbol)` (dùng cache; cold cache thì build
+  snapshot một lần — snapshot vốn đã có cache 60s dùng chung với `/radar`) rồi gán qua
+  `applyDetailCluster(row, cluster)` → `applyClusterAssignments`, nên detail giữ label/leader
+  và tính lại `catalystTriggered` với `clusterLeader`. Lỗi snapshot → cluster null (hành vi cũ),
+  không làm hỏng detail.
+- Tests `src/lib/market/__tests__/detail-cluster.test.ts`: leader cụm giữ
+  `clusterId/Label/Size` + bật cờ dù `volumeZ 0.4 / ratio 1.1 / change 2.5%`; laggard giữ label
+  nhưng không bật cờ; không thuộc cụm → reset size 1, cờ về false.
+
+Verify: `npx tsc --noEmit` 0 lỗi; jest (market detail/catalyst + toàn bộ catalyst)
+**9 suite / 48 test pass**; eslint 0 lỗi. Chưa chạy live (sandbox không có Binance).
+
+## RADAR-06-ADMIN-LIVE — Tổng fact còn hạn trong card Catalyst sync (2026-11-18)
+
+Cột “Đã lưu” của card admin là `stored` của **một lượt sync** (số dòng upsert, gồm cả update
+dòng đã có) — không cho biết kho `catalyst_events` còn bao nhiêu fact dùng được. Feed chết 3
+ngày vẫn có thể hiện “Đã lưu: 30” của lần chạy cuối cùng còn sống, gây hiểu sai.
+
+- `countLiveCatalystFacts(now)` (`src/lib/catalyst/store.ts`): `select source, count(*) … where
+expires_at > now() group by source`, sắp giảm dần.
+- `GET /api/admin/catalyst/sync` trả thêm `live: { total, bySource: [{ source, label, live }] }`;
+  lỗi DB → `live.error` (kèm tổng 0) thay vì làm hỏng cả card.
+- Card admin: badge **“Fact còn hạn: N”** + chips theo source (nhãn `catalystSourceLabel`), cột
+  “Đã lưu” đổi tên **“Lưu (lần cuối)”** với tooltip giải thích. Ops thấy cả “feed còn sống không”
+  và “nguồn đó còn đóng góp bao nhiêu fact” mà không cần SQL.
+
+Verify: `npx tsc --noEmit` 0 lỗi; eslint 0 lỗi (admin page, store, route); `npx jest src/lib/catalyst`
+**7 suite / 43 test pass**. `countLiveCatalystFacts` **chưa có unit test** (cần PostgreSQL thật —
+sandbox không có DB), và card **chưa xem trên trình duyệt**.
+
+## RADAR-06-ADMIN — Card trạng thái catalyst sync trong admin (2026-11-18)
+
+Ops chỉ thấy panel catalyst hoạt động hay không qua `/radar`, còn muốn biết feed nào chết phải
+query `app_settings.catalyst.sync` bằng SQL.
+
+- `catalystSourceStatuses(status)` (`src/lib/catalyst/sync.ts`) duyệt hợp các scope, trả **mỗi
+  nguồn một dòng**: `name`, `scope`, `lastRunAt` (lần chạy mới nhất của chính nó), `fetched`,
+  `stored`, `skipped`, `failing`, `error`; sắp theo scope (announcements → news → unlocks → all)
+  rồi tên nguồn.
+- `GET /api/admin/catalyst/sync` đổi payload thành `{ status, info, sources }`, trong đó `sources`
+  đã map nhãn hiển thị (`catalystSyncSourceLabel`).
+- Admin (`src/app/admin/page.tsx`): thêm `CatalystSyncSection` ở tab **Analytics**, ngay dưới
+  “Top Movers Pipeline”. Header: badge tổng (`Nguồn OK` / `N nguồn lỗi` / `Tất cả nguồn lỗi` /
+  `Chưa đồng bộ nguồn`) + lần sync mới nhất. Bảng: Nguồn · Scope · Lần chạy cuối · Lấy · Đã lưu ·
+  Trạng thái (`OK` / `LỖI · lý do`). Rỗng → hướng dẫn kiểm tra job FastAPI và
+  `SCHEDULER_CATALYST_ENABLED`. Tự refetch 60s, không có thao tác ghi.
+- Tests: `catalystSourceStatuses` — thứ tự theo scope, mỗi nguồn giữ `lastRunAt` riêng (announcement
+  chạy sau không đổi mốc của RSS), cờ `failing`/`error`, trạng thái rỗng.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/catalyst` **7 suite / 43 test pass**;
+eslint 0 lỗi (admin page + route + module). **Chưa xem card trên trình duyệt** — mới typecheck/test.
+
+## RADAR-06-STATE-SCOPE — Trạng thái sync lưu theo scope (2026-11-18)
+
+`catalyst.sync` là **một** snapshot dùng chung cho 3 job, nên job announcement (5 phút) ghi đè
+kết quả RSS (15 phút) / unlock (60 phút). Panel đọc snapshot đó có thể nói sai nguồn nào đã
+được kiểm tra — đúng loại kết luận sai mà RADAR-06-STATE vừa sửa.
+
+- `app_settings.catalyst.sync` đổi sang `{ version: 2, scopes: { announcements, news, unlocks,
+  all } }`; `mergeSyncStatus()` chỉ thay `scopes[<scope>]` của job đang chạy. Value format cũ
+  (một summary) vẫn đọc được qua `normalizeSyncStatus()` — không cần migration, không mất
+  trạng thái khi deploy.
+- `catalystSyncInfo()` duyệt **hợp** các scope, mỗi nguồn lấy lần chạy mới nhất theo
+  `finishedAt` → `state` (`never_synced` khi chưa có scope nào; `sources_failed` khi mọi nguồn
+  đã từng chạy đều lỗi; còn lại `synced`), `checkedSources` (nguồn thực sự chạy được),
+  `failedSources`, `lastSyncAt`.
+- Panel in `checkedSources` đã map nhãn (`Binance listing announcement`, `CoinDesk RSS`,
+  `Unlock calendar (event_risks)`, …) thay cho câu hardcode “Binance announcement, RSS news,
+  unlock calendar”; danh sách nguồn lỗi cũng dùng nhãn đọc được.
+- `GET /api/admin/catalyst/sync` trả `{ version, scopes }` thay vì một summary.
+- Tests: hợp scope (job announcement chạy sau không xoá RSS/unlock), mọi scope lỗi →
+  `sources_failed`, mỗi nguồn lấy lần chạy mới nhất, normalize format cũ, merge giữ scope khác.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/catalyst` **7 suite / 41 test pass**;
+eslint 0 lỗi. Chưa nhìn UI trên trình duyệt.
+
+## RADAR-06-STATE — Phân biệt “chưa đồng bộ nguồn” với “đã kiểm tra, không khớp” (2026-11-18)
+
+Panel luôn nói “Chưa tìm thấy catalyst khớp” kể cả khi chưa từng chạy sync — bảng
+`catalyst_events` rỗng vì chưa đồng bộ chứ không phải vì không có catalyst. Đây là kết luận sai.
+
+- `catalystSyncInfo(status)` (`src/lib/catalyst/sync.ts`) suy ra `state` từ snapshot
+  `app_settings.catalyst.sync`: `never_synced` khi chưa có snapshot; `sources_failed` khi mọi
+  nguồn của lượt gần nhất đều lỗi; còn lại `synced`. Kèm `lastSyncAt`, `failedSources`.
+- `GET /api/market/movers/[symbol]/catalysts` trả thêm `sync`, truyền vào `summarizeCatalysts`
+  để note đúng trạng thái; cache key thêm `sync.state` (lần sync đầu không bị cache
+  `never_synced` che 30 phút).
+- `CatalystPanel`: empty-state và badge chọn copy theo `sync.state` — “Chưa đồng bộ nguồn
+  catalyst” / “Nguồn catalyst đang lỗi (…)”, chỉ khi `synced` mới nói “chưa tìm thấy catalyst
+  khớp”; hiển thị thêm “Đồng bộ nguồn gần nhất: …”.
+- Tests: `catalystSyncInfo` (null → never_synced, toàn bộ nguồn lỗi → sources_failed, một nguồn
+  OK → synced) và `summarizeCatalysts` với 3 trạng thái khi không có fact.
+
+Verify: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/catalyst` **7 suite / 38 test pass**;
+eslint 0 lỗi. Chưa nhìn UI trên trình duyệt (chỉ typecheck + test).
+
+## RADAR-06-QUOTA — Cap LLM catalyst theo ngày (2026-11-18)
+
+Spec có `CATALYST_LLM_DAILY_LIMIT` (mặc định 200) nhưng code chưa triển khai, trong khi LLM
+đang bật mặc định → chi phí chỉ được chặn bởi cache 30 phút của route, không có trần cứng.
+
+- Thêm `src/lib/catalyst/llm-quota.ts`: đếm usage trong `app_settings` key
+  `catalyst.llm.usage` (`{date, used}`), reset theo ngày UTC, dùng cùng pattern với
+  `brief-quota`/các quota khác. `CATALYST_LLM_DAILY_LIMIT` mặc định 200; `0` = không giới hạn.
+- `summarizeCatalysts` consume quota ngay trước khi gọi provider. Không qua được (vượt trần
+  hoặc đọc/ghi `app_settings` lỗi) → template facts-only + note rõ lý do, **không gọi LLM**.
+  Khác brief-quota: fail-closed thay vì fail-open, vì template facts-only vẫn đúng nguyên tắc
+  và rẻ hơn nhiều so với chi tiêu không giới hạn khi hạ tầng phụ trục trặc.
+- `CATALYST_LLM_ENABLED=0` vẫn thoát trước bước quota (không đọc DB).
+- Tests: `llm-quota.test.ts` (pure state: dưới/chạm trần, reset ngày, state hỏng, limit 0,
+  parse env) và `summarize.test.ts` (vượt cap → template + không gọi LLM; app_settings lỗi →
+  template; trong cap → vẫn dùng output LLM qua validator).
+- Docs/env: `.env.example`, README, spec §5.5 + bảng trạng thái.
+
+Verify: `npx tsc --noEmit` 0 lỗi; jest (catalyst + catalyst-trigger) **8 suite / 34 test pass**
+(catalyst riêng: 7 suite / 32 test); eslint 0 lỗi.
+
+## RADAR-06-FIX — catalystTriggered tính trước khi có clusterLeader (2026-11-18)
+
+`toRow()` tính `catalystTriggered` lúc `clusterLeader` còn `false` và cờ **không được tính lại**
+sau `computeClusters`, nên nhánh `clusterLeader` của `shouldExplainCatalyst` không bao giờ bật:
+leader cụm không có volumeZ/volume ratio/|change| bất thường sẽ không mở panel “Vì sao volume
+bất thường?” dù spec nói cluster leader là một điều kiện trigger.
+
+- Tách bước gán cụm + tính lại cờ thành `applyClusterAssignments(rows, clusters)` trong
+  `src/lib/market/radar.ts`; `getRadarSnapshot` dùng hàm này thay vòng lặp inline. `toRow()` vẫn
+  giữ cờ cơ sở (volume/change) cho `getMoverDetail` — nơi không tính cụm.
+- Test `src/lib/market/__tests__/catalyst-trigger.test.ts`: 2 coin tương quan 1.0 → leader theo
+  composite, volumeZ 0.4 / ratio 1.1 / change 2.5% (không bất thường); cờ `false` trước khi gán
+  cụm, `true` sau khi gán; laggard không tự bật; nhánh volume/change vẫn hoạt động.
+- Verify: `npx tsc --noEmit` 0 lỗi; jest (market + catalyst) **7 suite / 25 test pass**; eslint 0 lỗi.
+
+## RADAR-06-SCHED — Gắn catalyst sync vào scheduler (2026-11-18)
+
+V1 chỉ có `POST /api/admin/catalyst/sync` và **không có gì gọi nó** → `catalyst_events` rỗng
+trên production, panel “Vì sao volume bất thường?” luôn hiện “chưa tìm thấy”. Đã gắn sync
+vào APScheduler của FastAPI với 3 nhịp riêng theo tính chất nguồn.
+
+### 1. Đã làm
+
+- **`POST /api/catalyst/sync` (scheduler-only)** — body `{"scope":"announcements"|"news"|"unlocks"|"all"}`,
+  token opt-in `SCHEDULER_CATALYST_TOKEN` verify timing-safe qua header `X-Scheduler-Token`
+  (cùng posture `/api/square/movers`). Không đặt dưới `/api/admin/*` vì AUTH-01 chặn cả nhánh
+  admin bằng admin session fail-closed — scheduler không có cookie.
+- **`syncCatalysts(now, scope)`** tách `announcements | news | unlocks | all`; summary thêm
+  `scope`; mặc định `all` giữ nguyên hành vi endpoint cũ.
+- **Admin route** nhận `scope` qua query hoặc body → chạy tay/backfill từng nguồn.
+- **`backend/config.py`**: `scheduler_catalyst_{enabled, announcements_minutes, news_minutes,
+  unlocks_minutes, timeout, token}` (mặc định 5 / 15 / 60 phút).
+- **`backend/scheduler.py`**: 3 job interval `catalyst_announcements`, `catalyst_news`,
+  `catalyst_unlocks` với `max_instances=1, coalesce=True`; `_run_catalyst_sync(scope)` POST
+  `http://localhost:3000/api/catalyst/sync`, log fetched/stored/purged + tên nguồn lỗi;
+  `stop()` gỡ cả 3 job.
+
+### 2. Vì sao tách nhịp
+
+- **Announcement 5 phút:** tin listing/delist/futures là catalyst chính; trễ 5 phút là mất giá
+  trị với outlier. Binance CMS free → 3 catalog × 12 lần/giờ = 36 request/giờ.
+- **RSS 15 phút:** 4 feed × 4 lần/giờ = 16 request/giờ; cache 10 phút trong process.
+- **Unlock 60 phút:** chỉ **đọc** `event_risks` (nguồn đổi 1 lần/ngày); chạy mỗi 5 phút sẽ
+  upsert lặp vô ích hàng trăm row.
+- Sync **không gọi LLM** — LLM chỉ chạy khi mở panel (cache 30 phút), nên nhịp 5 phút không
+  tiêu token.
+
+### 3. Files changed (RADAR-06-SCHED)
+
+- `src/app/api/catalyst/sync/route.ts` (mới)
+- `src/lib/catalyst/sync.ts` (scope), `src/lib/catalyst/__tests__/sync-scope.test.ts` (mới)
+- `src/app/api/admin/catalyst/sync/route.ts` (nhận `scope`)
+- `backend/config.py`, `backend/scheduler.py`
+- `.env.example`, `README.md`, `docs/RADAR-06_CATALYST_LAYER_SPEC.md` (§7.1 runbook)
+
+### 4. Verification (RADAR-06-SCHED)
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/catalyst` **6 suite / 23 test pass** (thêm 6 test
+scope: mỗi scope chỉ chạm nguồn của nó, nguồn lỗi không chặn nguồn khác);
+`python3 -m py_compile backend/config.py backend/scheduler.py` pass.
+
+**Chưa verify:** chưa chạy trên VPS. Cần `bash scripts/deploy.sh`, xác nhận log FastAPI có
+“Catalyst scheduler started”, chạy tay 3 scope và kiểm `catalyst_events` — runbook đầy đủ ở
+`docs/RADAR-06_CATALYST_LAYER_SPEC.md` §7.1.
+
+## RADAR-06-IMPL — Catalyst layer V1: Binance + RSS + unlock, LLM facts-only (2026-11-18)
+
+Triển khai V1 theo 4 quyết định của owner: (1) gồm RSS + unlock, (2) unlock **không chạy Apify**
+— chỉ đọc `event_risks`, (3) bật LLM ngay, (4) trigger thêm `|changePct| >= 10%`.
+
+### 1. Đã làm
+
+- **Schema riêng `catalyst_events`** (migration `0036`), không FK coin, unique
+  `(source, external_id)`; cố ý **không** dùng `event_risks` để tránh làm lệch P4.
+- **Collector:** Binance announcement (catalog 48/161/49), RSS CoinDesk/Cointelegraph/Decrypt/
+  The Block, unlock đọc `event_risks` (bỏ fact thiếu `sourceUrl`).
+- **Store:** upsert idempotent, TTL (news 14d, announcement 30d, unlock eventDate+2d), purge.
+- **Matching:** cửa sổ theo loại (listing/futures [-72h,+24h], delisting/monitoring [-7d,+24h],
+  news [-24h,+6h], unlock [-7d,+2d]); trigger volumeZ ≥2 **hoặc** volume ratio ≥2.2 **hoặc**
+  `|change|` ≥10% **hoặc** cluster leader.
+- **API:** `POST /api/admin/catalyst/sync`, `GET /api/market/movers/[symbol]/catalysts`
+  (cache 30 phút, rate limit 20/phút/IP).
+- **UI:** panel “Vì sao volume bất thường?” trong detail `/radar`, chỉ hiện khi row bất thường;
+  không có fact → câu “chưa tìm thấy catalyst khớp”, không suy đoán.
+- **LLM facts-only:** dùng lại gateway `generateMoversWithLLM` (source `catalyst`), validator
+  chặn từ nhân quả/dự đoán và số lạ, fallback template.
+
+### 2. Quyết định kỹ thuật đáng ghi
+
+- Blacklist tiếng Việt **không dùng `\b`** (JS chỉ hiểu ASCII) — dùng biên `\p{L}` để bắt
+  “vì/bởi/do/bán”. Đây là bug đã phát hiện qua test.
+- Validator bỏ yêu cầu “khớp ≥4 từ tiêu đề” vì tiêu đề nguồn tiếng Anh còn summary tiếng Việt;
+  thay bằng ràng buộc ticker + không số lạ + blacklist.
+- Tiêu đề futures dạng `HYPEUSDT` → `extractTickers` thêm cả base `HYPE` để khớp radar symbol.
+- `RadarRow.catalystTriggered` được tính server-side bằng cùng ngưỡng env, tránh UI tự đoán.
+
+### 3. Files changed (RADAR-06-IMPL)
+
+- `src/db/schema.ts` (+`catalystEvents`), `drizzle/migrations/0036_catalyst_events.sql`
+- `src/lib/catalyst/`: `types.ts`, `normalize.ts`, `binance-announcements.ts`, `rss.ts`,
+  `unlocks.ts`, `store.ts`, `sync.ts`, `matching.ts`, `summarize.ts`
+- `src/app/api/admin/catalyst/sync/route.ts`
+- `src/app/api/market/movers/[symbol]/catalysts/route.ts`
+- `src/components/CatalystPanel.tsx`, `src/app/radar/page.tsx`
+- `src/lib/market/radar.ts` (`catalystTriggered`), `src/lib/market/rate-limit.ts` (limiter)
+- `src/lib/square/content-generator.ts`, `src/lib/llm/monitor.ts`, `src/lib/llm/trace.ts`
+  (thêm source `catalyst`)
+- `src/lib/catalyst/__tests__/` (5 suite), `.env.example`, docs
+
+### 4. Verification (RADAR-06-IMPL)
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market src/lib/catalyst` **17 suite / 90 test pass**
+(catalyst: 5 suite / 17 test, fixture Binance/RSS lấy từ payload thật); `eslint` 0 lỗi trên
+các file mới.
+
+**Chưa verify:** apply migration trên PostgreSQL thật; gọi Binance/RSS từ VPS; chất lượng
+và chi phí output LLM thực tế; matching news thực tế (tiêu đề RSS ít khi chứa ticker nên
+độ phủ news sẽ thấp — đo sau khi có dữ liệu live).
+
+## RADAR-06 — Spec Catalyst layer: “vì sao volume bất thường” (2026-11-18)
+
+Spec cho lớp giải thích outlier bằng facts có link nguồn. **Chưa viết code.** Toàn bộ là
+`docs/RADAR-06_CATALYST_LAYER_SPEC.md`.
+
+### 1. Nguồn — đã probe thật từ môi trường dev (2026-11-18)
+
+| Nguồn | Probe | Kết luận |
+|---|---|---|
+| Binance CMS `catalogId=48` (listing) | **200**, `data.catalogs[].articles[]` gồm `id/code/title/releaseDate` | Nguồn chính, free, không key |
+| Binance CMS `catalogId=161` (delisting) | **200**, cùng schema | Nguồn chính |
+| Binance CMS 49/51/128/157 (news/API/airdrop/wallet) | Cùng schema | Tùy chọn |
+| RSS CoinDesk / Cointelegraph / Decrypt / The Block | **200** (CoinDesk 308→200) | Nguồn news chính, free |
+| `api.llama.fi/emissions` | **402** Pro-only $300/mo | Loại, giữ Apify |
+| Apify `foxlabs/token-unlocks-calendar` | **200** (collector đã tích hợp) | Nguồn unlock chính |
+| CoinMarketCal API | Free 3.000 req/tháng, 7 ngày, top 100, trễ 24h, không source link | Fallback yếu |
+| CryptoPanic API | Không còn free ($199/mo) | Loại |
+| Grok share owner gửi | Danh sách nguồn phân tích coin chung | Không có endpoint catalyst; chỉ xác nhận unlock chất lượng thường phải trả phí |
+
+### 2. Quyết định thiết kế quan trọng
+
+- **Không tái dùng `event_risks`** cho listing/news: bảng này là input P4 assembler
+  (`activeEvents`) → thêm event mới sẽ làm lệch điểm P4 frozen. Dùng bảng riêng
+  `catalyst_events` (không FK coin vì radar phủ coin ngoài narrative).
+- **Catalyst không vào scoring**: không import vào `scoring.ts`, `ledger.ts`, `p4/`.
+  Chỉ hiển thị + (phase sau) alert.
+- **LLM facts-only**: input chỉ là facts đã lấy; validator blacklist từ nhân quả/dự đoán,
+  chặn số lạ, đòi khớp tiêu đề gốc; fallback template. Mặc định template, LLM ở phase sau.
+- **Không có catalyst thì nói không có** — trạng thái “chưa tìm thấy catalyst khớp” là bắt buộc.
+
+### 3. Phân kỳ
+
+CAT-01 (schema + parser Binance + sync + test) → CAT-02 (matching + endpoint + panel facts-only)
+→ CAT-03 (unlock đọc `event_risks` + RSS) → CAT-04 (LLM facts-only + validator) →
+CAT-05 (alert + đo hiệu quả outlier có/không catalyst qua track-record).
+
+### Files changed (RADAR-06)
+
+- `docs/RADAR-06_CATALYST_LAYER_SPEC.md` — spec đầy đủ (mới)
+- `README.md` — roadmap + mục Market Radar
+- `docs/Upgrade.md` — entry này
+
+### Verification (RADAR-06)
+
+Không đổi code nên không chạy test. Các con số nguồn ở trên là kết quả curl thật, không phải
+suy đoán từ tài liệu. Chưa kiểm: hành vi endpoint khi bị chặn/đổi schema, giá Apify thực tế
+cho dataset của mình.
+
+## RADAR-05 — Audit cluster/rotation (RADAR-03 mục 4) (2026-11-18)
+
+Lượt này **chỉ audit, không sửa code**: đối chiếu báo cáo bàn giao của dev cũ với source +
+test, rồi đồng bộ README/docs. Chi tiết: `docs/RADAR-05_CLUSTER_ROTATION_AUDIT.md`.
+
+### 1. Đối chiếu 9 mục bàn giao — 9/9 ĐÚNG
+
+Coverage ≤20 coin extra + volume ≥$10M; cụm khác nhau giữa tab (pool loại coin enrich của
+riêng side đó, snapshot cache khoá `side|minVolume`); leader/laggard lệch thang
+(`composite` so với `abs(changePct)*6`); correlation 1h thô ngưỡng 0.75 + union-find bắc cầu;
+rotation mới là nhãn (`laggard = !leader` cho mọi member); không lưu history cụm; member cắt
+còn 6 và không có `?cluster=`; test chỉ phủ pool/summary, thiếu cache/dedupe/per-tab/weight;
+`RadarSignalRecord` không có clusterId/label.
+
+Điểm cần chỉnh cách diễn đạt: "không có lịch sử gửi alert" — thực tế có
+`app_settings["radar.alerts.sent"]` (chỉ ghi lần gửi **thành công**, 7 ngày, dùng dedupe +
+cooldown), nhưng không có retry queue hay audit log lần gửi lỗi.
+
+### 2. Phát hiện bổ sung ngoài báo cáo
+
+| # | Phát hiện | Ảnh hưởng |
+|---|---|---|
+| E1 | `clusterId = cluster-${labelIndex}` phụ thuộc thứ tự union-find đầu vào | Cùng một cụm đổi id theo tab/snapshot → chặn history, permalink, alert theo cụm |
+| E2 | Coin extra lấy `composite = abs(changePct)*6` → leader là coin biến động mạnh nhất, kể cả coin giảm | Leader cụm tăng có thể là coin −18%; trộn thang gần như luôn chọn coin enrich |
+| E3 | Enrich có 48 return 1h, extra chỉ 29; threshold 0.75 áp lên hai cỡ mẫu khác nhau | Extra vào/ra cụm ngẫu nhiên hơn, khó tái lập |
+| E4 | Pool quota: volume 60%, gainer lấp tới 80%, loser chỉ nhận phần dư | Ngày giảm mạnh, cụm loser ngoài top gần như không được quét |
+| E5 | `getMoverDetail` không tính cluster, `clusterLaggard` set cứng false | Click member trong panel cụm mở detail mất ngữ cảnh cụm |
+| E6 | Cụm nằm trong snapshot từng side, cache 60s/side | 3 tab trong 1 phút = 3 lần quét extra (~60 weight/phút) thay vì 1 |
+
+### 3. Thứ tự xử lý đã hiệu chỉnh
+
+Thêm **bước 0 — cluster id ổn định** (hash tập member đã sort) vì #6/#7/#9 đều lấy id làm khoá;
+sau đó mới: universe quét chung độc lập tab → chuẩn hoá strength + residual correlation + chặn
+siêu cụm → history + alert/track-record theo cụm → detail/permalink + test cache/per-tab/weight.
+
+### Files changed (RADAR-05)
+
+- `docs/RADAR-05_CLUSTER_ROTATION_AUDIT.md` — audit đầy đủ (mới)
+- `README.md` — đồng bộ trạng thái thật: thêm Market Radar, sửa P6/Square Analytics, roadmap
+- `docs/Upgrade.md` — entry này
+
+### Verification (RADAR-05)
+
+Không đổi code nên không chạy lại test. Đối chiếu dựa trên source tại HEAD `92475ab` +
+2 file test cluster hiện có; phần số liệu live vẫn thuộc checklist RADAR-04 (sandbox bị 451).
+
+## RADAR-04 — Sửa lỗi đo forward return + runbook verify live (2026-11-18)
+
+Task kiểm chứng live Signal Ledger. Sandbox không có PostgreSQL và Binance Futures
+vẫn trả 451, nên phần chạy thật chuyển thành checklist trên VPS; phần audit code phát
+hiện **hai lỗi làm số liệu đo sai** và đã sửa kèm test.
+
+### 1. Horizon 3d/7d không bao giờ đo được (blocker)
+
+`track-record.ts` chỉ đánh giá 60 tín hiệu mới nhất, trong khi cohort ghi ~42 tín hiệu/ngày
+(12 row × 3 side + 6 neutral) → 60 tín hiệu chỉ phủ ~1,4 ngày. Tín hiệu đủ 3 ngày luôn
+nằm ngoài cửa sổ nên 3d/7d **vĩnh viễn pending**.
+
+Nay chọn theo tuổi horizon (`selectSignalsForEvaluation`): fresh <24h 60 (1h/4h),
+1d 24–72h 50 (24h), 3d 72–168h 50 (3d), 7d ≥168h 40 (7d) → tối đa 200 tín hiệu/lần đọc.
+
+Không chọn "lấy hết 500" vì chi phí đo được quá cao (probe mock DB + klines, RTT 150 ms,
+336 tín hiệu/8 ngày):
+
+| Phương án | Symbol fetch | Weight | Wall time |
+|---|---|---|---|
+| Lấy hết 336 | 336 | **677** | **8,6 s** |
+| Chọn theo tuổi — worst case | 182 | 369 | 4,8 s |
+| Chọn theo tuổi — thực tế (symbol lặp) | 42 | 89 | 1,1 s |
+
+Weight theo bảng LIMIT của Binance (klines 200 → 2, BTC 500 → 5), trần IP 2.400/phút;
+lấy hết chiếm 28% trần cho một request, lại tranh weight với radar snapshot.
+
+### 2. MFE/MAE đảo chiều với tín hiệu short
+
+`ledger.ts` tính MFE từ high, MAE từ low cho mọi bias. Với `exhaustion`/`breakdown`,
+đỉnh là biên độ **ngược** chiều nên MFE/MAE bị hoán đổi. Nay MFE = thuận chiều bias
+(long: high, short: low), MAE = ngược chiều, giữ quy ước dấu của UI. Long không đổi kết quả.
+
+### 3. Runbook verify live
+
+`docs/RADAR-04_LIVE_VERIFICATION.md`: điều kiện tiên quyết trên VPS, xác nhận Binance
+không chặn vùng, tạo cohort thật (kèm cron hâm nóng vì cohort chỉ ghi sau request list),
+SQL kiểm tra `app_settings.radar.signals`, đối chiếu 1h/4h/24h/3d/7d, sanity check TP/SL,
+tiêu chí đạt và 6 rủi ro còn lại (nổi bật: kết quả 7d chỉ đọc được ~24h trước khi purge).
+
+### Files changed (RADAR-04)
+
+- `src/lib/market/ledger.ts` — MFE/MAE theo chiều bias; `LEDGER_NOTE`; `EVALUATION_BUCKETS` + `selectSignalsForEvaluation`
+- `src/lib/market/track-record.ts` — dùng chọn theo tuổi horizon thay cho cửa sổ 60 bản ghi
+- `src/lib/market/__tests__/ledger.test.ts` — +1 test MFE/MAE short, +3 test chọn theo tuổi
+- `src/lib/market/__tests__/track-record-window.test.ts` — regression test cửa sổ đánh giá (mock DB + klines)
+- `docs/RADAR-04_LIVE_VERIFICATION.md` — runbook verify live (mới)
+- `docs/Upgrade.md` — entry này
+
+### Verification (RADAR-04)
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **12 suite / 73 test pass**.
+Regression test cửa sổ đánh giá đã được chứng minh bắt được lỗi cũ: thay selector bằng
+"chỉ lấy 60 bản ghi mới nhất" → test fail `Expected: 62, Received: 60`; khôi phục → pass.
+Chi phí đo bằng probe tạm (đã xoá sau khi lấy số, bảng ở mục 1).
+Chưa verify live: sandbox không có `DATABASE_URL`/PostgreSQL, Binance Futures trả 451.
+
 ## RADAR-03 — Đợt 2+3: impulse, regime, spot, cluster, liquidity, alert, mobile (2026-11-18)
 
 Bảy nhóm follow-up còn lại của Market Radar. Không thêm migration; track record,
@@ -37,8 +553,8 @@ gộp dùng union-find có kiểm tra complete-linkage: chỉ gộp hai group kh
 chéo đều đạt ngưỡng, nên chuỗi A~B, B~C không kéo A và C vào cùng cụm nếu
 A~C yếu. Cap `RADAR_CLUSTER_MAX_SIZE` (mặc định 8) chặn siêu cụm; nếu thiếu
 BTC closes thì fallback correlation thô. Label theo narrative chung (nếu ≥2
-coin) hoặc “Cụm N”, chọn leader theo composite; chỉ coin cùng chiều với cụm
-mới là laggard (ứng viên rotation).
+coin) hoặc “Cụm <hash>” (RADAR-05-E1 — không còn số thứ tự), chọn leader theo
+composite; chỉ coin cùng chiều với cụm mới là laggard (ứng viên rotation).
 
 Cluster dùng **một universe quét cố định**, không phụ thuộc tab: top gainer,
 top loser, unusual và fill theo volume, tối đa `RADAR_CLUSTER_UNIVERSE` coin
@@ -51,8 +567,10 @@ summary gồm cả coin ngoài rows và giữ đủ toàn bộ member; panel “
 — quét ngoài top” chỉ
 preview 6 coin kèm `+N`, bấm “Xem đủ N coin” mở view riêng tại
 `/radar?cluster=<id>&side=…`. View này liệt kê toàn bộ member, leader/laggard,
-volume, mở được chi tiết từng coin và copy link. ID cụm băm theo membership
-để permalink không trỏ nhầm cụm khác sau refresh.
+volume, mở được chi tiết từng coin và copy link. ID cụm =
+`cluster-<slug narrative|mixed>-<hash>` của tập member đã sort (RADAR-05-E1,
+dùng chung cho permalink, cluster-history và `clusterId` trong ledger) để
+permalink không trỏ nhầm cụm khác sau refresh.
 
 Mỗi cohort 30 phút ghi snapshot cụm vào `app_settings.radar.cluster.history`
 (7 ngày / tối đa 1008 batch). So với batch gần nhất cùng side, history sinh

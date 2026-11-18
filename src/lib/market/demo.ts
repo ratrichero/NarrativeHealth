@@ -15,6 +15,7 @@ import {
   type HorizonId,
   type HorizonResult,
   type RadarSignalRecord,
+  compareCatalystOutcomes,
   type TrackRecordResult,
   type TrackedSignal,
 } from "@/lib/market/ledger";
@@ -352,6 +353,8 @@ function demoHorizons(base24h: number, bias: Bias): TrackedSignal["horizons"] {
   return result;
 }
 
+const DEMO_CATALYST_SYMBOLS = new Set(["ENA", "SUI", "RNDR", "FET"]);
+
 export function buildDemoTrackRecord(): TrackRecordResult {
   const now = Date.now();
   const tracked: TrackedSignal[] = DEMO_LEDGER.map((spec) => {
@@ -389,6 +392,12 @@ export function buildDemoTrackRecord(): TrackRecordResult {
       clusterSize: sourceRow?.clusterSize ?? 1,
       clusterLeader: sourceRow?.clusterLeader ?? false,
       clusterLaggard: sourceRow?.clusterLaggard ?? false,
+      // Demo cho bảng so sánh catalyst: vài coin có catalyst thật trong narrative,
+      // phần còn lại là nhóm đối chứng (không gọi mạng/DB).
+      hasCatalyst: DEMO_CATALYST_SYMBOLS.has(spec.symbol),
+      ...(DEMO_CATALYST_SYMBOLS.has(spec.symbol)
+        ? { catalystTypes: ["LISTING"], catalystSources: ["BINANCE_ANNOUNCEMENT"] }
+        : {}),
       actionable: spec.bias !== "neutral" && spec.score >= 55,
     };
     return {
@@ -401,6 +410,7 @@ export function buildDemoTrackRecord(): TrackRecordResult {
   return {
     summaries: summarizeByBias(tracked),
     clusterSummaries: summarizeByCluster(tracked),
+    catalyst: compareCatalystOutcomes(tracked),
     recent: [...tracked].sort((a, b) => a.ageHours - b.ageHours).slice(0, 20),
     total: tracked.length,
     actionable: tracked.filter((s) => s.actionable).length,

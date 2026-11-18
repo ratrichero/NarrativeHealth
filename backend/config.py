@@ -40,6 +40,20 @@ class Settings(BaseSettings):
     # SCHEDULER_MOVERS_TOKEN). Để trống = không gửi header (giữ hành vi cũ).
     scheduler_movers_token: str = ""
 
+    # RADAR-06-SCHED: Catalyst layer sync (POST /api/catalyst/sync).
+    # Tách nhịp theo tính chất nguồn: announcement cần tươi (5–10 phút), RSS
+    # 10–15 phút là đủ, unlock chỉ đọc event_risks (đổi 1 lần/ngày) nên 60 phút.
+    # Tên env tương ứng: SCHEDULER_CATALYST_ENABLED /
+    # SCHEDULER_CATALYST_ANNOUNCEMENTS_MINUTES / SCHEDULER_CATALYST_NEWS_MINUTES /
+    # SCHEDULER_CATALYST_UNLOCKS_MINUTES / SCHEDULER_CATALYST_TOKEN.
+    scheduler_catalyst_enabled: bool = True
+    scheduler_catalyst_announcements_minutes: int = 5
+    scheduler_catalyst_news_minutes: int = 15
+    scheduler_catalyst_unlocks_minutes: int = 60
+    scheduler_catalyst_timeout: int = 180  # giây; mỗi scope chỉ vài request
+    # Token chung với Next (SCHEDULER_CATALYST_TOKEN). Để trống = không gửi header.
+    scheduler_catalyst_token: str = ""
+
     class Config:
         env_file = ".env"
         extra = "ignore"

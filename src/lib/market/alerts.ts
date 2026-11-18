@@ -8,16 +8,23 @@ import { appSettings } from "@/db/schema";
 import type { RadarRow, RadarMarketContext } from "@/lib/market/radar";
 import { isBearishBias, isBullishBias } from "@/lib/market/ledger";
 import type { ClusterEvent } from "@/lib/market/cluster-history";
+import { matchCatalystsForSymbol } from "@/lib/catalyst/matching";
+import { readRecentCatalystFacts } from "@/lib/catalyst/store";
+import type { CatalystFact } from "@/lib/catalyst/types";
 
 const KEY = "radar.alerts.sent";
 const CLUSTER_KEY = "radar.alerts.clusters.sent";
 const MAX_SENT = 200;
 const KEEP_DAYS = 7;
+/** Số fact tối đa kèm một alert catalyst (1–3, đủ để đọc, không thành bài báo). */
+export const CATALYST_ALERT_FACT_LIMIT = 3;
 
 export interface SentAlert {
   key: string;
   at: string;
   symbol: string;
+  /** Fact dẫn dắt alert catalyst — chỉ để đọc lại lịch sử, dedupe nằm ở `key`. */
+  externalId?: string;
 }
 
 export interface AlertOptions {
@@ -44,21 +51,102 @@ export function alertKey(row: RadarRow, day: string): string {
   return `${row.symbol}|${row.bias}|${day}`;
 }
 
+function passesAlertThresholds(row: RadarRow, opts: AlertOptions): boolean {
+  if (row.bias === "neutral") return false;
+  if (!isBullishBias(row.bias) && !isBearishBias(row.bias)) return false;
+  if (row.score < opts.minScore || row.entryQuality < opts.minEntryQuality) return false;
+  if (row.impulseAgeHours !== null && row.impulseAgeHours !== undefined && row.impulseAgeHours > opts.maxImpulseAgeHours) {
+    return false;
+  }
+  return true;
+}
+
 export function selectAlertRows(
   rows: RadarRow[],
   sentKeys: Set<string>,
   day: string,
   opts: AlertOptions = alertOptions()
 ): RadarRow[] {
-  return rows.filter((row) => {
-    if (row.bias === "neutral") return false;
-    if (!isBullishBias(row.bias) && !isBearishBias(row.bias)) return false;
-    if (row.score < opts.minScore || row.entryQuality < opts.minEntryQuality) return false;
-    if (row.impulseAgeHours !== null && row.impulseAgeHours !== undefined && row.impulseAgeHours > opts.maxImpulseAgeHours) {
-      return false;
-    }
-    return !sentKeys.has(alertKey(row, day));
-  });
+  return rows.filter(
+    (row) => passesAlertThresholds(row, opts) && !sentKeys.has(alertKey(row, day))
+  );
+}
+
+/** RADAR-06: dedupe alert catalyst theo symbol + externalId của fact. */
+export function catalystAlertKey(symbol: string, externalId: string): string {
+  return `catalyst|${symbol.toUpperCase()}|${externalId}`;
+}
+
+export interface AlertCandidate {
+  row: RadarRow;
+  facts: CatalystFact[];
+  key: string;
+}
+
+/**
+ * Chọn alert kèm fact (RADAR-06). Row `catalystTriggered` + đạt ngưỡng RADAR-03
+ * → gửi 1–3 fact có link và dedupe theo `symbol|externalId`; announcement được
+ * sync 5 phút/lần nhưng cùng externalId chỉ báo một lần. Row không có fact khớp
+ * (hoặc không trigger) quay về dedupe symbol+bias+ngày như cũ.
+ *
+ * Cooldown symbol vẫn áp dụng trước (hạ tầng RADAR-03), nên nhiều announcement
+ * khác nhau trong cùng 6 giờ không dội alert.
+ */
+export function selectAlertCandidates(
+  rows: RadarRow[],
+  sentKeys: Set<string>,
+  coolingSymbols: Set<string>,
+  day: string,
+  opts: AlertOptions = alertOptions(),
+  factsFor: (row: RadarRow) => CatalystFact[] = () => []
+): AlertCandidate[] {
+  const candidates: AlertCandidate[] = [];
+
+  for (const row of rows) {
+    if (!passesAlertThresholds(row, opts)) continue;
+    if (coolingSymbols.has(row.symbol)) continue;
+
+    const facts = row.catalystTriggered
+      ? factsFor(row).slice(0, CATALYST_ALERT_FACT_LIMIT)
+      : [];
+    const key = facts.length > 0 ? catalystAlertKey(row.symbol, facts[0].externalId) : alertKey(row, day);
+    if (sentKeys.has(key)) continue;
+
+    candidates.push({ row, facts, key });
+  }
+
+  return candidates;
+}
+
+/** Nội dung alert radar — kèm 1–3 fact có link khi là catalyst-driven outlier. */
+export function buildRadarAlertText(
+  row: RadarRow,
+  market: RadarMarketContext,
+  facts: CatalystFact[] = []
+): string {
+  const direction = isBullishBias(row.bias) ? "LONG watch" : "SHORT watch";
+  const shown = facts.slice(0, CATALYST_ALERT_FACT_LIMIT);
+  const headline = shown.length > 0 ? `[Radar · catalyst] ${direction} $${row.symbol}` : `[Radar] ${direction} $${row.symbol}`;
+
+  return [
+    headline,
+    `${row.label} · score ${row.score}/100 · freshness ${row.entryQuality}/100`,
+    `Giá ${row.price} · 24h ${row.changePct > 0 ? "+" : ""}${row.changePct.toFixed(2)}%`,
+    row.impulseAgeHours !== null && row.impulseAgeHours !== undefined
+      ? `Impulse ${row.impulseAgeHours.toFixed(1)}h · extension ${row.impulseExtensionAtr ?? "—"} ATR`
+      : null,
+    row.clusterLabel ? `Cluster: ${row.clusterLabel} (${row.clusterSize} coin)` : null,
+    `Regime: ${market.regime} · BTC ${market.btcChangePct?.toFixed(2) ?? "—"}%`,
+    ...(shown.length > 0
+      ? [
+          `Catalyst (${shown.length} fact còn trong cửa sổ):`,
+          ...shown.flatMap((fact) => [`• [${fact.type}] ${fact.title}`, `  ${fact.sourceUrl}`]),
+        ]
+      : []),
+    "Không phải khuyến nghị đầu tư.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 /** Dedupe theo ngày + cooldown cùng symbol trong `cooldownHours` giờ. */
@@ -136,25 +224,43 @@ export async function dispatchRadarAlerts(
     return Number.isFinite(at) && at >= cutoff;
   });
   const opts = alertOptions();
-  const candidates = selectCooldownRows(rows, kept, day, opts);
+  const keys = new Set(kept.map((s) => s.key));
+  const cooldownStart = Date.now() - opts.cooldownHours * 3_600_000;
+  const cooling = new Set(
+    kept.filter((s) => Date.parse(s.at) >= cooldownStart).map((s) => s.symbol)
+  );
+
+  // Fact đã sync sẵn trong catalyst_events — alert không gọi mạng, chỉ đọc DB.
+  // Cửa sổ matching rộng nhất là 168h nên đọc 8 ngày; match lại tại `now`.
+  const factsBySymbol = new Map<string, CatalystFact[]>();
+  const catalyticRows = rows.filter((row) => row.catalystTriggered);
+  if (catalyticRows.length > 0) {
+    try {
+      const facts = await readRecentCatalystFacts({ sinceDays: 8, limit: 500 });
+      for (const row of catalyticRows) {
+        if (factsBySymbol.has(row.symbol)) continue;
+        factsBySymbol.set(
+          row.symbol,
+          matchCatalystsForSymbol(row.symbol, facts, Date.now(), CATALYST_ALERT_FACT_LIMIT)
+        );
+      }
+    } catch (error) {
+      console.warn(
+        "[RADAR-ALERT] Không đọc được catalyst facts:",
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
+  const candidates = selectAlertCandidates(rows, keys, cooling, day, opts, (row) =>
+    factsBySymbol.get(row.symbol) ?? []
+  );
   if (candidates.length === 0) return 0;
 
   let delivered = 0;
-  for (const row of candidates) {
-    const direction = isBullishBias(row.bias) ? "LONG watch" : "SHORT watch";
-    const text = [
-      `[Radar] ${direction} $${row.symbol}`,
-      `${row.label} · score ${row.score}/100 · freshness ${row.entryQuality}/100`,
-      `Giá ${row.price} · 24h ${row.changePct > 0 ? "+" : ""}${row.changePct.toFixed(2)}%`,
-      row.impulseAgeHours !== null && row.impulseAgeHours !== undefined
-        ? `Impulse ${row.impulseAgeHours.toFixed(1)}h · extension ${row.impulseExtensionAtr ?? "—"} ATR`
-        : null,
-      row.clusterLabel ? `Cluster: ${row.clusterLabel} (${row.clusterSize} coin)` : null,
-      `Regime: ${market.regime} · BTC ${market.btcChangePct?.toFixed(2) ?? "—"}%`,
-      "Không phải khuyến nghị đầu tư.",
-    ]
-      .filter(Boolean)
-      .join("\n");
+  for (const candidate of candidates) {
+    const { row, facts, key } = candidate;
+    const text = buildRadarAlertText(row, market, facts);
 
     try {
       const response = await fetch(url, {
@@ -168,11 +274,28 @@ export async function dispatchRadarAlerts(
           price: row.price,
           at: new Date().toISOString(),
           url: `/radar?symbol=${row.symbol}`,
+          ...(facts.length > 0
+            ? {
+                catalyst: true,
+                facts: facts.map((fact) => ({
+                  externalId: fact.externalId,
+                  type: fact.type,
+                  source: fact.source,
+                  title: fact.title,
+                  url: fact.sourceUrl,
+                })),
+              }
+            : {}),
         }),
         signal: AbortSignal.timeout(8_000),
       });
       if (!response.ok) continue;
-      kept.push({ key: alertKey(row, day), at: new Date().toISOString(), symbol: row.symbol });
+      kept.push({
+        key,
+        at: new Date().toISOString(),
+        symbol: row.symbol,
+        ...(facts.length > 0 ? { externalId: facts[0].externalId } : {}),
+      });
       delivered += 1;
     } catch (error) {
       console.warn(

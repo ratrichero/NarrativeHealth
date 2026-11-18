@@ -25,7 +25,7 @@ const STORED_LIMIT = 25;
 const RETENTION_HOURS = 24;
 const FLUSH_DEBOUNCE_MS = 4_000;
 
-export type LlmTraceFeature = "chat" | "square" | "movers" | "canary";
+export type LlmTraceFeature = "chat" | "square" | "movers" | "catalyst" | "canary";
 
 export interface LlmTraceStep {
   /** Tier name (google | primary | fallback1 | fallback2). */

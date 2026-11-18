@@ -23,10 +23,10 @@ import { BIAS_LABELS, type MoverSide, type Bias } from "@/lib/market/scoring";
 import type {
   RadarClusterSummary,
   RadarDetail,
-  RadarRow,
   RadarSnapshot,
   RadarSort,
 } from "@/lib/market/radar";
+import { CatalystPanel } from "@/components/CatalystPanel";
 import type { BriefResult } from "@/lib/market/brief";
 import { HORIZONS, type HorizonId, type TrackRecordResult } from "@/lib/market/ledger";
 
@@ -420,6 +420,8 @@ function DetailDrawer({ symbol, onClose }: { symbol: string; onClose: () => void
               </div>
             ) : null}
 
+            {data.row.catalystTriggered ? <CatalystPanel symbol={data.row.symbol} /> : null}
+
             <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-cyan-200">
@@ -600,6 +602,75 @@ function TrackRecord() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          ) : null}
+
+          {data.catalyst && data.catalyst.labeled > 0 ? (
+            <div className="rounded-lg border border-violet-500/25 bg-violet-500/5 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-xs font-semibold text-violet-200">
+                  Catalyst có giúp outlier đi tiếp? (chỉ phân tích, không vào scoring)
+                </h3>
+                <span className="text-[10px] text-slate-500">
+                  {data.catalyst.withCatalyst} có catalyst · {data.catalyst.withoutCatalyst} không ·{" "}
+                  {data.catalyst.unlabeled} chưa gắn nhãn
+                </span>
+              </div>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full min-w-[560px] text-left text-xs">
+                  <thead className="text-slate-500">
+                    <tr>
+                      <th className="py-1.5 pr-3 font-medium">Horizon</th>
+                      <th className="py-1.5 pr-3 font-medium">Có catalyst</th>
+                      <th className="py-1.5 pr-3 font-medium">Không</th>
+                      <th className="py-1.5 pr-3 font-medium">Δ return TB</th>
+                      <th className="py-1.5 font-medium">Δ hit rate</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-300">
+                    {data.catalyst.horizons.map((row) => (
+                      <tr key={row.horizon} className="border-t border-slate-800/70">
+                        <td className="py-1.5 pr-3 text-slate-400">
+                          {HORIZONS.find((h) => h.id === row.horizon)?.label ?? row.horizon}
+                        </td>
+                        <td className="py-1.5 pr-3 tabular-nums">
+                          {row.withCatalyst.n > 0
+                            ? `${row.withCatalyst.avgReturnPct === null ? "—" : formatPct(row.withCatalyst.avgReturnPct)} · ${
+                                row.withCatalyst.hitRate ?? "—"
+                              }% (${row.withCatalyst.n})`
+                            : "—"}
+                        </td>
+                        <td className="py-1.5 pr-3 tabular-nums">
+                          {row.withoutCatalyst.n > 0
+                            ? `${row.withoutCatalyst.avgReturnPct === null ? "—" : formatPct(row.withoutCatalyst.avgReturnPct)} · ${
+                                row.withoutCatalyst.hitRate ?? "—"
+                              }% (${row.withoutCatalyst.n})`
+                            : "—"}
+                        </td>
+                        <td
+                          className={cn(
+                            "py-1.5 pr-3 tabular-nums",
+                            (row.deltaAvgReturnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                          )}
+                        >
+                          {row.deltaAvgReturnPct === null ? "—" : formatPct(row.deltaAvgReturnPct)}
+                        </td>
+                        <td
+                          className={cn(
+                            "py-1.5 tabular-nums",
+                            (row.deltaHitRate ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                          )}
+                        >
+                          {row.deltaHitRate === null
+                            ? "—"
+                            : `${row.deltaHitRate > 0 ? "+" : ""}${row.deltaHitRate} điểm`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-500">{data.catalyst.note}</p>
             </div>
           ) : null}
 

@@ -1,6 +1,9 @@
 import {
   alertKey,
+  buildRadarAlertText,
+  catalystAlertKey,
   clusterAlertKey,
+  selectAlertCandidates,
   selectAlertRows,
   selectClusterAlertEvents,
   selectCooldownRows,
@@ -8,7 +11,8 @@ import {
   type SentAlert,
 } from "@/lib/market/alerts";
 import type { ClusterEvent } from "@/lib/market/cluster-history";
-import type { RadarRow } from "@/lib/market/radar";
+import type { RadarRow, RadarMarketContext } from "@/lib/market/radar";
+import type { CatalystFact } from "@/lib/catalyst/types";
 
 const opts: AlertOptions = {
   minScore: 75,
@@ -26,10 +30,26 @@ function row(overrides: Partial<RadarRow>): RadarRow {
     entryQuality: 70,
     impulseAgeHours: 3,
     price: 1,
+    changePct: 5,
     label: "Tiếp diễn tăng",
     ...overrides,
   } as unknown as RadarRow;
 }
+
+function fact(n: number, overrides: Partial<CatalystFact> = {}): CatalystFact {
+  return {
+    externalId: `ann-${n}`,
+    type: "LISTING",
+    source: "BINANCE_ANNOUNCEMENT",
+    title: `Binance will list ARB (${n})`,
+    sourceUrl: `https://www.binance.com/en/support/announcement/ann-${n}`,
+    symbols: ["ARB"],
+    publishedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+const market = { regime: "risk_on", btcChangePct: 1.2 } as unknown as RadarMarketContext;
 
 describe("selectAlertRows", () => {
   it("chọn tín hiệu đủ score/freshness và impulse còn mới", () => {
@@ -132,5 +152,109 @@ describe("selectClusterAlertEvents", () => {
     expect(
       selectClusterAlertEvents([clusterEvent], new Set(), "2026-01-02")
     ).toHaveLength(1);
+  });
+});
+
+describe("selectAlertCandidates (catalyst-driven outlier)", () => {
+  const facts = [fact(1), fact(2), fact(3), fact(4)];
+
+  it("kèm tối đa 3 fact và dedupe theo symbol + externalId", () => {
+    const candidates = selectAlertCandidates(
+      [row({ symbol: "ARB", catalystTriggered: true })],
+      new Set(),
+      new Set(),
+      "2026-01-01",
+      opts,
+      () => facts
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].facts).toHaveLength(3);
+    expect(candidates[0].key).toBe(catalystAlertKey("ARB", "ann-1"));
+    expect(candidates[0].key).toBe("catalyst|ARB|ann-1");
+  });
+
+  it("cùng externalId đã báo → không gửi lại dù announcement sync 5 phút/lần", () => {
+    const candidates = selectAlertCandidates(
+      [row({ symbol: "ARB", catalystTriggered: true })],
+      new Set([catalystAlertKey("ARB", "ann-1")]),
+      new Set(),
+      "2026-01-01",
+      opts,
+      () => facts
+    );
+    expect(candidates).toEqual([]);
+  });
+
+  it("fact mới (externalId khác) vẫn báo dù key symbol+bias+ngày đã ghi", () => {
+    const candidates = selectAlertCandidates(
+      [row({ symbol: "ARB", catalystTriggered: true })],
+      new Set(["ARB|continuation|2026-01-01"]),
+      new Set(),
+      "2026-01-01",
+      opts,
+      () => facts
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].key).toBe("catalyst|ARB|ann-1");
+  });
+
+  it("cooldown theo symbol vẫn chặn alert catalyst", () => {
+    const candidates = selectAlertCandidates(
+      [row({ symbol: "ARB", catalystTriggered: true })],
+      new Set(),
+      new Set(["ARB"]),
+      "2026-01-01",
+      opts,
+      () => facts
+    );
+    expect(candidates).toEqual([]);
+  });
+
+  it("row không trigger catalyst → dedupe ngày như cũ, không kèm fact", () => {
+    const candidates = selectAlertCandidates(
+      [row({ symbol: "ARB", catalystTriggered: false })],
+      new Set(),
+      new Set(),
+      "2026-01-01",
+      opts,
+      () => facts
+    );
+    expect(candidates[0].facts).toEqual([]);
+    expect(candidates[0].key).toBe("ARB|continuation|2026-01-01");
+  });
+
+  it("chưa đạt ngưỡng alert thì không gửi dù có catalyst", () => {
+    const candidates = selectAlertCandidates(
+      [row({ symbol: "ARB", score: 60, catalystTriggered: true })],
+      new Set(),
+      new Set(),
+      "2026-01-01",
+      opts,
+      () => facts
+    );
+    expect(candidates).toEqual([]);
+  });
+});
+
+describe("buildRadarAlertText", () => {
+  it("kèm 1–3 fact có link nguồn khi là catalyst-driven", () => {
+    const text = buildRadarAlertText(
+      row({ symbol: "ARB", catalystTriggered: true }),
+      market,
+      [fact(1), fact(2), fact(3), fact(4)]
+    );
+
+    expect(text).toContain("[Radar · catalyst] LONG watch $ARB");
+    expect(text).toContain("Catalyst (3 fact còn trong cửa sổ):");
+    expect(text).toContain("[LISTING] Binance will list ARB (1)");
+    expect(text).toContain("https://www.binance.com/en/support/announcement/ann-1");
+    expect(text).not.toContain("ann-4");
+  });
+
+  it("không có fact → text như alert radar thường", () => {
+    const text = buildRadarAlertText(row({ symbol: "ALT" }), market, []);
+    expect(text).toContain("[Radar] LONG watch $ALT");
+    expect(text).not.toContain("Catalyst");
   });
 });

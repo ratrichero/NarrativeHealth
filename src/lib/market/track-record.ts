@@ -7,8 +7,10 @@ import { eq } from "drizzle-orm";
 import { fetchBinanceFuturesKlines } from "@/lib/collectors/binance";
 import {
   LEDGER_NOTE,
+  compareCatalystOutcomes,
   evaluateSignal,
   planCohorts,
+  selectSignalsForEvaluation,
   summarizeByBias,
   summarizeByCluster,
   type RadarSignalRecord,
@@ -19,14 +21,51 @@ import { dispatchClusterAlerts, dispatchRadarAlerts } from "@/lib/market/alerts"
 import { recordClusterSnapshots } from "@/lib/market/cluster-history";
 import { isBearishBias, isBullishBias } from "@/lib/market/ledger";
 import { getRadarSnapshot, type RadarRow } from "@/lib/market/radar";
+import { matchCatalystsForSymbol } from "@/lib/catalyst/matching";
+import { readRecentCatalystFacts } from "@/lib/catalyst/store";
+import type { CatalystFact } from "@/lib/catalyst/types";
 
 export type { RadarSignalRecord, TrackRecordResult } from "@/lib/market/ledger";
 
 const KEY = "radar.signals";
 const MAX_SIGNALS = 500;
 const KEEP_DAYS = 8;
-const MAX_EVALUATE = 60;
 const MAX_RECENT = 20;
+
+interface CatalystLedgerLabels {
+  hasCatalyst: boolean;
+  catalystTypes: string[];
+  catalystSources: string[];
+}
+
+async function loadCatalystFacts(now: number): Promise<CatalystFact[] | null> {
+  try {
+    const facts = await readRecentCatalystFacts({ sinceDays: 14, now });
+    // Rỗng = chưa sync nguồn nào → không thể kết luận “không có catalyst”, để trống nhãn.
+    return facts.length > 0 ? facts : null;
+  } catch (error) {
+    console.warn(
+      "[RADAR-TRACK] Không đọc được catalyst facts — tín hiệu sẽ chưa gắn nhãn:",
+      error instanceof Error ? error.message : String(error)
+    );
+    return null;
+  }
+}
+
+/** Nhãn catalyst cho ledger: chỉ loại/nguồn, không lưu toàn văn fact. */
+function catalystLabelsFor(
+  symbol: string,
+  facts: CatalystFact[],
+  now: number
+): CatalystLedgerLabels | null {
+  if (facts.length === 0) return null;
+  const matched = matchCatalystsForSymbol(symbol, facts, now);
+  return {
+    hasCatalyst: matched.length > 0,
+    catalystTypes: [...new Set(matched.map((fact) => fact.type))],
+    catalystSources: [...new Set(matched.map((fact) => fact.source))],
+  };
+}
 
 function setupFor(row: RadarRow): SetupLevels | null {
   if (!row.atrPct || row.atrPct <= 0) return null;
@@ -116,8 +155,23 @@ export async function recordAllRadarCohorts(): Promise<void> {
   const plan = planCohorts({ gainer: gainer.rows, loser: loser.rows, unusual: unusual.rows });
   const btcPrice = gainer.market.btcPrice;
   const day = new Date(now).toISOString().slice(0, 10);
+
+  // RADAR-06-LEDGER: chụp nhãn catalyst + clusterId tại đúng thời điểm ghi.
+  // Một lần đọc DB cho cả cohort; không có dữ liệu catalyst thì để trống nhãn
+  // thay vì ghi false sai. Nhãn chỉ để phân tích, không vào score/bias.
+  const catalystFacts = await loadCatalystFacts(now);
+  const labelsBySymbol = new Map<string, CatalystLedgerLabels | null>();
+  for (const { row } of plan) {
+    if (labelsBySymbol.has(row.symbol)) continue;
+    labelsBySymbol.set(
+      row.symbol,
+      catalystFacts ? catalystLabelsFor(row.symbol, catalystFacts, now) : null
+    );
+  }
+
   const candidates = plan.map<RadarSignalRecord>(({ side, row }) => {
     const setup = setupFor(row);
+    const labels = labelsBySymbol.get(row.symbol) ?? null;
     return {
       symbol: row.symbol,
       side,
@@ -143,6 +197,13 @@ export async function recordAllRadarCohorts(): Promise<void> {
       clusterLeader: row.clusterLeader ?? false,
       clusterLaggard: row.clusterLaggard ?? false,
       actionable: row.bias !== "neutral" && row.score >= 55 && row.entryQuality >= 40,
+      ...(labels
+        ? {
+            hasCatalyst: labels.hasCatalyst,
+            catalystTypes: labels.catalystTypes,
+            catalystSources: labels.catalystSources,
+          }
+        : {}),
     };
   });
   if (candidates.length === 0) return;
@@ -190,14 +251,16 @@ let evalCache: { expires: number; value: TrackRecordResult } | null = null;
 export async function evaluateRadarSignals(): Promise<TrackRecordResult> {
   if (evalCache && evalCache.expires > Date.now()) return evalCache.value;
 
-  const signals = (await readSignals())
-    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
-    .slice(0, MAX_EVALUATE);
+  const now = Date.now();
+  // Chọn theo tuổi horizon thay vì lấy hết: số symbol phải fetch bị chặn (~200)
+  // nên weight/latency không phình theo cohort 8 ngày; horizon 3d/7d vẫn có mẫu.
+  const signals = selectSignalsForEvaluation(await readSignals(), now);
 
   if (signals.length === 0) {
     return {
       summaries: [],
       clusterSummaries: [],
+      catalyst: compareCatalystOutcomes([]),
       recent: [],
       total: 0,
       actionable: 0,
@@ -223,7 +286,6 @@ export async function evaluateRadarSignals(): Promise<TrackRecordResult> {
   ]);
   const candlesBySymbol = new Map(entries);
 
-  const now = Date.now();
   const tracked = signals.map((signal) =>
     evaluateSignal(signal, candlesBySymbol.get(signal.symbol) ?? [], btcCandles, now)
   );
@@ -231,6 +293,7 @@ export async function evaluateRadarSignals(): Promise<TrackRecordResult> {
   const result: TrackRecordResult = {
     summaries: summarizeByBias(tracked),
     clusterSummaries: summarizeByCluster(tracked),
+    catalyst: compareCatalystOutcomes(tracked),
     recent: tracked.slice(0, MAX_RECENT),
     total: tracked.length,
     actionable: tracked.filter((s) => s.actionable).length,
