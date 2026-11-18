@@ -6,6 +6,17 @@ import type { MarketMetrics } from "@/lib/market/metrics";
 import { compositeScore, scoreForSide, type MoverSide } from "@/lib/market/scoring";
 import { buildSetup } from "@/lib/market/setup";
 import type { RadarDetail, RadarRow, RadarSnapshot } from "@/lib/market/radar";
+import {
+  HORIZONS,
+  LEDGER_NOTE,
+  summarizeByBias,
+  type HorizonId,
+  type HorizonResult,
+  type RadarSignalRecord,
+  type TrackRecordResult,
+  type TrackedSignal,
+} from "@/lib/market/ledger";
+import type { Bias } from "@/lib/market/scoring";
 
 interface DemoSpec {
   symbol: string;
@@ -163,6 +174,7 @@ export function buildDemoSnapshot(side: MoverSide): RadarSnapshot {
       losers: 96,
       totalVolumeUsd: 68.4e9,
       btcChangePct: 1.24,
+      btcPrice: 94_250,
       universe: 278,
     },
     collectedAt: new Date().toISOString(),
@@ -205,6 +217,112 @@ function demoChart(row: RadarRow): RadarDetail["chart"] {
     previous = close;
   }
   return candles;
+}
+
+interface DemoLedgerSpec {
+  symbol: string;
+  bias: Bias;
+  score: number;
+  entryQuality: number;
+  price: number;
+  base24h: number;
+  ageHours: number;
+}
+
+// 14 tín hiệu mẫu với kết quả khác nhau để panel track record có dữ liệu đọc.
+const DEMO_LEDGER: DemoLedgerSpec[] = [
+  { symbol: "WIF", bias: "continuation", score: 82, entryQuality: 71, price: 2.31, base24h: 9.4, ageHours: 190 },
+  { symbol: "ENA", bias: "continuation", score: 76, entryQuality: 64, price: 0.58, base24h: 5.2, ageHours: 96 },
+  { symbol: "SUI", bias: "continuation", score: 71, entryQuality: 68, price: 3.12, base24h: -2.1, ageHours: 48 },
+  { symbol: "AERO", bias: "exhaustion", score: 80, entryQuality: 22, price: 1.42, base24h: -6.8, ageHours: 190 },
+  { symbol: "DASH", bias: "exhaustion", score: 63, entryQuality: 31, price: 29.4, base24h: 3.4, ageHours: 72 },
+  { symbol: "ZEC", bias: "flush-bounce", score: 88, entryQuality: 46, price: 48.2, base24h: 11.6, ageHours: 190 },
+  { symbol: "CRV", bias: "flush-bounce", score: 79, entryQuality: 52, price: 0.42, base24h: 4.8, ageHours: 30 },
+  { symbol: "APT", bias: "breakdown", score: 84, entryQuality: 58, price: 8.9, base24h: -8.2, ageHours: 120 },
+  { symbol: "LDO", bias: "breakdown", score: 69, entryQuality: 44, price: 1.62, base24h: 1.9, ageHours: 24 },
+  { symbol: "ALT", bias: "accumulation", score: 74, entryQuality: 88, price: 0.42, base24h: 6.1, ageHours: 168 },
+  { symbol: "OM", bias: "accumulation", score: 66, entryQuality: 81, price: 1.06, base24h: -1.4, ageHours: 60 },
+  { symbol: "ENS", bias: "breakout", score: 78, entryQuality: 55, price: 24.8, base24h: 7.7, ageHours: 96 },
+  { symbol: "COMP", bias: "neutral", score: 41, entryQuality: 62, price: 42.6, base24h: 0.8, ageHours: 72 },
+  { symbol: "RNDR", bias: "neutral", score: 35, entryQuality: 57, price: 6.4, base24h: -0.6, ageHours: 24 },
+];
+
+function demoHorizons(base24h: number, bias: Bias): TrackedSignal["horizons"] {
+  const factors: Record<HorizonId, number> = { "1h": 0.2, "4h": 0.45, "24h": 1, "3d": 1.7, "7d": 2.4 };
+  const bullish = ["continuation", "flush-bounce", "breakout", "accumulation"].includes(bias);
+  const bearish = ["exhaustion", "breakdown"].includes(bias);
+  const result: TrackedSignal["horizons"] = {};
+
+  for (const horizon of HORIZONS) {
+    const ret = Number((base24h * factors[horizon.id]).toFixed(2));
+    const btc = Number((0.9 * factors[horizon.id]).toFixed(2));
+    const mfe = Number((Math.max(ret, 0) + Math.abs(base24h) * 0.35 + 1.2).toFixed(2));
+    const mae = Number((Math.min(ret, 0) - Math.abs(base24h) * 0.3 - 1.1).toFixed(2));
+    const tp1Hit = bullish ? mfe >= 3 : bearish ? mae <= -3 : null;
+    const slHit = bullish ? mae <= -3 : bearish ? mfe >= 3 : null;
+    result[horizon.id] = {
+      returnPct: ret,
+      btcReturnPct: btc,
+      relativePct: Number((ret - btc).toFixed(2)),
+      mfePct: mfe,
+      maePct: mae,
+      tp1Hit,
+      slHit,
+      firstEvent: tp1Hit && slHit ? "ambiguous" : tp1Hit ? "tp" : slHit ? "sl" : null,
+      win: bullish ? ret > 0 : bearish ? ret < 0 : null,
+      pending: false,
+    } satisfies HorizonResult;
+  }
+  return result;
+}
+
+export function buildDemoTrackRecord(): TrackRecordResult {
+  const now = Date.now();
+  const tracked: TrackedSignal[] = DEMO_LEDGER.map((spec) => {
+    const bullish = ["continuation", "flush-bounce", "breakout", "accumulation"].includes(spec.bias);
+    const bearish = ["exhaustion", "breakdown"].includes(spec.bias);
+    const setup =
+      bullish || bearish
+        ? buildSetup(bullish ? "BULLISH" : "BEARISH", spec.price, spec.price * 0.035)
+        : null;
+    const at = new Date(now - spec.ageHours * 3_600_000).toISOString();
+    const record: RadarSignalRecord = {
+      symbol: spec.symbol,
+      side: bullish ? "gainer" : bearish ? "loser" : "unusual",
+      bias: spec.bias,
+      score: spec.score,
+      entryQuality: spec.entryQuality,
+      price: spec.price,
+      at,
+      btcPrice: 94_250,
+      setup: setup
+        ? {
+            direction: setup.direction,
+            entryLow: setup.entryLow,
+            entryHigh: setup.entryHigh,
+            tp1: setup.tp1,
+            tp2: setup.tp2,
+            stopLoss: setup.stopLoss,
+          }
+        : null,
+      actionable: spec.bias !== "neutral" && spec.score >= 55,
+    };
+    return {
+      ...record,
+      ageHours: spec.ageHours,
+      horizons: demoHorizons(spec.base24h, spec.bias),
+    };
+  });
+
+  return {
+    summaries: summarizeByBias(tracked),
+    recent: [...tracked].sort((a, b) => a.ageHours - b.ageHours).slice(0, 20),
+    total: tracked.length,
+    actionable: tracked.filter((s) => s.actionable).length,
+    note: `${LEDGER_NOTE} (Dữ liệu mẫu vì server bị Binance geo-block.)`,
+    demo: true,
+    evaluatedAt: new Date().toISOString(),
+  };
 }
 
 export function getDemoDetail(rawSymbol: string): RadarDetail | null {

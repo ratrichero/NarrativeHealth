@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 import { BIAS_LABELS, type MoverSide, type Bias } from "@/lib/market/scoring";
 import type { RadarDetail, RadarRow, RadarSnapshot, RadarSort } from "@/lib/market/radar";
 import type { BriefResult } from "@/lib/market/brief";
-import type { TrackRecordResult } from "@/lib/market/track-record";
+import { HORIZONS, type HorizonId, type TrackRecordResult } from "@/lib/market/ledger";
 
 const SIDE_TABS: { id: MoverSide; label: string; hint: string }[] = [
   { id: "gainer", label: "Tăng mạnh", hint: "Move còn tiếp diễn hay đã kiệt sức?" },
@@ -349,6 +349,7 @@ function DetailDrawer({ symbol, onClose }: { symbol: string; onClose: () => void
 }
 
 function TrackRecord() {
+  const [horizon, setHorizon] = useState<HorizonId>("24h");
   const { data, isLoading, error } = useQuery<TrackRecordResult>({
     queryKey: ["market-radar-track-record"],
     queryFn: () => getJson<TrackRecordResult>("/api/market/radar/track-record"),
@@ -356,19 +357,41 @@ function TrackRecord() {
     retry: 1,
   });
 
+  const horizonMeta = HORIZONS.find((h) => h.id === horizon) ?? HORIZONS[2];
+  const summaries = data?.summaries ?? [];
+
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Activity className="h-4 w-4 text-cyan-400" />
-        <h2 className="text-sm font-semibold text-slate-200">Track record tín hiệu radar</h2>
+        <h2 className="text-sm font-semibold text-slate-200">Signal Ledger — forward return</h2>
         <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] text-slate-500">
-          tự lưu · 14 ngày
+          cohort 8 ngày · cả neutral
         </span>
+        {data?.demo ? (
+          <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-300">
+            dữ liệu mẫu
+          </span>
+        ) : null}
+        <div className="ml-auto flex flex-wrap gap-1 rounded-lg border border-slate-800 bg-slate-950/60 p-1">
+          {HORIZONS.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setHorizon(item.id)}
+              className={cn(
+                "rounded-md px-2.5 py-1 text-[11px] font-medium",
+                horizon === item.id ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
+              )}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {isLoading ? (
         <p className="mt-3 flex items-center gap-2 text-xs text-slate-400">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Đang tính forward return…
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Đang đo {horizonMeta.label}…
         </p>
       ) : error ? (
         <p className="mt-3 text-xs text-rose-300">
@@ -376,51 +399,111 @@ function TrackRecord() {
         </p>
       ) : !data || data.total === 0 ? (
         <p className="mt-3 text-xs text-slate-400">
-          Chưa có tín hiệu. Khi radar có coin score ≥ 55 và độ mới ≥ 40, tín hiệu sẽ được lưu tự động để đo 1–7 ngày sau.
+          Chưa có cohort nào. Mỗi ngày radar lưu tối đa 12 row/bên (kể cả neutral) để đo 1h/4h/24h/3d/7d.
         </p>
       ) : (
         <div className="mt-4 space-y-4">
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            {data.summaries.map((summary) => (
-              <div key={summary.bias} className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
-                <p className="text-[11px] text-slate-500">{summary.label}</p>
-                <p className="mt-1 text-lg font-semibold text-slate-100">
-                  {summary.hitRate === null ? "—" : `${summary.hitRate}%`}
-                  <span className="ml-1 text-xs font-normal text-slate-500">({summary.wins}/{summary.n})</span>
-                </p>
-                <p className={cn("text-[11px]", (summary.avgReturnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                  TB {formatPct(summary.avgReturnPct)}
-                </p>
-              </div>
-            ))}
+          <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500">
+            <span>{data.total} tín hiệu · {data.actionable} actionable</span>
+            <span>· {horizonMeta.label} đã đủ tuổi: {summaries.reduce((n, s) => n + (s.horizons.find((h) => h.horizon === horizon)?.n ?? 0), 0)}</span>
+            <span>· BTC làm mốc relative</span>
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-slate-800">
+            <table className="w-full min-w-[720px] text-left text-xs">
+              <thead className="bg-slate-950/60 text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Bias</th>
+                  <th className="px-3 py-2 font-medium">N</th>
+                  <th className="px-3 py-2 font-medium">Hit rate</th>
+                  <th className="px-3 py-2 font-medium">Return TB</th>
+                  <th className="px-3 py-2 font-medium">Vs BTC</th>
+                  <th className="px-3 py-2 font-medium">MFE / MAE</th>
+                  <th className="px-3 py-2 font-medium">TP1 / SL</th>
+                </tr>
+              </thead>
+              <tbody className="text-slate-300">
+                {summaries.map((summary) => {
+                  const h = summary.horizons.find((item) => item.horizon === horizon);
+                  return (
+                    <tr key={summary.bias} className="border-t border-slate-800/70">
+                      <td className="px-3 py-2 font-medium text-slate-200">{summary.label}</td>
+                      <td className="px-3 py-2 tabular-nums">{h?.n ?? 0}</td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {h?.hitRate === null || h?.hitRate === undefined ? "—" : `${h.hitRate}%`}
+                        {h && h.n > 0 ? <span className="ml-1 text-slate-600">({h.n})</span> : null}
+                      </td>
+                      <td className={cn("px-3 py-2 tabular-nums", (h?.avgReturnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                        {h?.avgReturnPct === null || h?.avgReturnPct === undefined ? "—" : formatPct(h.avgReturnPct)}
+                      </td>
+                      <td className={cn("px-3 py-2 tabular-nums", (h?.avgRelativePct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                        {h?.avgRelativePct === null || h?.avgRelativePct === undefined ? "—" : formatPct(h.avgRelativePct)}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums text-slate-400">
+                        {h?.avgMfePct === null || h?.avgMfePct === undefined ? "—" : formatPct(h.avgMfePct)}
+                        {" / "}
+                        {h?.avgMaePct === null || h?.avgMaePct === undefined ? "—" : formatPct(h.avgMaePct)}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums text-slate-400">
+                        {h?.tp1HitRate === null || h?.tp1HitRate === undefined ? "—" : `${h.tp1HitRate}%`}
+                        {" / "}
+                        {h?.slHitRate === null || h?.slHitRate === undefined ? "—" : `${h.slHitRate}%`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+            <table className="w-full min-w-[760px] text-left text-xs">
               <thead className="text-slate-500">
                 <tr>
                   <th className="py-1.5 pr-3 font-medium">Coin</th>
                   <th className="py-1.5 pr-3 font-medium">Bias lúc ghi</th>
                   <th className="py-1.5 pr-3 font-medium">Score</th>
                   <th className="py-1.5 pr-3 font-medium">Giá lúc ghi</th>
-                  <th className="py-1.5 pr-3 font-medium">Hiện tại</th>
+                  <th className="py-1.5 pr-3 font-medium">{horizonMeta.label}</th>
+                  <th className="py-1.5 pr-3 font-medium">Vs BTC</th>
+                  <th className="py-1.5 pr-3 font-medium">MFE / MAE</th>
+                  <th className="py-1.5 pr-3 font-medium">TP/SL</th>
                   <th className="py-1.5 pr-3 font-medium">Tuổi</th>
                 </tr>
               </thead>
               <tbody className="text-slate-300">
-                {data.recent.map((row) => (
-                  <tr key={`${row.symbol}-${row.at}`} className="border-t border-slate-800/70">
-                    <td className="py-1.5 pr-3 font-medium text-slate-200">${row.symbol}</td>
-                    <td className="py-1.5 pr-3">{BIAS_LABELS[row.bias]}</td>
-                    <td className="py-1.5 pr-3">{row.score}</td>
-                    <td className="py-1.5 pr-3 tabular-nums">{formatPrice(row.price)}</td>
-                    <td className={cn("py-1.5 pr-3 tabular-nums", (row.returnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
-                      {row.returnPct === null ? "đang chạy" : formatPct(row.returnPct)}
-                      {row.win === true ? " ✓" : row.win === false ? " ✗" : ""}
-                    </td>
-                    <td className="py-1.5 pr-3 text-slate-500">{row.ageHours}h</td>
-                  </tr>
-                ))}
+                {data.recent.map((row) => {
+                  const h = row.horizons[horizon];
+                  return (
+                    <tr key={`${row.symbol}-${row.bias}-${row.at}`} className="border-t border-slate-800/70">
+                      <td className="py-1.5 pr-3 font-medium text-slate-200">
+                        ${row.symbol}
+                        {!row.actionable ? (
+                          <span className="ml-1 rounded border border-slate-700 px-1 py-0.5 text-[9px] text-slate-500">watch</span>
+                        ) : null}
+                      </td>
+                      <td className="py-1.5 pr-3">{BIAS_LABELS[row.bias]}</td>
+                      <td className="py-1.5 pr-3">{row.score}</td>
+                      <td className="py-1.5 pr-3 tabular-nums">{formatPrice(row.price)}</td>
+                      <td className={cn("py-1.5 pr-3 tabular-nums", (h?.returnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                        {h?.pending ? "pending" : h?.returnPct === null || h?.returnPct === undefined ? "—" : formatPct(h.returnPct)}
+                        {h?.win === true ? " ✓" : h?.win === false ? " ✗" : ""}
+                      </td>
+                      <td className={cn("py-1.5 pr-3 tabular-nums", (h?.relativePct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                        {h?.relativePct === null || h?.relativePct === undefined ? "—" : formatPct(h.relativePct)}
+                      </td>
+                      <td className="py-1.5 pr-3 tabular-nums text-slate-400">
+                        {h?.mfePct === null || h?.mfePct === undefined ? "—" : formatPct(h.mfePct)}
+                        {" / "}
+                        {h?.maePct === null || h?.maePct === undefined ? "—" : formatPct(h.maePct)}
+                      </td>
+                      <td className="py-1.5 pr-3 text-slate-400">
+                        {h?.firstEvent === "tp" ? "TP trước" : h?.firstEvent === "sl" ? "SL trước" : h?.firstEvent === "ambiguous" ? "cùng nến" : h?.pending ? "—" : "chưa chạm"}
+                      </td>
+                      <td className="py-1.5 pr-3 text-slate-500">{row.ageHours}h</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

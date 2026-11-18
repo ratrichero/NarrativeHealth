@@ -1,7 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { getRadarSnapshot, type RadarSort } from "@/lib/market/radar";
-import { recordRadarSignals } from "@/lib/market/track-record";
+import { recordAllRadarCohorts } from "@/lib/market/track-record";
 import type { MoverSide } from "@/lib/market/scoring";
+import { clientIpFromHeaders, listLimiter, rateLimitHeaders } from "@/lib/market/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -12,6 +13,14 @@ const SORTS: RadarSort[] = ["composite", "change", "volume", "fresh"];
 // GET /api/market/movers?side=gainer|loser|unusual&limit=15&sort=composite
 // Cache trong module 60s; mọi enrichment đều null-safe.
 export async function GET(request: NextRequest) {
+  const rate = listLimiter.check(clientIpFromHeaders(request.headers));
+  if (!rate.allowed) {
+    return NextResponse.json(
+      { success: false, error: `Quá nhiều request. Thử lại sau ${rate.retryAfterSec}s.` },
+      { status: 429, headers: rateLimitHeaders(rate) }
+    );
+  }
+
   const params = request.nextUrl.searchParams;
   const sideParam = params.get("side") ?? "gainer";
   if (!SIDES.includes(sideParam as MoverSide)) {
@@ -35,8 +44,12 @@ export async function GET(request: NextRequest) {
     const snapshot = await getRadarSnapshot({ side, limit, minVolume, sort, excludeSystem });
 
     // Track record chỉ ghi tín hiệu thật; demo không được làm bẩn số liệu.
+    // Ghi đủ 3 side + cohort neutral sau response, không phụ thuộc tab đang xem
+    // và không làm chậm request hiện tại.
     if (!snapshot.demo) {
-      await recordRadarSignals(snapshot.rows, side).catch(() => undefined);
+      after(async () => {
+        await recordAllRadarCohorts().catch(() => undefined);
+      });
     }
 
     return NextResponse.json({ success: true, data: snapshot });

@@ -1,48 +1,35 @@
-// RADAR-TRACK: lưu tín hiệu radar và đo forward return.
-// Không thêm bảng: dùng app_settings key "radar.signals" (JSONB), giữ 14 ngày.
-// Đây là track record của chính screener — không phải khuyến nghị giao dịch.
+// RADAR-TRACK: lưu cohort tín hiệu radar (kể cả neutral) và đo nhiều horizon.
+// Không thêm bảng: app_settings key "radar.signals". Giữ 8 ngày để đủ horizon 7d.
 
 import { db } from "@/db";
 import { appSettings } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { BIAS_LABELS, type Bias } from "@/lib/market/scoring";
-import { fetchFuturesTickers, type RadarRow } from "@/lib/market/radar";
+import { fetchBinanceFuturesKlines } from "@/lib/collectors/binance";
+import {
+  LEDGER_NOTE,
+  evaluateSignal,
+  planCohorts,
+  summarizeByBias,
+  type RadarSignalRecord,
+  type TrackRecordResult,
+} from "@/lib/market/ledger";
+import { buildSetup, type SetupLevels } from "@/lib/market/setup";
+import { isBearishBias, isBullishBias } from "@/lib/market/ledger";
+import { getRadarSnapshot, type RadarRow } from "@/lib/market/radar";
+
+export type { RadarSignalRecord, TrackRecordResult } from "@/lib/market/ledger";
 
 const KEY = "radar.signals";
-const MAX_SIGNALS = 300;
-const KEEP_DAYS = 14;
-const BULLISH: Bias[] = ["continuation", "flush-bounce", "breakout", "accumulation"];
-const BEARISH: Bias[] = ["exhaustion", "breakdown"];
+const MAX_SIGNALS = 500;
+const KEEP_DAYS = 8;
+const MAX_EVALUATE = 60;
+const MAX_RECENT = 20;
 
-export interface RadarSignalRecord {
-  symbol: string;
-  side: "gainer" | "loser" | "unusual";
-  bias: Bias;
-  score: number;
-  price: number;
-  at: string;
-}
-
-export interface TrackRecordRow extends RadarSignalRecord {
-  returnPct: number | null;
-  ageHours: number;
-  win: boolean | null;
-}
-
-export interface TrackRecordSummary {
-  bias: Bias;
-  label: string;
-  n: number;
-  wins: number;
-  hitRate: number | null;
-  avgReturnPct: number | null;
-}
-
-export interface TrackRecordResult {
-  summaries: TrackRecordSummary[];
-  recent: TrackRecordRow[];
-  total: number;
-  note: string;
+function setupFor(row: RadarRow): SetupLevels | null {
+  if (!row.atrPct || row.atrPct <= 0) return null;
+  if (isBullishBias(row.bias)) return buildSetup("BULLISH", row.price, (row.price * row.atrPct) / 100);
+  if (isBearishBias(row.bias)) return buildSetup("BEARISH", row.price, (row.price * row.atrPct) / 100);
+  return null;
 }
 
 async function readSignals(): Promise<RadarSignalRecord[]> {
@@ -50,15 +37,24 @@ async function readSignals(): Promise<RadarSignalRecord[]> {
     const [row] = await db.select().from(appSettings).where(eq(appSettings.key, KEY)).limit(1);
     const value = row?.value;
     if (!Array.isArray(value)) return [];
-    return value.filter(
-      (s): s is RadarSignalRecord =>
-        Boolean(s) &&
-        typeof s === "object" &&
-        typeof (s as RadarSignalRecord).symbol === "string" &&
-        typeof (s as RadarSignalRecord).at === "string" &&
-        Number.isFinite((s as RadarSignalRecord).price) &&
-        (s as RadarSignalRecord).price > 0
-    );
+    return value
+      .filter(
+        (s): s is RadarSignalRecord =>
+          Boolean(s) &&
+          typeof s === "object" &&
+          typeof (s as RadarSignalRecord).symbol === "string" &&
+          typeof (s as RadarSignalRecord).at === "string" &&
+          Number.isFinite((s as RadarSignalRecord).price) &&
+          (s as RadarSignalRecord).price > 0
+      )
+      .map((s) => ({
+        ...s,
+        entryQuality: Number.isFinite(s.entryQuality) ? s.entryQuality : 0,
+        actionable:
+          typeof s.actionable === "boolean"
+            ? s.actionable
+            : s.bias !== "neutral" && Number(s.score) >= 55 && Number(s.entryQuality ?? 0) >= 40,
+      }));
   } catch (error) {
     console.warn(
       "[RADAR-TRACK] Không đọc được signals:",
@@ -78,33 +74,62 @@ async function writeSignals(signals: RadarSignalRecord[]): Promise<void> {
     });
 }
 
-const lastRecordAt = new Map<string, number>();
+let lastRecordAt = 0;
 
 /**
- * Ghi tín hiệu đủ mạnh của tab hiện tại. Throttle 30 phút/tab và dedupe
- * theo symbol + ngày + side để không nhồi app_settings mỗi lần refresh.
+ * Ghi đủ cohort 3 side + cohort neutral mỗi ngày, dùng snapshot chuẩn chứ không
+ * phải rows đã filter/sort theo tab người xem. Dedupe symbol+side+ngày.
  */
-export async function recordRadarSignals(rows: RadarRow[], side: RadarSignalRecord["side"]): Promise<void> {
-  if (process.env.NODE_ENV === "test") return;
+export async function recordAllRadarCohorts(): Promise<void> {
+  if (process.env.NODE_ENV === "test" || process.env.RADAR_DEMO === "1") return;
 
   const now = Date.now();
-  const last = lastRecordAt.get(side) ?? 0;
-  if (now - last < 30 * 60_000) return;
-  lastRecordAt.set(side, now);
+  if (now - lastRecordAt < 30 * 60_000) return;
+  lastRecordAt = now;
 
+  let snapshots;
+  try {
+    snapshots = await Promise.all([
+      getRadarSnapshot({ side: "gainer", limit: 30, sort: "composite" }),
+      getRadarSnapshot({ side: "loser", limit: 30, sort: "composite" }),
+      getRadarSnapshot({ side: "unusual", limit: 30, sort: "composite" }),
+    ]);
+  } catch (error) {
+    console.warn(
+      "[RADAR-TRACK] Không lấy được snapshot chuẩn cho cohort:",
+      error instanceof Error ? error.message : String(error)
+    );
+    return;
+  }
+
+  const [gainer, loser, unusual] = snapshots;
+  const plan = planCohorts({ gainer: gainer.rows, loser: loser.rows, unusual: unusual.rows });
+  const btcPrice = gainer.market.btcPrice;
   const day = new Date(now).toISOString().slice(0, 10);
-  const candidates = rows
-    .filter((r) => r.bias !== "neutral")
-    .filter((r) => r.score >= 55 && r.entryQuality >= 40)
-    .slice(0, 6)
-    .map<RadarSignalRecord>((r) => ({
-      symbol: r.symbol,
+  const candidates = plan.map<RadarSignalRecord>(({ side, row }) => {
+    const setup = setupFor(row);
+    return {
+      symbol: row.symbol,
       side,
-      bias: r.bias,
-      score: r.score,
-      price: r.price,
+      bias: row.bias,
+      score: row.score,
+      entryQuality: row.entryQuality,
+      price: row.price,
       at: new Date(now).toISOString(),
-    }));
+      btcPrice: btcPrice !== null && Number.isFinite(btcPrice) && btcPrice > 0 ? btcPrice : null,
+      setup: setup
+        ? {
+            direction: setup.direction,
+            entryLow: setup.entryLow,
+            entryHigh: setup.entryHigh,
+            tp1: setup.tp1,
+            tp2: setup.tp2,
+            stopLoss: setup.stopLoss,
+          }
+        : null,
+      actionable: row.bias !== "neutral" && row.score >= 55 && row.entryQuality >= 40,
+    };
+  });
   if (candidates.length === 0) return;
 
   try {
@@ -115,7 +140,10 @@ export async function recordRadarSignals(rows: RadarRow[], side: RadarSignalReco
 
     const cutoff = now - KEEP_DAYS * 86_400_000;
     const kept = existing
-      .filter((s) => new Date(s.at).getTime() >= cutoff)
+      .filter((s) => {
+        const at = new Date(s.at).getTime();
+        return Number.isFinite(at) && at >= cutoff;
+      })
       .concat(fresh)
       .slice(-MAX_SIGNALS);
     await writeSignals(kept);
@@ -127,10 +155,18 @@ export async function recordRadarSignals(rows: RadarRow[], side: RadarSignalReco
   }
 }
 
-function winFor(bias: Bias, returnPct: number): boolean | null {
-  if (BULLISH.includes(bias)) return returnPct > 0;
-  if (BEARISH.includes(bias)) return returnPct < 0;
-  return null;
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await fn(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 let evalCache: { expires: number; value: TrackRecordResult } | null = null;
@@ -138,75 +174,57 @@ let evalCache: { expires: number; value: TrackRecordResult } | null = null;
 export async function evaluateRadarSignals(): Promise<TrackRecordResult> {
   if (evalCache && evalCache.expires > Date.now()) return evalCache.value;
 
-  const signals = await readSignals();
+  const signals = (await readSignals())
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+    .slice(0, MAX_EVALUATE);
+
   if (signals.length === 0) {
     return {
       summaries: [],
       recent: [],
       total: 0,
-      note: "Chưa có tín hiệu nào được ghi. Tín hiệu đủ mạnh (score ≥ 55) sẽ tự lưu khi màn hình được mở.",
+      actionable: 0,
+      note: "Chưa có tín hiệu nào. Mỗi cohort ngày sẽ lưu cả tín hiệu actionable và ứng viên neutral để đo forward return.",
+      evaluatedAt: new Date().toISOString(),
     };
   }
 
-  let tickers: Awaited<ReturnType<typeof fetchFuturesTickers>> = [];
-  try {
-    tickers = await fetchFuturesTickers();
-  } catch (error) {
-    console.warn(
-      "[RADAR-TRACK] Không lấy được giá hiện tại:",
-      error instanceof Error ? error.message : String(error)
-    );
+  const firstAt = Math.min(...signals.map((s) => Date.parse(s.at)));
+  const bySymbol = new Map<string, number>();
+  for (const signal of signals) {
+    const at = Date.parse(signal.at);
+    const current = bySymbol.get(signal.symbol);
+    bySymbol.set(signal.symbol, current === undefined ? at : Math.min(current, at));
   }
-  const priceByPair = new Map(
-    tickers.map((t) => [t.symbol, Number(t.lastPrice)] as const)
-  );
+
+  const [btcCandles, entries] = await Promise.all([
+    fetchBinanceFuturesKlines("BTCUSDT", 500, "1h", firstAt).catch(() => []),
+    mapLimit([...bySymbol.entries()], 6, async ([symbol, start]) => {
+      const candles = await fetchBinanceFuturesKlines(`${symbol}USDT`, 200, "1h", start).catch(() => []);
+      return [symbol, candles] as const;
+    }),
+  ]);
+  const candlesBySymbol = new Map(entries);
 
   const now = Date.now();
-  const rows: TrackRecordRow[] = signals.map((s) => {
-    const current = priceByPair.get(`${s.symbol}USDT`) ?? null;
-    const ageHours = Math.max(0, (now - new Date(s.at).getTime()) / 3_600_000);
-    const evaluated = current !== null && ageHours >= 0.25;
-    const returnPct = evaluated ? ((current - s.price) / s.price) * 100 : null;
-    return {
-      ...s,
-      returnPct: returnPct === null ? null : Number(returnPct.toFixed(2)),
-      ageHours: Number(ageHours.toFixed(1)),
-      win: returnPct === null ? null : winFor(s.bias, returnPct),
-    };
-  });
-
-  const byBias = new Map<Bias, TrackRecordRow[]>();
-  for (const row of rows) {
-    if (row.returnPct === null || row.win === null) continue;
-    const list = byBias.get(row.bias) ?? [];
-    list.push(row);
-    byBias.set(row.bias, list);
-  }
-
-  const summaries: TrackRecordSummary[] = [...byBias.entries()]
-    .map(([bias, list]) => {
-      const wins = list.filter((r) => r.win).length;
-      const avg = list.reduce((sum, r) => sum + (r.returnPct ?? 0), 0) / list.length;
-      return {
-        bias,
-        label: BIAS_LABELS[bias],
-        n: list.length,
-        wins,
-        hitRate: Math.round((wins / list.length) * 100),
-        avgReturnPct: Number(avg.toFixed(2)),
-      };
-    })
-    .sort((a, b) => b.n - a.n);
+  const tracked = signals.map((signal) =>
+    evaluateSignal(signal, candlesBySymbol.get(signal.symbol) ?? [], btcCandles, now)
+  );
 
   const result: TrackRecordResult = {
-    summaries,
-    recent: [...rows].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()).slice(0, 20),
-    total: rows.length,
-    note:
-      "Hit rate tính từ giá tại lúc ghi tín hiệu đến giá hiện tại; tín hiệu dưới 15 phút chưa tính. " +
-      "Continuation/breakout/accumulation/flush-bounce thắng khi giá tăng; exhaustion/breakdown thắng khi giá giảm.",
+    summaries: summarizeByBias(tracked),
+    recent: tracked.slice(0, MAX_RECENT),
+    total: tracked.length,
+    actionable: tracked.filter((s) => s.actionable).length,
+    note: LEDGER_NOTE,
+    evaluatedAt: new Date().toISOString(),
   };
 
   evalCache = { expires: Date.now() + 5 * 60_000, value: result };
   return result;
+}
+
+/** Chỉ dùng trong test/health: xoá cache để đọc state mới. */
+export function resetTrackRecordCache(): void {
+  evalCache = null;
 }

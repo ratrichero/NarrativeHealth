@@ -75,7 +75,8 @@ export async function fetchBinanceSpotKlines(
 export async function fetchBinanceFuturesKlines(
   symbol: string,
   limit: number = 200,
-  interval: BinanceInterval = "1d"
+  interval: BinanceInterval = "1d",
+  startTime?: number
 ): Promise<KlineData[]> {
   try {
     const response = await axios.get(`${BINANCE_FUTURES_API}/klines`, {
@@ -83,6 +84,7 @@ export async function fetchBinanceFuturesKlines(
         symbol,
         interval,
         limit,
+        ...(startTime ? { startTime } : {}),
       },
       timeout: 10000,
     });

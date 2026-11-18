@@ -4,6 +4,71 @@
 
 ---
 
+## RADAR-02 — Signal Ledger 2.0 + quota/rate limit (2026-11-18)
+
+Đợt 1 của follow-up radar: đo hiệu quả thật của scoring và chặn lạm dụng
+route public trước khi mở rộng. Vẫn không thêm migration (`app_settings`).
+
+### 1. Signal Ledger 2.0 (`src/lib/market/ledger.ts`)
+
+Track record cũ chỉ so giá hiện tại, không biết tín hiệu thắng ở horizon nào
+và không lưu ứng viên neutral. Nay mỗi cohort ngày lưu tối đa 12 row/bên,
+**gồm cả neutral/watch**, cùng setup TP/SL tại thời điểm ghi và giá BTC.
+
+Đo cho từng tín hiệu:
+- return tại **1h / 4h / 24h / 3d / 7d**;
+- MFE/MAE trong horizon;
+- TP1/SL có chạm không, thứ tự chạm (`tp`, `sl`, `ambiguous` cùng nến);
+- **relative return so với BTC** cùng horizon (dùng `btcPrice` lúc ghi);
+- pending nếu horizon chưa đủ tuổi.
+
+TP/SL được tính đúng chiều: long TP khi high ≥ tp1, SL khi low ≤ stopLoss;
+short ngược lại. Dữ liệu giá lấy từ klines 1h bắt đầu tại thời điểm signal
+(`startTime` mới trong `fetchBinanceFuturesKlines`), tối đa 60 signal/lần đọc,
+cache 5 phút, giữ 8 ngày để đủ horizon 7d.
+
+UI `/radar` có tab horizon, bảng hit rate/return/vs BTC/MFE-MAE/TP-SL theo
+bias, và bảng tín hiệu gần đây kèm cờ `watch` cho neutral.
+
+### 2. Cohort độc lập filter + luôn có neutral
+
+Route list trước đây ghi cohort từ `rows` đã bị filter/sort/limit theo request,
+nên mỗi người xem tạo một cohort khác nhau và chỉ side đang mở được ghi. Nay
+`recordAllRadarCohorts` chạy **sau response** (`after` của Next), tự lấy snapshot
+chuẩn cho **cả gainer/loser/unusual** (`limit 30`, sort composite, min volume
+mặc định), rồi `planCohorts` giữ tối đa 12 non-neutral mỗi side + **một cohort
+neutral riêng** (tối đa 6, dedupe symbol) để neutral không bị nhân bản 3 lần.
+Dedupe theo symbol+side+ngày, throttle 30 phút/lần, không phụ thuộc tab người xem.
+
+### 3. Rate limit + quota LLM brief
+
+- `src/lib/market/rate-limit.ts`: sliding window trong RAM; list 30/phút/IP,
+track-record 15/phút/IP, brief 10/giờ/IP; trả 429 + `Retry-After` +
+`X-RateLimit-*`.
+- **Không tin `X-Forwarded-For` client gửi.** Chỉ dùng `cf-connecting-ip`
+và `x-real-ip` do edge/proxy ghi đè. `RADAR_TRUST_XFF=1` mới đọc XFF và lấy
+hop phải nhất. Không có header tin cậy → key `unknown`.
+- `src/lib/market/brief-quota.ts`: trần brief/ngày toàn hệ thống (mặc định
+200) lưu `app_settings.radar.brief.usage`, reset theo ngày UTC, fail-open khi
+DB lỗi.
+- Quota chỉ bị trừ **bên trong `getMoverBrief`, ngay trước khi gọi LLM**: cache
+hit, symbol không tồn tại hoặc `RADAR_LLM_ENABLED=0` không tiêu quota.
+- Brief route chặn thêm `Sec-Fetch-Site: cross-site`.
+
+### 4. Cấu hình
+
+`RADAR_LIST_PER_IP_PER_MIN`, `RADAR_TRACK_RECORD_PER_IP_PER_MIN`,
+`RADAR_BRIEF_PER_IP_PER_HOUR`, `RADAR_BRIEF_DAILY_LIMIT`, `RADAR_TRUST_XFF`
+(mặc định 0). Rate limit là theo instance (RAM), không thay WAF/Redis khi chạy
+nhiều replica.
+
+### 5. Kiểm tra
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **7 suite / 52 test pass**
+(ledger, 3-side cohort, brief quota, rate limit, scoring, metrics, setup, universe);
+eslint 0 lỗi. Preview dùng `RADAR_DEMO=1` nên track record hiển thị fixture có
+cờ demo; chưa đo được forward return thật vì server bị Binance geo-block.
+
 ## RADAR-01 — Market Radar: top gain/lose 24h + tín hiệu sớm (2026-11-18)
 
 Màn hình riêng `/radar` quét toàn bộ Binance Futures USDT perpetual (kể cả coin

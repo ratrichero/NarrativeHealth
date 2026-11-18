@@ -58,6 +58,7 @@ export interface RadarMarketContext {
   losers: number;
   totalVolumeUsd: number;
   btcChangePct: number | null;
+  btcPrice: number | null;
   universe: number;
 }
 
@@ -343,6 +344,11 @@ function buildMarket(tickers: FuturesTicker[], eligible: FuturesTicker[]): Radar
       const btc = tickers.find((t) => t.symbol === "BTCUSDT");
       const change = btc ? Number(btc.priceChangePercent) : NaN;
       return Number.isFinite(change) ? change : null;
+    })(),
+    btcPrice: (() => {
+      const btc = tickers.find((t) => t.symbol === "BTCUSDT");
+      const price = btc ? Number(btc.lastPrice) : NaN;
+      return Number.isFinite(price) && price > 0 ? price : null;
     })(),
     universe: eligible.length,
   };

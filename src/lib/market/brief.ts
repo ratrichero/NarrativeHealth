@@ -1,8 +1,15 @@
 // RADAR-BRIEF: LLM đọc số liệu radar và viết brief ngắn (opt-in, có cache).
-// Chỉ dùng profile "movers" của chain hiện có; không tool-calling, không DB.
+// Quota chỉ bị trừ khi thực sự gọi LLM: cache hit, symbol không tồn tại hoặc
+// LLM disabled đều không tiêu quota.
 
-import { chatCompletion } from "@/lib/chat/llm";
-import { getMoverDetail, type RadarDetail } from "@/lib/market/radar";
+import {
+  chatCompletion,
+  type LLMCompletionOptions,
+  type LLMCompletionResult,
+} from "@/lib/chat/llm";
+import { getMoverDetail, normalizeSymbol, type RadarDetail } from "@/lib/market/radar";
+import { briefDailyLimit } from "@/lib/market/rate-limit";
+import { consumeBriefQuota, type QuotaDecision } from "@/lib/market/brief-quota";
 
 const TTL_MS = 10 * 60_000;
 const cache = new Map<string, { expires: number; value: BriefResult }>();
@@ -15,6 +22,24 @@ export interface BriefResult {
 }
 
 export class BriefUnavailableError extends Error {}
+
+export class BriefQuotaExceededError extends Error {
+  constructor(public readonly decision: QuotaDecision) {
+    super(`Đã hết quota AI brief hôm nay (${decision.limit}/ngày). Thử lại sau 00:00 UTC.`);
+  }
+}
+
+interface BriefDeps {
+  getDetail: (symbol: string) => Promise<RadarDetail | null>;
+  complete: (opts: LLMCompletionOptions) => Promise<LLMCompletionResult | null>;
+  consumeQuota: () => Promise<QuotaDecision>;
+}
+
+const defaultDeps: BriefDeps = {
+  getDetail: getMoverDetail,
+  complete: chatCompletion,
+  consumeQuota: () => consumeBriefQuota(briefDailyLimit()),
+};
 
 function formatPct(value: number | null, digits = 2): string {
   if (value === null || !Number.isFinite(value)) return "không có dữ liệu";
@@ -63,12 +88,24 @@ function buildPrompt(detail: RadarDetail): string {
   ].join("\n");
 }
 
-export async function getMoverBrief(rawSymbol: string): Promise<BriefResult | null> {
+export async function getMoverBrief(
+  rawSymbol: string,
+  deps: Partial<BriefDeps> = {}
+): Promise<BriefResult | null> {
   if (process.env.RADAR_LLM_ENABLED === "0") {
     throw new BriefUnavailableError("LLM brief đang tắt (RADAR_LLM_ENABLED=0).");
   }
 
-  const detail = await getMoverDetail(rawSymbol);
+  const resolved: BriefDeps = { ...defaultDeps, ...deps };
+  const earlyKey = `${normalizeSymbol(rawSymbol)}USDT`;
+
+  // Cache hit không cần fetch detail và không tiêu quota.
+  const earlyHit = cache.get(earlyKey);
+  if (earlyHit && earlyHit.expires > Date.now()) {
+    return { ...earlyHit.value, cached: true };
+  }
+
+  const detail = await resolved.getDetail(rawSymbol);
   if (!detail) return null;
 
   const key = detail.row.pair;
@@ -77,7 +114,11 @@ export async function getMoverBrief(rawSymbol: string): Promise<BriefResult | nu
     return { ...hit.value, cached: true };
   }
 
-  const completion = await chatCompletion({
+  // Chỉ tới đây mới thực sự gọi LLM → mới trừ quota.
+  const quota = await resolved.consumeQuota();
+  if (!quota.allowed) throw new BriefQuotaExceededError(quota);
+
+  const completion = await resolved.complete({
     profile: "movers",
     temperature: 0.3,
     maxTokens: 600,
@@ -112,4 +153,9 @@ export async function getMoverBrief(rawSymbol: string): Promise<BriefResult | nu
 
   cache.set(key, { expires: Date.now() + TTL_MS, value });
   return value;
+}
+
+/** Chỉ dùng trong test. */
+export function resetBriefCache(): void {
+  cache.clear();
 }
