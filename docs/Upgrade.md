@@ -93,7 +93,7 @@ riêng với đầy đủ member, không phụ thuộc panel đang preview 6 coi
 
 ### 9. Kiểm tra
 
-`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **13 suite / 85 test pass**;
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **13 suite / 86 test pass**;
 eslint 0 lỗi; build pass. Preview vẫn `RADAR_DEMO=1` vì Binance futures bị
 chặn (451); spot vision truy cập được nhưng radar thật chưa chạy live. Alert
 webhook chưa được gửi thử vì không cấu hình URL.
