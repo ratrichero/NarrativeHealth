@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
 
     # Start APScheduler for scheduled jobs
     from backend.scheduler import start_scheduler
-    start_scheduler()
+    await start_scheduler()
 
     yield
 

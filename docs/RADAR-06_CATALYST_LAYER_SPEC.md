@@ -312,9 +312,11 @@ Sau đó chờ ≥ 5 phút và mở `/radar` với một row `catalystTriggered`
 
 **Vận hành:**
 
-- Scheduler sống trong process FastAPI: đổi `SCHEDULER_CATALYST_*` phải
-  `pm2 restart fastapi-backend --update-env`. Đổi code route Next cần build lại
-  (`bash scripts/deploy.sh`).
+- Nhịp job đổi trực tiếp trên **Admin → Vận hành → Radar & Catalyst**: lưu vào
+  `app_settings.radar.config`, FastAPI đọc lại DB mỗi 30 giây và reschedule — không
+  cần restart. Env `SCHEDULER_CATALYST_*` chỉ còn là fallback khi DB chưa có giá trị.
+  Token `SCHEDULER_CATALYST_TOKEN` vẫn đổi qua env + restart. Đổi code route Next
+  cần build lại (`bash scripts/deploy.sh`).
 - Restart FastAPI **không backfill**: job chạy từ nhịp kế tiếp. Không mất dữ liệu vì mỗi
   lượt đọc `pageSize=20` bài mới nhất / 30 item RSS mới nhất; downtime dài hơn cửa sổ đó
   thì announcement cũ vẫn nằm trong DB (TTL 30 ngày) và chỉ tin cũ hơn 20 bài mới mất.

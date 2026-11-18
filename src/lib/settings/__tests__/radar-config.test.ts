@@ -20,6 +20,10 @@ describe("envRadarConfig", () => {
     expect(config.alertWebhookUrl).toBeNull();
     expect(config.catalystLlmEnabled).toBe(true);
     expect(config.catalystPerIpPerMin).toBe(20);
+    expect(config.schedulerEnabled).toBe(true);
+    expect(config.schedulerAnnouncementsMinutes).toBe(5);
+    expect(config.schedulerNewsMinutes).toBe(15);
+    expect(config.schedulerUnlocksMinutes).toBe(60);
   });
 
   it("đọc env và bỏ giá trị không phải số", () => {
@@ -28,11 +32,15 @@ describe("envRadarConfig", () => {
       RADAR_ALERT_WEBHOOK_URL: " https://hooks.example/x ",
       CATALYST_LLM_ENABLED: "0",
       CATALYST_PER_IP_PER_MIN: "abc",
+      SCHEDULER_CATALYST_ENABLED: "0",
+      SCHEDULER_CATALYST_NEWS_MINUTES: "7",
     } as unknown as NodeJS.ProcessEnv);
     expect(config.clusterThreshold).toBe(0.42);
     expect(config.alertWebhookUrl).toBe("https://hooks.example/x");
     expect(config.catalystLlmEnabled).toBe(false);
     expect(config.catalystPerIpPerMin).toBe(20);
+    expect(config.schedulerEnabled).toBe(false);
+    expect(config.schedulerNewsMinutes).toBe(7);
   });
 });
 
@@ -76,6 +84,21 @@ describe("coerceFieldValue", () => {
       "https://x.test/hook"
     );
     expect(() => coerceFieldValue(spec("alertWebhookUrl"), "ftp://x")).toThrow(RadarConfigError);
+  });
+
+  it("cooldown STALE tối thiểu 1 giờ, khớp với clamp trong health.ts", () => {
+    expect(coerceFieldValue(spec("catalystStaleCooldownHours"), 1)).toBe(1);
+    expect(() => coerceFieldValue(spec("catalystStaleCooldownHours"), 0)).toThrow(
+      RadarConfigError
+    );
+  });
+
+  it("nhịp job nhận 0 (tắt) và chặn quá 1440 phút", () => {
+    expect(coerceFieldValue(spec("schedulerAnnouncementsMinutes"), "0")).toBe(0);
+    expect(coerceFieldValue(spec("schedulerNewsMinutes"), 10)).toBe(10);
+    expect(() => coerceFieldValue(spec("schedulerUnlocksMinutes"), 1441)).toThrow(
+      RadarConfigError
+    );
   });
 
   it("bool nhận boolean và chuỗi 0/1", () => {

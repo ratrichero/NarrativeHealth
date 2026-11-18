@@ -2,7 +2,8 @@
 //
 // Một nguồn được coi là STALE khi:
 //   • quá hạn theo nhịp của scope (announcement 5', RSS 15', unlock 60' — lấy
-//     đúng env SCHEDULER_CATALYST_* nên đổi nhịp là đổi ngưỡng), hoặc
+//     từ config runtime DB > env SCHEDULER_CATALYST_* nên đổi nhịp là đổi
+//     ngưỡng), hoặc
 //   • 2 lượt liên tiếp lấy được 0 fact mà không lỗi (feed trả 200 nhưng rỗng).
 //
 // Unlock đọc thẳng `event_risks`: nếu bảng còn dữ liệu nhưng adapter trả 0 liên
@@ -32,17 +33,23 @@ const DEFAULT_INTERVAL_MINUTES: Record<Exclude<CatalystSyncScope, "all">, number
   unlocks: 60,
 };
 
-const INTERVAL_ENV: Record<Exclude<CatalystSyncScope, "all">, string> = {
-  announcements: "SCHEDULER_CATALYST_ANNOUNCEMENTS_MINUTES",
-  news: "SCHEDULER_CATALYST_NEWS_MINUTES",
-  unlocks: "SCHEDULER_CATALYST_UNLOCKS_MINUTES",
-};
-
-/** Nhịp kỳ vọng của scope (phút), đọc env scheduler; `all` = chạy tay. */
+/**
+ * Nhịp kỳ vọng của scope (phút), config runtime DB > env (`SCHEDULER_CATALYST_*`)
+ * > default; `all` = chạy tay. Dùng cùng nguồn với FastAPI để nhịp đổi trên Admin
+ * thì ngưỡng STALE đổi theo, không báo nhầm.
+ */
 export function catalystScopeIntervalMinutes(scope: CatalystSyncScope): number | null {
   if (scope === "all") return null;
-  const parsed = Number(process.env[INTERVAL_ENV[scope]]);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_INTERVAL_MINUTES[scope];
+  const cfg = peekRadarRuntimeConfig();
+  const configured =
+    scope === "announcements"
+      ? cfg.schedulerAnnouncementsMinutes
+      : scope === "news"
+        ? cfg.schedulerNewsMinutes
+        : cfg.schedulerUnlocksMinutes;
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_INTERVAL_MINUTES[scope];
 }
 
 /**
@@ -147,9 +154,10 @@ export function buildCatalystStaleMessage(stale: CatalystSourceStaleness[]): str
   ].join("\n");
 }
 
+// Form Admin cho phép 1–168 giờ; giá trị <1 còn sót từ env/DB cũ được coi là 1
+// (không tự nhảy về 6) để khớp với hint và với kỳ vọng của người dùng.
 function alertCooldownHours(): number {
-  const hours = peekRadarRuntimeConfig().catalystStaleCooldownHours;
-  return hours >= 1 ? hours : 6;
+  return Math.max(1, peekRadarRuntimeConfig().catalystStaleCooldownHours);
 }
 
 async function readAlerted(): Promise<Record<string, string> | null> {

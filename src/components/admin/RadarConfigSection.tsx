@@ -6,7 +6,7 @@
 
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RotateCcw, Save, SlidersHorizontal } from "lucide-react";
+import { Loader2, RotateCcw, Save, Send, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface RadarConfigField {
@@ -14,7 +14,7 @@ interface RadarConfigField {
   env: string;
   label: string;
   hint: string;
-  group: "cluster" | "alert" | "catalyst";
+  group: "cluster" | "alert" | "catalyst" | "scheduler";
   type: "int" | "float" | "bool" | "url";
   min?: number;
   max?: number;
@@ -54,6 +54,7 @@ export function RadarConfigSection() {
   // null = chưa sửa gì, hiển thị giá trị server; có sửa mới giữ draft riêng.
   const [edited, setEdited] = useState<Record<string, DraftValue> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [testingWebhook, setTestingWebhook] = useState(false);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
   const { data, isLoading, error } = useQuery<RadarConfigPayload>({
@@ -115,6 +116,42 @@ export function RadarConfigSection() {
     }
   };
 
+  // Gửi payload mẫu tới đúng URL đang gõ trong form (kể cả chưa Lưu) để phát hiện
+  // URL rỗng/sai — nếu không, alert tắt im lặng mà không ai biết.
+  const testWebhook = async () => {
+    if (!data) return;
+    const url = String(draft.alertWebhookUrl ?? "").trim();
+    if (!url) {
+      setMessage({
+        kind: "error",
+        text: "Chưa có URL webhook — nhập URL (http/https) rồi thử lại.",
+      });
+      return;
+    }
+    setTestingWebhook(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/admin/radar/config/test-webhook", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error ?? "Không gửi được webhook.");
+      setMessage({
+        kind: "ok",
+        text: `Đã gửi webhook thử — nhận phản hồi HTTP ${json.data?.status ?? 200}. Kiểm tra kênh nhận có tin nhắn mẫu.`,
+      });
+    } catch (err) {
+      setMessage({
+        kind: "error",
+        text: err instanceof Error ? err.message : "Không gửi được webhook.",
+      });
+    } finally {
+      setTestingWebhook(false);
+    }
+  };
+
   const resetToEnv = () => {
     if (!data) return;
     setEdited(toDraft({ ...data, config: data.env }));
@@ -158,6 +195,18 @@ export function RadarConfigSection() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => void testWebhook()}
+            disabled={testingWebhook || saving}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+          >
+            {testingWebhook ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
+            Gửi webhook thử
+          </button>
           <button
             onClick={resetToEnv}
             className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
@@ -264,8 +313,9 @@ export function RadarConfigSection() {
       ))}
 
       <p className="text-[11px] leading-relaxed text-slate-500">
-        Nhịp chạy job catalyst (SCHEDULER_CATALYST_*) và token scheduler vẫn thuộc tiến trình
-        FastAPI nên chưa đổi qua form này; đổi nhịp job cần sửa env và restart backend.
+        Nhịp job catalyst ở trên do FastAPI đọc lại từ DB mỗi 30 giây và tự reschedule khi đổi —
+        không cần restart backend. Token scheduler (`SCHEDULER_CATALYST_TOKEN`) vẫn chỉ đọc từ env
+        ở cả Next và FastAPI để không lộ bí mật qua form.
       </p>
     </div>
   );

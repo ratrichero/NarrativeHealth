@@ -10,11 +10,13 @@ Architecture Note:
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
+import json
 import logging
 import pytz
 from typing import Optional
 import httpx
 from httpx import ConnectError, TimeoutException
+from sqlalchemy import text
 
 from backend.config import settings
 from backend.database import AsyncSessionLocal
@@ -23,15 +25,74 @@ from backend.models.scheduler_log import SchedulerLog
 
 logger = logging.getLogger(__name__)
 
+# RADAR-CONFIG: FastAPI đọc nhịp catalyst từ `app_settings` key `radar.config`
+# (cùng payload Admin → Radar & Catalyst ghi). Thứ tự: DB > env
+# (`SCHEDULER_CATALYST_*`) > default. Watcher poll mỗi 30 giây và chỉ reschedule
+# khi chữ ký nhịp đổi, nên đổi trên Admin không cần restart FastAPI.
+CATALYST_CONFIG_KEY = "radar.config"
+CATALYST_CONFIG_POLL_SECONDS = 30
+CATALYST_MAX_INTERVAL_MINUTES = 1440
+CATALYST_JOBS = (
+    ("catalyst_announcements", "announcements", "Catalyst announcements (Binance CMS)"),
+    ("catalyst_news", "news", "Catalyst news (RSS)"),
+    ("catalyst_unlocks", "unlocks", "Catalyst unlocks (event_risks read-only)"),
+)
+
+
+def _as_bool(value, fallback: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    return fallback
+
+
+def _as_minutes(value, fallback: int) -> int:
+    """0 = tắt job; giá trị hỏng dùng fallback; kẹp 0–1440."""
+    try:
+        minutes = int(float(value))
+    except (TypeError, ValueError):
+        return max(0, int(fallback))
+    if minutes <= 0:
+        return 0
+    return min(CATALYST_MAX_INTERVAL_MINUTES, minutes)
+
+
+def resolve_catalyst_schedule(values) -> tuple[bool, dict]:
+    """Gộp `values` trong DB lên env/default. Trả (enabled, {scope: minutes})."""
+    data = values if isinstance(values, dict) else {}
+    enabled = _as_bool(data.get("schedulerEnabled"), settings.scheduler_catalyst_enabled)
+    return enabled, {
+        "announcements": _as_minutes(
+            data.get("schedulerAnnouncementsMinutes"),
+            settings.scheduler_catalyst_announcements_minutes,
+        ),
+        "news": _as_minutes(
+            data.get("schedulerNewsMinutes"),
+            settings.scheduler_catalyst_news_minutes,
+        ),
+        "unlocks": _as_minutes(
+            data.get("schedulerUnlocksMinutes"),
+            settings.scheduler_catalyst_unlocks_minutes,
+        ),
+    }
+
 
 class DataRefreshScheduler:
     def __init__(self):
         self.scheduler: Optional[AsyncIOScheduler] = None
+        self._catalyst_signature: Optional[tuple] = None
         # Vietnam timezone is UTC+7
         self.vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
-    def start(self):
-        """Start the scheduler"""
+    async def start(self):
+        """Start the scheduler (async vì nạp nhịp catalyst từ DB)."""
         logger.info(
             "Scheduler startup requested: enabled=%s hour=%02d minute=%02d interval_hours=%s timezone=%s",
             settings.scheduler_enabled,
@@ -130,55 +191,23 @@ class DataRefreshScheduler:
         else:
             print("P3 scheduler disabled in config")
 
-        # RADAR-06-SCHED: Catalyst layer sync (announcement / RSS / unlock).
-        # Không có job này thì panel “Vì sao volume bất thường?” luôn trống ở
-        # production — bảng catalyst_events chỉ được ghi bởi endpoint sync.
-        # Tách 3 job thay vì 1 job “all” để mỗi nguồn giữ đúng nhịp: Binance
-        # announcement cần 5 phút, RSS 15 phút, unlock (chỉ đọc event_risks)
-        # 60 phút. Mỗi job độc lập: một job lỗi không chặn job còn lại.
-        if settings.scheduler_catalyst_enabled:
-            catalyst_jobs = (
-                (
-                    'catalyst_announcements',
-                    'announcements',
-                    settings.scheduler_catalyst_announcements_minutes,
-                    'Catalyst announcements (Binance CMS)',
-                ),
-                (
-                    'catalyst_news',
-                    'news',
-                    settings.scheduler_catalyst_news_minutes,
-                    'Catalyst news (RSS)',
-                ),
-                (
-                    'catalyst_unlocks',
-                    'unlocks',
-                    settings.scheduler_catalyst_unlocks_minutes,
-                    'Catalyst unlocks (event_risks read-only)',
-                ),
-            )
-            for job_id, scope, minutes, name in catalyst_jobs:
-                if minutes <= 0:
-                    print(f"Catalyst job '{job_id}' disabled (interval={minutes})")
-                    continue
-                self.scheduler.add_job(
-                    self._run_catalyst_sync,
-                    trigger='interval',
-                    minutes=minutes,
-                    id=job_id,
-                    name=f'{name} every {minutes}m',
-                    args=[scope],
-                    # Một lượt sync không được chồng lên lượt trước (upsert vốn
-                    # idempotent, nhưng overlap chỉ tạo tải vô ích lên Binance).
-                    max_instances=1,
-                    coalesce=True,
-                    replace_existing=True,
-                )
-                print(f"Catalyst scheduler started - '{scope}' every {minutes} minutes")
-        else:
-            print("Catalyst scheduler disabled in config")
-
+        # RADAR-06-SCHED: catalyst jobs không gắn cứng theo env ở đây nữa — nhịp
+        # đọc từ `app_settings.radar.config` (DB > env SCHEDULER_CATALYST_*) và
+        # được reschedule khi cấu hình đổi, nên đổi trên Admin không cần restart.
         self.scheduler.start()
+
+        # Áp nhịp hiện hành ngay khi scheduler chạy, rồi poll DB mỗi 30 giây.
+        await self.refresh_catalyst_jobs(force=True)
+        self.scheduler.add_job(
+            self.refresh_catalyst_jobs,
+            trigger='interval',
+            seconds=CATALYST_CONFIG_POLL_SECONDS,
+            id='catalyst_config_watch',
+            name='Catalyst schedule watcher (radar.config)',
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
         jobs = self.scheduler.get_jobs()
         logger.info(
             "Scheduler running=%s jobs=%s",
@@ -209,7 +238,12 @@ class DataRefreshScheduler:
                 self.scheduler.remove_job('movers_cron')
             except:
                 pass
-            for job_id in ('catalyst_announcements', 'catalyst_news', 'catalyst_unlocks'):
+            for job_id in (
+                'catalyst_announcements',
+                'catalyst_news',
+                'catalyst_unlocks',
+                'catalyst_config_watch',
+            ):
                 try:
                     self.scheduler.remove_job(job_id)
                 except Exception:
@@ -217,6 +251,92 @@ class DataRefreshScheduler:
             self.scheduler.shutdown()
             self.scheduler = None
             print("Scheduler stopped")
+
+    async def _read_radar_config_values(self) -> Optional[dict]:
+        """Đọc `app_settings.radar.config`.values.
+
+        `None` = không đọc được DB (mạng/query lỗi) → giữ nhịp đang chạy thay vì
+        rơi về env và reschedule qua lại. `{}` = chưa có cấu hình → env fallback.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    text("SELECT value FROM app_settings WHERE key = :key LIMIT 1"),
+                    {"key": CATALYST_CONFIG_KEY},
+                )
+                row = result.first()
+        except Exception as exc:
+            logger.warning(
+                "Không đọc được %s từ DB, giữ nhịp catalyst hiện tại: %s",
+                CATALYST_CONFIG_KEY,
+                exc,
+            )
+            return None
+
+        if row is None:
+            return {}
+        value = row[0]
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+        if not isinstance(value, dict):
+            return {}
+        values = value.get("values")
+        return values if isinstance(values, dict) else {}
+
+    def _apply_catalyst_jobs(self, enabled: bool, intervals: dict) -> None:
+        """Thêm/gỡ 3 job catalyst theo nhịp mới."""
+        if not self.scheduler:
+            return
+        for job_id, scope, name in CATALYST_JOBS:
+            minutes = intervals[scope]
+            if not enabled or minutes <= 0:
+                if self.scheduler.get_job(job_id):
+                    self.scheduler.remove_job(job_id)
+                    print(f"Catalyst job '{job_id}' removed (disabled)")
+                continue
+            self.scheduler.add_job(
+                self._run_catalyst_sync,
+                trigger='interval',
+                minutes=minutes,
+                id=job_id,
+                name=f'{name} every {minutes}m',
+                args=[scope],
+                # Một lượt sync không được chồng lên lượt trước (upsert vốn
+                # idempotent, nhưng overlap chỉ tạo tải vô ích lên Binance).
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+            print(f"Catalyst scheduler applied - '{scope}' every {minutes} minutes")
+
+    async def refresh_catalyst_jobs(self, force: bool = False) -> bool:
+        """Đọc radar.config và reschedule catalyst khi nhịp đổi.
+
+        Trả True nếu đã áp dụng cấu hình mới. Watcher gọi hàm này mỗi 30 giây;
+        chữ ký (enabled + intervals) không đổi thì không chạm vào job để
+        next_run_time không bị đẩy lùi.
+        """
+        if not self.scheduler or not self.scheduler.running:
+            return False
+        values = await self._read_radar_config_values()
+        if values is None:
+            return False
+        enabled, intervals = resolve_catalyst_schedule(values)
+        signature = (enabled, tuple(sorted(intervals.items())))
+        if not force and signature == self._catalyst_signature:
+            return False
+        self._apply_catalyst_jobs(enabled, intervals)
+        self._catalyst_signature = signature
+        logger.info(
+            "Catalyst schedule applied from %s: enabled=%s intervals=%s",
+            CATALYST_CONFIG_KEY,
+            enabled,
+            intervals,
+        )
+        return True
 
     async def _run_refresh(self, job_id: str = "unknown"):
         """Run the refresh job"""
@@ -510,9 +630,9 @@ class DataRefreshScheduler:
 scheduler = DataRefreshScheduler()
 
 
-def start_scheduler():
-    """Start the global scheduler"""
-    scheduler.start()
+async def start_scheduler():
+    """Start the global scheduler (nạp nhịp catalyst từ DB)."""
+    await scheduler.start()
 
 
 def stop_scheduler():

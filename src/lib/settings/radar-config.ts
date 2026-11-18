@@ -16,7 +16,7 @@ import { appSettings } from "@/db/schema";
 export const RADAR_CONFIG_KEY = "radar.config";
 export const RADAR_CONFIG_CACHE_MS = 10_000;
 
-export type RadarConfigGroup = "cluster" | "alert" | "catalyst";
+export type RadarConfigGroup = "cluster" | "alert" | "catalyst" | "scheduler";
 
 export interface RadarRuntimeConfig {
   // Cụm rotation
@@ -39,6 +39,11 @@ export interface RadarRuntimeConfig {
   catalystLlmDailyLimit: number;
   catalystPerIpPerMin: number;
   catalystStaleCooldownHours: number;
+  // Nhịp job catalyst trong FastAPI (SCHEDULER_CATALYST_*)
+  schedulerEnabled: boolean;
+  schedulerAnnouncementsMinutes: number;
+  schedulerNewsMinutes: number;
+  schedulerUnlocksMinutes: number;
 }
 
 export interface RadarConfigField {
@@ -68,6 +73,11 @@ export const RADAR_CONFIG_GROUPS: Array<{ id: RadarConfigGroup; label: string; h
     id: "catalyst",
     label: "Catalyst",
     hint: "Điều kiện mở panel, LLM tóm tắt, rate limit và cooldown cảnh báo STALE.",
+  },
+  {
+    id: "scheduler",
+    label: "Nhịp job catalyst (FastAPI)",
+    hint: "FastAPI đọc lại DB mỗi 30 giây và reschedule khi nhịp đổi — không cần restart. Nhịp ở đây cũng là ngưỡng cảnh báo STALE. Token scheduler vẫn nằm ở env.",
   },
 ];
 
@@ -236,11 +246,49 @@ export const RADAR_CONFIG_FIELDS: RadarConfigField[] = [
     key: "catalystStaleCooldownHours",
     env: "CATALYST_STALE_ALERT_COOLDOWN_HOURS",
     label: "Cooldown STALE (giờ)",
-    hint: "0–168; tránh job 5 phút spam cảnh báo feed chết.",
+    hint: "1–168; giờ tối thiểu giữa 2 cảnh báo cùng nguồn (giá trị <1 được coi là 1) để job 5 phút không spam feed chết.",
     group: "catalyst",
     type: "int",
-    min: 0,
+    min: 1,
     max: 168,
+  },
+  {
+    key: "schedulerEnabled",
+    env: "SCHEDULER_CATALYST_ENABLED",
+    label: "Bật job catalyst",
+    hint: "Tắt = FastAPI gỡ cả 3 job khỏi APScheduler.",
+    group: "scheduler",
+    type: "bool",
+  },
+  {
+    key: "schedulerAnnouncementsMinutes",
+    env: "SCHEDULER_CATALYST_ANNOUNCEMENTS_MINUTES",
+    label: "Nhịp announcements (phút)",
+    hint: "0 = tắt riêng job announcements (0–1440).",
+    group: "scheduler",
+    type: "int",
+    min: 0,
+    max: 1440,
+  },
+  {
+    key: "schedulerNewsMinutes",
+    env: "SCHEDULER_CATALYST_NEWS_MINUTES",
+    label: "Nhịp news RSS (phút)",
+    hint: "0 = tắt riêng job news (0–1440).",
+    group: "scheduler",
+    type: "int",
+    min: 0,
+    max: 1440,
+  },
+  {
+    key: "schedulerUnlocksMinutes",
+    env: "SCHEDULER_CATALYST_UNLOCKS_MINUTES",
+    label: "Nhịp unlocks (phút)",
+    hint: "0 = tắt riêng job unlocks (0–1440).",
+    group: "scheduler",
+    type: "int",
+    min: 0,
+    max: 1440,
   },
 ];
 
@@ -268,6 +316,11 @@ export function envRadarConfig(env: NodeJS.ProcessEnv = process.env): RadarRunti
     catalystLlmDailyLimit: num("CATALYST_LLM_DAILY_LIMIT", 200),
     catalystPerIpPerMin: Math.max(1, Math.floor(num("CATALYST_PER_IP_PER_MIN", 20))),
     catalystStaleCooldownHours: num("CATALYST_STALE_ALERT_COOLDOWN_HOURS", 6),
+    schedulerEnabled:
+      String(env.SCHEDULER_CATALYST_ENABLED ?? "1").toLowerCase() !== "0",
+    schedulerAnnouncementsMinutes: num("SCHEDULER_CATALYST_ANNOUNCEMENTS_MINUTES", 5),
+    schedulerNewsMinutes: num("SCHEDULER_CATALYST_NEWS_MINUTES", 15),
+    schedulerUnlocksMinutes: num("SCHEDULER_CATALYST_UNLOCKS_MINUTES", 60),
   };
 }
 

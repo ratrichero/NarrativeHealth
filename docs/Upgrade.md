@@ -2908,9 +2908,17 @@ restart server (cache 10 giây, đồng thời invalidate/cập nhật cache nga
 
 Phạm vi: universe/ngưỡng/size cụm, enrich mỗi tab, unusual candidates; webhook +
 ngưỡng/cooldown alert radar; ngưỡng mở panel catalyst, bật/tắt LLM, trần LLM/ngày,
-rate limit catalyst theo IP, cooldown cảnh báo STALE. Giá trị DB hỏng/ngoài biên bị
+rate limit catalyst theo IP, cooldown cảnh báo STALE; bật/tắt job catalyst và nhịp
+announcements/news/unlocks (`SCHEDULER_CATALYST_*`). Nút **Gửi webhook thử** trong
+tab gửi payload mẫu tới đúng URL đang gõ (kể cả chưa lưu) qua
+`POST /api/admin/radar/config/test-webhook`, trả HTTP status/lỗi để phát hiện URL
+rỗng/sai thay vì alert tắt im lặng. Giá trị DB hỏng/ngoài biên bị
 bỏ qua và rơi về env/default tương ứng. API: `GET/PUT /api/admin/radar/config`
 (admin session; PUT nhận `{ values: { ... } }`).
 
-Nhịp chạy job `SCHEDULER_CATALYST_*` và `SCHEDULER_CATALYST_TOKEN` vẫn thuộc tiến
-trình FastAPI (cấu hình lúc start), chưa đổi qua form này.
+Nhịp job do **FastAPI** thực thi: `backend/scheduler.py` đọc `radar.config` từ DB
+(DB > env > default) khi start và một watcher poll mỗi 30 giây; nhịp đổi thì gỡ/thêm
+lại job (`catalyst_announcements`, `catalyst_news`, `catalyst_unlocks`) — không cần
+restart backend. Chỉ `SCHEDULER_CATALYST_TOKEN` vẫn là env-only (bí mật, không đưa
+vào form). `src/lib/catalyst/health.ts` đọc cùng nguồn nhịp để ngưỡng STALE khớp
+với lịch chạy thực tế.

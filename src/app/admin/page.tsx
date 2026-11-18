@@ -908,8 +908,8 @@ function CatalystSyncSection() {
           <p className="text-slate-500">
             Kiểm tra job FastAPI (<code className="text-slate-400">catalyst_announcements</code>,
             <code className="text-slate-400"> catalyst_news</code>,
-            <code className="text-slate-400"> catalyst_unlocks</code>) và
-            <code className="text-slate-400"> SCHEDULER_CATALYST_ENABLED</code>. Chạy tay:
+            <code className="text-slate-400"> catalyst_unlocks</code>) và trạng thái bật/nhịp trong
+            Admin → Vận hành → Radar &amp; Catalyst. Chạy tay:
             POST /api/admin/catalyst/sync.
           </p>
         </div>
