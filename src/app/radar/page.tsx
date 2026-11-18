@@ -1,11 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   ArrowDownRight,
   ArrowUpRight,
+  Copy,
+  Layers,
   Info,
   Loader2,
   Radar as RadarIcon,
@@ -269,6 +272,48 @@ function DetailDrawer({ symbol, onClose }: { symbol: string; onClose: () => void
               <Metric label="Biên độ 7d" value={data.row.rangePct7d === null ? "—" : `${data.row.rangePct7d.toFixed(1)}%`} hint={data.row.isBreakout7d ? "Đã breakout" : "Chưa breakout"} />
               <Metric label="Trạng thái" value={data.row.bias === "neutral" ? "Chưa đủ xác nhận" : data.row.label} />
               <Metric label="Coin mới list" value={data.row.listingAgeDays === null ? "—" : `${data.row.listingAgeDays} ngày`} />
+              <Metric
+                label="Impulse 1h"
+                value={
+                  data.row.impulseAgeHours === null || data.row.impulseAgeHours === undefined
+                    ? "—"
+                    : `${data.row.impulseAgeHours.toFixed(1)}h`
+                }
+                hint={
+                  data.row.impulseExtensionAtr === null || data.row.impulseExtensionAtr === undefined
+                    ? "Chưa có impulse"
+                    : `Đã đi ${data.row.impulseExtensionAtr.toFixed(1)} ATR · ${data.row.impulseConsolidationBars ?? 0} nến nén`
+                }
+              />
+              <Metric
+                label="Spot / Perp"
+                value={
+                  data.row.spotLed === null || data.row.spotLed === undefined
+                    ? "—"
+                    : data.row.spotLed
+                      ? "Spot dẫn"
+                      : "Perp dẫn"
+                }
+                hint={
+                  data.row.basisPct === null || data.row.basisPct === undefined
+                    ? "Không có spot pair"
+                    : `Basis ${data.row.basisPct.toFixed(2)}% · spot ${formatPct(data.row.spotChangePct ?? null)}`
+                }
+              />
+              <Metric
+                label="Cluster"
+                value={data.row.clusterLabel ?? "—"}
+                hint={
+                  data.row.clusterLabel
+                    ? `${data.row.clusterSize} coin${data.row.clusterLeader ? " · leader" : data.row.clusterLaggard ? " · laggard" : ""}`
+                    : "Chỉ tính trong cohort ở bảng radar"
+                }
+              />
+              <Metric
+                label="RS vs BTC"
+                value={formatPct(data.row.relativeStrengthPct ?? null)}
+                hint={`percentile ${data.row.rsPercentile ?? "—"}`}
+              />
             </div>
 
             {data.row.reasons.length > 0 ? (
@@ -299,7 +344,12 @@ function DetailDrawer({ symbol, onClose }: { symbol: string; onClose: () => void
                   <h3 className="text-sm font-semibold text-slate-200">
                     Vùng tham khảo theo ATR ({data.setup.direction === "BULLISH" ? "long" : "short"})
                   </h3>
-                  <span className="text-xs text-slate-500">R:R {data.setup.riskRewardRatio ?? "—"}</span>
+                  <span className="text-xs text-slate-500">
+                    R:R {data.setup.riskRewardRatio ?? "—"}
+                    {data.netRiskRewardRatio !== null && data.netRiskRewardRatio !== undefined
+                      ? ` · net ${data.netRiskRewardRatio}`
+                      : ""}
+                  </span>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
                   <Metric label="Entry" value={`${formatPrice(data.setup.entryLow)} – ${formatPrice(data.setup.entryHigh)}`} />
@@ -317,6 +367,52 @@ function DetailDrawer({ symbol, onClose }: { symbol: string; onClose: () => void
                 Chưa có setup: bias trung tính hoặc thiếu ATR/klines.
               </p>
             )}
+
+            {data.liquidity ? (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-slate-200">Thanh khoản & slippage</h3>
+                  <span
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 text-[10px]",
+                      data.liquidity.thin
+                        ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                        : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                    )}
+                  >
+                    {data.liquidity.thin ? "sổ lệnh mỏng" : "đủ thanh khoản"}
+                  </span>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <Metric
+                    label="Spread"
+                    value={data.liquidity.spreadBps === null ? "—" : `${data.liquidity.spreadBps} bps`}
+                  />
+                  <Metric label="Depth ±1%" value={formatUsd(data.liquidity.depthUsd1Pct)} />
+                  <Metric
+                    label="Slippage $10k"
+                    value={
+                      data.liquidity.buySlippageBps.find((s) => s.sizeUsd === 10_000)?.bps === null ||
+                      data.liquidity.buySlippageBps.find((s) => s.sizeUsd === 10_000)?.bps === undefined
+                        ? "—"
+                        : `${data.liquidity.buySlippageBps.find((s) => s.sizeUsd === 10_000)?.bps} bps`
+                    }
+                  />
+                  <Metric
+                    label="Slippage $50k"
+                    value={
+                      data.liquidity.buySlippageBps.find((s) => s.sizeUsd === 50_000)?.bps === null ||
+                      data.liquidity.buySlippageBps.find((s) => s.sizeUsd === 50_000)?.bps === undefined
+                        ? "—"
+                        : `${data.liquidity.buySlippageBps.find((s) => s.sizeUsd === 50_000)?.bps} bps`
+                    }
+                  />
+                </div>
+                <p className="mt-2 text-[11px] text-slate-500">
+                  Slippage ước tính khi mua theo ask; net R:R đã trừ phí taker 0.1%.
+                </p>
+              </div>
+            ) : null}
 
             <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -514,12 +610,24 @@ function TrackRecord() {
   );
 }
 
-export default function RadarPage() {
-  const [side, setSide] = useState<MoverSide>("gainer");
-  const [minVolume, setMinVolume] = useState<number | undefined>(undefined);
-  const [excludeSystem, setExcludeSystem] = useState(false);
-  const [sort, setSort] = useState<RadarSort>("composite");
-  const [selected, setSelected] = useState<string | null>(null);
+function RadarScreen() {
+  const searchParams = useSearchParams();
+  const sideParam = searchParams.get("side");
+  const sortParam = searchParams.get("sort");
+  const volumeParam = Number(searchParams.get("minVolume"));
+  const initialSort: RadarSort =
+    sortParam === "fresh" || sortParam === "change" || sortParam === "volume" ? sortParam : "composite";
+
+  const [side, setSide] = useState<MoverSide>(
+    sideParam === "loser" || sideParam === "unusual" ? sideParam : "gainer"
+  );
+  const [minVolume, setMinVolume] = useState<number | undefined>(
+    Number.isFinite(volumeParam) && volumeParam > 0 ? volumeParam : undefined
+  );
+  const [excludeSystem, setExcludeSystem] = useState(searchParams.get("excludeSystem") === "1");
+  const [sort, setSort] = useState<RadarSort>(initialSort);
+  const [selected, setSelected] = useState<string | null>(searchParams.get("symbol"));
+  const [copied, setCopied] = useState(false);
 
   const queryKey = useMemo(
     () => ["market-radar", side, minVolume ?? 0, excludeSystem, sort] as const,
@@ -543,6 +651,25 @@ export default function RadarPage() {
   const rows = data?.rows ?? [];
   const updatedLabel = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString("vi-VN") : "—";
 
+  const copyPermalink = async () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("side", side);
+    url.searchParams.set("sort", sort);
+    if (minVolume) url.searchParams.set("minVolume", String(minVolume));
+    else url.searchParams.delete("minVolume");
+    if (excludeSystem) url.searchParams.set("excludeSystem", "1");
+    else url.searchParams.delete("excludeSystem");
+    if (selected) url.searchParams.set("symbol", selected);
+    else url.searchParams.delete("symbol");
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      setCopied(false);
+    }
+  };
+
   return (
     <main className="container mx-auto space-y-5 px-4 py-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -557,9 +684,33 @@ export default function RadarPage() {
           <p className="mt-1 max-w-2xl text-sm text-slate-400">
             {activeTab.hint} Coin ngoài narrative vẫn được quét — DB chỉ dùng để gắn badge.
           </p>
+          {data ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+              <span
+                className={cn(
+                  "rounded-full border px-2 py-0.5 font-medium",
+                  data.market.regime === "risk-on"
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                    : data.market.regime === "risk-off"
+                      ? "border-rose-500/40 bg-rose-500/10 text-rose-300"
+                      : "border-slate-700 bg-slate-900 text-slate-300"
+                )}
+              >
+                Regime: {data.market.regime}
+              </span>
+              <span>BTC 4h: {data.market.btcTrend ?? "—"}</span>
+              <span>Breadth: {data.market.breadthPct ?? "—"}%</span>
+            </div>
+          ) : null}
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-500">
           <span>cập nhật {updatedLabel}</span>
+          <button
+            onClick={() => void copyPermalink()}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 hover:bg-slate-800"
+          >
+            <Copy className="h-3.5 w-3.5" /> {copied ? "Đã copy" : "Copy link"}
+          </button>
           <button
             onClick={() => void refetch()}
             className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 hover:bg-slate-800"
@@ -653,9 +804,9 @@ export default function RadarPage() {
         </div>
       ) : null}
 
-      <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+      <section className="hidden overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40 md:block">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1050px] text-left text-sm">
+          <table className="w-full min-w-[1250px] text-left text-sm">
             <thead className="border-b border-slate-800 text-[11px] uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-3 font-medium">Coin</th>
@@ -665,6 +816,8 @@ export default function RadarPage() {
                 <th className="px-3 py-3 font-medium">Volume</th>
                 <th className="px-3 py-3 font-medium">OI 24h</th>
                 <th className="px-3 py-3 font-medium">Funding</th>
+                <th className="px-3 py-3 font-medium">Impulse</th>
+                <th className="px-3 py-3 font-medium">RS vs BTC</th>
                 <th className="px-3 py-3 font-medium">Bias</th>
                 <th className="px-3 py-3 font-medium">Độ mới</th>
                 <th className="px-3 py-3 font-medium">Hành động</th>
@@ -673,14 +826,14 @@ export default function RadarPage() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={10} className="px-4 py-12 text-center text-sm text-slate-400">
+                  <td colSpan={12} className="px-4 py-12 text-center text-sm text-slate-400">
                     <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
                     Đang quét toàn bộ futures, lấy klines/OI/funding cho top coin…
                   </td>
                 </tr>
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-4 py-12 text-center text-sm text-slate-400">
+                  <td colSpan={12} className="px-4 py-12 text-center text-sm text-slate-400">
                     Không có coin nào đạt ngưỡng ở tab này. Hạ volume tối thiểu hoặc bỏ lọc “ngoài hệ thống”.
                   </td>
                 </tr>
@@ -707,6 +860,13 @@ export default function RadarPage() {
                           {row.isBreakout7d ? (
                             <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300">
                               Breakout 7d
+                            </span>
+                          ) : null}
+                          {row.clusterLabel ? (
+                            <span className="inline-flex items-center gap-1 rounded border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-300">
+                              <Layers className="h-2.5 w-2.5" />
+                              {row.clusterLabel} · {row.clusterSize}
+                              {row.clusterLeader ? " · leader" : row.clusterLaggard ? " · laggard" : ""}
                             </span>
                           ) : null}
                         </div>
@@ -740,6 +900,25 @@ export default function RadarPage() {
                     </td>
                     <td className={cn("px-3 py-3 tabular-nums", (row.fundingRate ?? 0) >= 0 ? "text-amber-300" : "text-cyan-300")}>
                       {formatFunding(row.fundingRate)}
+                    </td>
+                    <td className="px-3 py-3 tabular-nums text-slate-300">
+                      {row.impulseAgeHours === null || row.impulseAgeHours === undefined ? (
+                        "—"
+                      ) : (
+                        <>
+                          {row.impulseAgeHours.toFixed(1)}h
+                          <div className="text-[10px] text-slate-500">
+                            ext {row.impulseExtensionAtr?.toFixed(1) ?? "—"} ATR
+                          </div>
+                        </>
+                      )}
+                      <div className={cn("text-[10px]", row.spotLed ? "text-emerald-400" : row.spotLed === false ? "text-slate-500" : "text-slate-600")}>
+                        {row.spotLed === true ? "spot dẫn" : row.spotLed === false ? "perp dẫn" : "—"}
+                      </div>
+                    </td>
+                    <td className={cn("px-3 py-3 tabular-nums", (row.relativeStrengthPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300")}>
+                      {formatPct(row.relativeStrengthPct ?? null)}
+                      <div className="text-[10px] text-slate-500">p{row.rsPercentile ?? "—"}</div>
                     </td>
                     <td className="px-3 py-3">
                       <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium", biasClasses(row.bias))}>
@@ -783,6 +962,86 @@ export default function RadarPage() {
         ) : null}
       </section>
 
+      <section className="space-y-2 md:hidden">
+        {isLoading ? (
+          <p className="rounded-xl border border-slate-800 p-4 text-sm text-slate-400">
+            <Loader2 className="mr-2 inline h-4 w-4 animate-spin" /> Đang quét thị trường…
+          </p>
+        ) : rows.length === 0 ? (
+          <p className="rounded-xl border border-slate-800 p-4 text-sm text-slate-400">
+            Không có coin nào đạt ngưỡng ở tab này.
+          </p>
+        ) : (
+          rows.map((row) => (
+            <button
+              key={row.pair}
+              onClick={() => setSelected(row.symbol)}
+              className="w-full rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-left"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="font-semibold text-slate-100">${row.symbol}</p>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    <span className={cn("rounded-full border px-1.5 py-0.5 text-[10px]", biasClasses(row.bias))}>
+                      {row.label}
+                    </span>
+                    {row.clusterLabel ? (
+                      <span className="rounded border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-300">
+                        {row.clusterLabel} · {row.clusterSize}
+                      </span>
+                    ) : null}
+                    {row.spotLed ? (
+                      <span className="rounded border border-emerald-500/30 px-1.5 py-0.5 text-[10px] text-emerald-300">
+                        spot dẫn
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className={cn("font-semibold tabular-nums", row.changePct >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                    {formatPct(row.changePct)}
+                  </p>
+                  <p className="text-xs tabular-nums text-slate-400">{formatPrice(row.price)}</p>
+                </div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-slate-400">
+                <div>
+                  <p className="text-slate-500">Volume</p>
+                  <p className="text-slate-200">{formatUsd(row.quoteVolume)}</p>
+                  <p>{row.volumeRatio7d === null ? "—" : `${row.volumeRatio7d.toFixed(1)}× TB7d`}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500">OI / funding</p>
+                  <p className={cn((row.oiChangePct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300")}>
+                    {formatPct(row.oiChangePct)}
+                  </p>
+                  <p>{formatFunding(row.fundingRate)}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500">Impulse / RS</p>
+                  <p className="text-slate-200">
+                    {row.impulseAgeHours === null || row.impulseAgeHours === undefined
+                      ? "—"
+                      : `${row.impulseAgeHours.toFixed(1)}h`}
+                  </p>
+                  <p className={cn((row.relativeStrengthPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300")}>
+                    {formatPct(row.relativeStrengthPct ?? null)} vs BTC
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <RangeBar position={row.rangePosition} />
+                <span className="text-[11px] text-slate-500">
+                  score {row.score} · mới {row.entryQuality}
+                </span>
+              </div>
+            </button>
+          ))
+        )}
+      </section>
+
       <TrackRecord />
 
       <details className="rounded-2xl border border-slate-800 bg-slate-900/30 p-5 text-sm text-slate-400">
@@ -811,5 +1070,19 @@ export default function RadarPage() {
 
       {selected ? <DetailDrawer key={selected} symbol={selected} onClose={() => setSelected(null)} /> : null}
     </main>
+  );
+}
+
+export default function RadarPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="container mx-auto px-4 py-6 text-sm text-slate-400">
+          <RadarIcon className="mr-2 inline h-4 w-4 animate-pulse text-cyan-400" /> Đang tải radar…
+        </main>
+      }
+    >
+      <RadarScreen />
+    </Suspense>
   );
 }

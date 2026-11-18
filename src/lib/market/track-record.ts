@@ -14,6 +14,7 @@ import {
   type TrackRecordResult,
 } from "@/lib/market/ledger";
 import { buildSetup, type SetupLevels } from "@/lib/market/setup";
+import { dispatchRadarAlerts } from "@/lib/market/alerts";
 import { isBearishBias, isBullishBias } from "@/lib/market/ledger";
 import { getRadarSnapshot, type RadarRow } from "@/lib/market/radar";
 
@@ -147,6 +148,7 @@ export async function recordAllRadarCohorts(): Promise<void> {
       .concat(fresh)
       .slice(-MAX_SIGNALS);
     await writeSignals(kept);
+    await dispatchRadarAlerts(plan.map((entry) => entry.row), gainer.market).catch(() => 0);
   } catch (error) {
     console.warn(
       "[RADAR-TRACK] Không ghi được signals:",

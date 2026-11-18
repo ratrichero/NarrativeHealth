@@ -5,6 +5,7 @@
 import type { MarketMetrics } from "@/lib/market/metrics";
 import { compositeScore, scoreForSide, type MoverSide } from "@/lib/market/scoring";
 import { buildSetup } from "@/lib/market/setup";
+import { netRiskReward } from "@/lib/market/liquidity";
 import type { RadarDetail, RadarRow, RadarSnapshot } from "@/lib/market/radar";
 import {
   HORIZONS,
@@ -142,6 +143,22 @@ function toRow(spec: DemoSpec, side: MoverSide): RadarRow {
     high7d: metrics.high7d,
     inSystem: Boolean(spec.narratives?.length),
     narratives: spec.narratives ?? [],
+    impulseAgeHours: Math.max(0.6, 2 + (Math.abs(spec.change) % 6)),
+    impulseExtensionAtr: Math.min(8, Math.abs(spec.change) / spec.atr),
+    impulseConsolidationBars: spec.volRatio > 2 ? 3 : 1,
+    impulseRetestEma20: spec.rangePos < 0.7,
+    impulseVolumeRatio: spec.volRatio,
+    spotChangePct: spec.change * 0.9,
+    spotVolume24h: spec.volume * 0.4,
+    basisPct: spec.change > 0 ? 0.12 : -0.18,
+    spotLed: spec.change > 0 && spec.volRatio >= 2,
+    relativeStrengthPct: Number((spec.change - 1.24).toFixed(2)),
+    rsPercentile: Math.min(99, Math.max(1, Math.round(spec.rangePos * 100))),
+    clusterId: spec.narratives?.[0] ? `cluster-${spec.narratives[0]}` : null,
+    clusterLabel: spec.narratives?.[0] ?? null,
+    clusterSize: spec.narratives?.[0] ? 2 : 1,
+    clusterLeader: Boolean(spec.narratives?.[0]) && spec.change >= 5,
+    clusterLaggard: Boolean(spec.narratives?.[0]) && spec.change < 5,
     bias: score.bias,
     label: score.label,
     score: score.score,
@@ -176,6 +193,9 @@ export function buildDemoSnapshot(side: MoverSide): RadarSnapshot {
       btcChangePct: 1.24,
       btcPrice: 94_250,
       universe: 278,
+      breadthPct: 65.5,
+      btcTrend: "up",
+      regime: "risk-on",
     },
     collectedAt: new Date().toISOString(),
     demo: true,
@@ -335,12 +355,31 @@ export function getDemoDetail(rawSymbol: string): RadarDetail | null {
   const bearish = ["exhaustion", "breakdown"].includes(row.bias);
   const atrValue = row.atrPct ? (row.price * row.atrPct) / 100 : null;
 
+  const setup =
+    atrValue && (bullish || bearish)
+      ? buildSetup(bullish ? "BULLISH" : "BEARISH", row.price, atrValue)
+      : null;
   return {
     row,
-    setup:
-      atrValue && (bullish || bearish)
-        ? buildSetup(bullish ? "BULLISH" : "BEARISH", row.price, atrValue)
-        : null,
+    setup,
+    netRiskRewardRatio: setup
+      ? netRiskReward((setup.entryLow + setup.entryHigh) / 2, setup.stopLoss, setup.tp1)
+      : null,
+    liquidity: {
+      spreadBps: 3.2,
+      depthUsd1Pct: 850_000,
+      buySlippageBps: [
+        { sizeUsd: 1_000, bps: 1.1 },
+        { sizeUsd: 10_000, bps: 4.8 },
+        { sizeUsd: 50_000, bps: 18.2 },
+      ],
+      sellSlippageBps: [
+        { sizeUsd: 1_000, bps: 1.2 },
+        { sizeUsd: 10_000, bps: 5.1 },
+        { sizeUsd: 50_000, bps: 19.4 },
+      ],
+      thin: false,
+    },
     chart: demoChart(row),
     asOf: new Date().toISOString(),
   };

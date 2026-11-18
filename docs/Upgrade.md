@@ -4,6 +4,68 @@
 
 ---
 
+## RADAR-03 — Đợt 2+3: impulse, regime, spot, cluster, liquidity, alert, mobile (2026-11-18)
+
+Bảy nhóm follow-up còn lại của Market Radar. Không thêm migration; track record,
+quota và alert dedupe vẫn dùng `app_settings`.
+
+### 1. Impulse age + multi-timeframe freshness
+
+`computeImpulse` đọc klines 1h (48h gần nhất), tìm nến ignition (volume ≥2.5×
+baseline, range ≥0.8 ATR, body ≥0.3 ATR), rồi tính tuổi impulse, extension từ
+origin theo ATR, số nến consolidation, retest EMA20 1h và volume climax.
+Scoring cộng điểm khi impulse ≤3h, trừ điểm/entryQuality khi >6–12h.
+
+### 2. Market regime + relative strength
+
+Market context có `regime` (risk-on/off/neutral), `btcTrend` 4h (EMA20/50),
+`breadthPct`. Mỗi row có `relativeStrengthPct` so BTC và `rsPercentile` trong
+universe. Scoring dùng RS như tín hiệu xác nhận, không thay thế bias.
+
+### 3. Spot leadership + basis
+
+`src/lib/market/spot.ts` lấy spot ticker từ `data-api.binance.vision` (vẫn
+hoạt động khi `fapi` bị geo-block), tính spot change, basis perp/spot và cờ
+`spotLed`. Spot dẫn được cộng điểm continuation/breakout; perp dẫn bị trừ nhẹ.
+Không có spot pair → null, không kết luận.
+
+### 4. Cluster/rotation
+
+`computeClusters` lấy return 1h của các coin đã enrich, correlation ≥0.75,
+gộp bằng union-find; label theo narrative chung (nếu ≥2 coin) hoặc “Cụm N”,
+chọn leader theo composite; các coin còn lại là laggard (ứng viên rotation).
+UI hiện badge cluster + size + leader/laggard.
+
+### 5. Liquidity, slippage, net R:R
+
+Detail fetch order book futures, tính spread bps, depth ±1%, slippage mua/bán
+cho $1k/$10k/$50k, cờ “sổ lệnh mỏng”. Setup có thêm net R:R đã trừ phí taker
+0.1%. List không gọi depth để giữ weight.
+
+### 6. Alert webhook
+
+`RADAR_ALERT_WEBHOOK_URL` (generic JSON có `text`) + ngưỡng score/freshness/
+impulse. Dedupe `symbol+bias+ngày` + cooldown theo symbol lưu `app_settings.radar.alerts.sent` (7 ngày,
+200 bản), gửi sau cohort, lỗi webhook/DB không ảnh hưởng radar.
+
+### 7. Mobile + permalink
+
+Dưới `md` dùng card thay bảng; URL nhận `side/sort/minVolume/excludeSystem/
+symbol` để mở đúng tab/coin, nút Copy link.
+
+### 8. Cấu hình
+
+`RADAR_ALERT_WEBHOOK_URL`, `RADAR_ALERT_MIN_SCORE` (75),
+`RADAR_ALERT_MIN_ENTRY` (50), `RADAR_ALERT_MAX_IMPULSE_HOURS` (12),
+`RADAR_ALERT_COOLDOWN_HOURS` (6 — cùng symbol không lặp trong cooldown).
+
+### 9. Kiểm tra
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market` **10 suite / 65 test pass**;
+eslint 0 lỗi; build pass. Preview vẫn `RADAR_DEMO=1` vì Binance futures bị
+chặn (451); spot vision truy cập được nhưng radar thật chưa chạy live. Alert
+webhook chưa được gửi thử vì không cấu hình URL.
+
 ## RADAR-02 — Signal Ledger 2.0 + quota/rate limit (2026-11-18)
 
 Đợt 1 của follow-up radar: đo hiệu quả thật của scoring và chặn lạm dụng

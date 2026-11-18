@@ -15,8 +15,12 @@ import {
   fetchBinanceFuturesKlines,
   fetchBinanceFundingRate,
   fetchBinanceOIHistory,
+  fetchBinanceFuturesDepth,
 } from "@/lib/collectors/binance";
-import { computeMarketMetrics, type MarketMetrics } from "@/lib/market/metrics";
+import { computeMarketMetrics, emaLast, type MarketMetrics } from "@/lib/market/metrics";
+import { computeSpotLeadership, fetchSpotTickers, type SpotLeadership } from "@/lib/market/spot";
+import { computeClusters } from "@/lib/market/cluster";
+import { computeLiquidity, netRiskReward, type LiquidityMetrics } from "@/lib/market/liquidity";
 import {
   compositeScore,
   scoreForSide,
@@ -53,6 +57,8 @@ interface ExchangeSymbol {
   onboardDate: number;
 }
 
+export type MarketRegime = "risk-on" | "risk-off" | "neutral";
+
 export interface RadarMarketContext {
   gainers: number;
   losers: number;
@@ -60,6 +66,9 @@ export interface RadarMarketContext {
   btcChangePct: number | null;
   btcPrice: number | null;
   universe: number;
+  breadthPct: number | null;
+  btcTrend: "up" | "down" | "flat" | null;
+  regime: MarketRegime;
 }
 
 export interface RadarRow {
@@ -86,6 +95,22 @@ export interface RadarRow {
   high7d: number | null;
   inSystem: boolean;
   narratives: string[];
+  impulseAgeHours?: number | null;
+  impulseExtensionAtr?: number | null;
+  impulseConsolidationBars?: number | null;
+  impulseRetestEma20?: boolean | null;
+  impulseVolumeRatio?: number | null;
+  spotChangePct?: number | null;
+  spotVolume24h?: number | null;
+  basisPct?: number | null;
+  spotLed?: boolean | null;
+  relativeStrengthPct?: number | null;
+  rsPercentile?: number | null;
+  clusterId?: string | null;
+  clusterLabel?: string | null;
+  clusterSize?: number;
+  clusterLeader?: boolean;
+  clusterLaggard?: boolean;
   bias: Bias;
   label: string;
   score: number;
@@ -108,6 +133,8 @@ export interface RadarSnapshot {
 export interface RadarDetail {
   row: RadarRow;
   setup: SetupLevels | null;
+  netRiskRewardRatio?: number | null;
+  liquidity?: LiquidityMetrics | null;
   chart: { t: number; o: number; h: number; l: number; c: number }[];
   asOf: string;
 }
@@ -249,11 +276,34 @@ async function mapLimit<T, R>(
   return results;
 }
 
+export function percentileRank(sortedValues: number[], value: number): number | null {
+  if (sortedValues.length === 0 || !Number.isFinite(value)) return null;
+  let low = 0;
+  let high = sortedValues.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (sortedValues[mid] <= value) low = mid + 1;
+    else high = mid;
+  }
+  return Math.round((low / sortedValues.length) * 100);
+}
+
+export function classifyRegime(
+  btcChangePct: number | null,
+  btcTrend: "up" | "down" | "flat" | null,
+  breadthPct: number | null
+): MarketRegime {
+  if (btcTrend === "up" || ((btcChangePct ?? 0) > 0 && (breadthPct ?? 50) >= 55)) return "risk-on";
+  if (btcTrend === "down" || ((btcChangePct ?? 0) < 0 && (breadthPct ?? 50) <= 45)) return "risk-off";
+  return "neutral";
+}
+
 function toRow(
   ticker: FuturesTicker,
   metrics: MarketMetrics,
   side: MoverSide,
-  system: Map<string, SystemCoin>
+  system: Map<string, SystemCoin>,
+  spot: SpotLeadership | null = null
 ): RadarRow {
   const symbol = ticker.symbol.replace(/USDT$/, "");
   const score = scoreForSide(metrics, side);
@@ -283,6 +333,22 @@ function toRow(
     high7d: metrics.high7d,
     inSystem: Boolean(membership),
     narratives: membership?.narratives.slice(0, 3) ?? [],
+    impulseAgeHours: metrics.impulseAgeHours ?? null,
+    impulseExtensionAtr: metrics.impulseExtensionAtr ?? null,
+    impulseConsolidationBars: metrics.impulseConsolidationBars ?? null,
+    impulseRetestEma20: metrics.impulseRetestEma20 ?? null,
+    impulseVolumeRatio: metrics.impulseVolumeRatio ?? null,
+    spotChangePct: spot?.spotChangePct ?? null,
+    spotVolume24h: spot?.spotVolume24h ?? null,
+    basisPct: spot?.basisPct ?? null,
+    spotLed: spot?.spotLed ?? null,
+    relativeStrengthPct: metrics.relativeStrengthPct ?? null,
+    rsPercentile: null,
+    clusterId: null,
+    clusterLabel: null,
+    clusterSize: 1,
+    clusterLeader: false,
+    clusterLaggard: false,
     bias: score.bias,
     label: score.label,
     score: score.score,
@@ -293,41 +359,86 @@ function toRow(
   };
 }
 
+interface EnrichedRow {
+  row: RadarRow;
+  closes: number[];
+}
+
 async function enrichTicker(
   ticker: FuturesTicker,
   meta: ExchangeSymbol | undefined,
   side: MoverSide,
-  system: Map<string, SystemCoin>
-): Promise<RadarRow> {
-  const [daily, h4, funding, oi] = await Promise.all([
+  system: Map<string, SystemCoin>,
+  spotTicker: { lastPrice: string; priceChangePercent: string; quoteVolume: string } | undefined,
+  btcChangePct: number | null
+): Promise<EnrichedRow> {
+  const [daily, h4, hourly, funding, oi] = await Promise.all([
     fetchBinanceFuturesKlines(ticker.symbol, 30, "1d").catch(() => []),
     fetchBinanceFuturesKlines(ticker.symbol, 120, "4h").catch(() => []),
+    fetchBinanceFuturesKlines(ticker.symbol, 72, "1h").catch(() => []),
     fetchBinanceFundingRate(ticker.symbol).catch(() => null),
     fetchBinanceOIHistory(ticker.symbol, "1h", 25).catch(() => []),
   ]);
 
+  const changePct = Number(ticker.priceChangePercent);
+  const spot = computeSpotLeadership(changePct, Number(ticker.lastPrice), spotTicker);
   const metrics = computeMarketMetrics({
     price: Number(ticker.lastPrice),
-    changePct: Number(ticker.priceChangePercent),
+    changePct,
     quoteVolume: Number(ticker.quoteVolume),
     trades: Number(ticker.count ?? 0),
     high24h: Number(ticker.highPrice),
     low24h: Number(ticker.lowPrice),
     dailyCandles: daily,
     h4Candles: h4,
+    hourlyCandles: hourly,
     fundingRate: funding,
     oiHistory: oi,
     listingAgeDays: listingAgeDays(meta?.onboardDate),
+    spotLed: spot?.spotLed ?? null,
+    relativeStrengthPct: btcChangePct === null ? null : changePct - btcChangePct,
   });
 
-  return toRow(ticker, metrics, side, system);
+  return {
+    row: toRow(ticker, metrics, side, system, spot),
+    closes: hourly.map((c) => Number(c.close)).filter(Number.isFinite),
+  };
 }
 
 // ─── Snapshot ───────────────────────────────────────────
 
 const snapshotCache = new Map<string, { expires: number; promise: Promise<RadarSnapshot> }>();
 
-function buildMarket(tickers: FuturesTicker[], eligible: FuturesTicker[]): RadarMarketContext {
+let btcTrendCache: { value: "up" | "down" | "flat" | null; expires: number } = { value: null, expires: 0 };
+
+async function getBtcTrend(): Promise<"up" | "down" | "flat" | null> {
+  if (btcTrendCache.expires > Date.now()) return btcTrendCache.value;
+  try {
+    const candles = await fetchBinanceFuturesKlines("BTCUSDT", 60, "4h");
+    const closes = candles.map((c) => Number(c.close)).filter(Number.isFinite);
+    const ema20 = emaLast(closes, 20);
+    const ema50 = emaLast(closes, 50);
+    const value =
+      ema20 === null || ema50 === null
+        ? null
+        : ema20 > ema50 * 1.002
+          ? "up"
+          : ema20 < ema50 * 0.998
+            ? "down"
+            : "flat";
+    btcTrendCache = { value, expires: Date.now() + 5 * 60_000 };
+    return value;
+  } catch {
+    btcTrendCache = { value: null, expires: Date.now() + 60_000 };
+    return null;
+  }
+}
+
+function buildMarket(
+  tickers: FuturesTicker[],
+  eligible: FuturesTicker[],
+  btcTrend: "up" | "down" | "flat" | null
+): RadarMarketContext {
   const usdt = tickers.filter((t) => /^[A-Z0-9]{2,15}USDT$/.test(t.symbol));
   let gainers = 0;
   let losers = 0;
@@ -336,29 +447,32 @@ function buildMarket(tickers: FuturesTicker[], eligible: FuturesTicker[]): Radar
     if (change > 0) gainers += 1;
     else if (change < 0) losers += 1;
   }
+  const btc = tickers.find((t) => t.symbol === "BTCUSDT");
+  const btcChange = btc ? Number(btc.priceChangePercent) : NaN;
+  const btcChangePct = Number.isFinite(btcChange) ? btcChange : null;
+  const btcPrice = btc && Number(btc.lastPrice) > 0 ? Number(btc.lastPrice) : null;
+  const breadthPct = gainers + losers > 0 ? (gainers / (gainers + losers)) * 100 : null;
+
   return {
     gainers,
     losers,
     totalVolumeUsd: usdt.reduce((sum, t) => sum + (Number(t.quoteVolume) || 0), 0),
-    btcChangePct: (() => {
-      const btc = tickers.find((t) => t.symbol === "BTCUSDT");
-      const change = btc ? Number(btc.priceChangePercent) : NaN;
-      return Number.isFinite(change) ? change : null;
-    })(),
-    btcPrice: (() => {
-      const btc = tickers.find((t) => t.symbol === "BTCUSDT");
-      const price = btc ? Number(btc.lastPrice) : NaN;
-      return Number.isFinite(price) && price > 0 ? price : null;
-    })(),
+    btcChangePct,
+    btcPrice,
     universe: eligible.length,
+    breadthPct: breadthPct === null ? null : Number(breadthPct.toFixed(1)),
+    btcTrend,
+    regime: classifyRegime(btcChangePct, btcTrend, breadthPct),
   };
 }
 
 async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarSnapshot> {
-  const [tickers, info, system] = await Promise.all([
+  const [tickers, info, system, spotMap, btcTrend] = await Promise.all([
     fetchFuturesTickers(),
     fetchExchangeSymbols(),
     getSystemCoins(),
+    fetchSpotTickers(),
+    getBtcTrend(),
   ]);
 
   const eligible = tickers.filter((t) => isEligibleTicker(t, info.get(t.symbol), minVolume));
@@ -367,7 +481,9 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     throw new Error("Binance trả quá ít symbol hợp lệ — thử lại sau.");
   }
 
-  const market = buildMarket(tickers, eligible);
+  const market = buildMarket(tickers, eligible, btcTrend);
+  const btcChangePct = market.btcChangePct;
+  const changeRanks = eligible.map((t) => Number(t.priceChangePercent)).sort((a, b) => a - b);
   const byChangeDesc = [...eligible].sort(
     (a, b) =>
       Number(b.priceChangePercent) - Number(a.priceChangePercent) ||
@@ -399,8 +515,15 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     chosen = pool;
   }
 
-  const rows = await mapLimit(chosen, 8, (ticker) =>
-    enrichTicker(ticker, info.get(ticker.symbol), side, system).catch((error) => {
+  const enriched = await mapLimit(chosen, 8, (ticker) =>
+    enrichTicker(
+      ticker,
+      info.get(ticker.symbol),
+      side,
+      system,
+      spotMap.get(ticker.symbol),
+      btcChangePct
+    ).catch((error) => {
       console.warn(
         `[RADAR] Enrich ${ticker.symbol} lỗi:`,
         error instanceof Error ? error.message : String(error)
@@ -409,21 +532,42 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     })
   );
 
-  const clean = rows.filter((r): r is RadarRow => r !== null);
-  const filtered =
-    side === "unusual"
-      ? clean.filter(
-          (r) =>
-            (r.volumeZ !== null && r.volumeZ >= 2) ||
-            ((r.volumeRatio7d ?? 0) >= 2.2 && (r.oiChangePct ?? 0) >= 2)
-        )
-      : clean;
+  const clean = enriched.filter((r): r is EnrichedRow => r !== null);
+  for (const entry of clean) {
+    entry.row.rsPercentile = percentileRank(changeRanks, entry.row.changePct);
+  }
 
-  filtered.sort((a, b) => b.composite - a.composite || Math.abs(b.changePct) - Math.abs(a.changePct));
+  const clusters = computeClusters(
+    clean.map((entry) => ({
+      symbol: entry.row.symbol,
+      closes: entry.closes,
+      composite: entry.row.composite,
+      narratives: entry.row.narratives,
+    }))
+  );
+  for (const entry of clean) {
+    const cluster = clusters.get(entry.row.symbol) ?? null;
+    entry.row.clusterId = cluster?.clusterId ?? null;
+    entry.row.clusterLabel = cluster?.label ?? null;
+    entry.row.clusterSize = cluster?.size ?? 1;
+    entry.row.clusterLeader = cluster?.leader ?? false;
+    entry.row.clusterLaggard = cluster ? !cluster.leader : false;
+  }
+
+  let rows = clean.map((entry) => entry.row);
+  if (side === "unusual") {
+    rows = rows.filter(
+      (r) =>
+        (r.volumeZ !== null && r.volumeZ >= 2) ||
+        ((r.volumeRatio7d ?? 0) >= 2.2 && (r.oiChangePct ?? 0) >= 2)
+    );
+  }
+
+  rows.sort((a, b) => b.composite - a.composite || Math.abs(b.changePct) - Math.abs(a.changePct));
 
   return {
     side,
-    rows: filtered,
+    rows,
     market,
     collectedAt: new Date().toISOString(),
   };
@@ -495,38 +639,56 @@ export async function getMoverDetail(rawSymbol: string): Promise<RadarDetail | n
   if (cached && cached.expires > Date.now()) return cached.promise;
 
   const promise = (async (): Promise<RadarDetail | null> => {
-    const [tickers, info, system] = await Promise.all([
+    const [tickers, info, system, spotMap] = await Promise.all([
       fetchFuturesTickers(),
       fetchExchangeSymbols(),
       getSystemCoins(),
+      fetchSpotTickers(),
     ]);
     const ticker = tickers.find((t) => t.symbol === pair);
     if (!ticker) return null;
 
-    const [daily, h4, funding, oi] = await Promise.all([
+    const [daily, h4, hourly, funding, oi, depth] = await Promise.all([
       fetchBinanceFuturesKlines(pair, 30, "1d").catch(() => []),
       fetchBinanceFuturesKlines(pair, 120, "4h").catch(() => []),
+      fetchBinanceFuturesKlines(pair, 72, "1h").catch(() => []),
       fetchBinanceFundingRate(pair).catch(() => null),
       fetchBinanceOIHistory(pair, "1h", 25).catch(() => []),
+      fetchBinanceFuturesDepth(pair, 50).catch(() => null),
     ]);
+
+    const btc = tickers.find((t) => t.symbol === "BTCUSDT");
+    const btcChangePct = btc && Number.isFinite(Number(btc.priceChangePercent))
+      ? Number(btc.priceChangePercent)
+      : null;
+    const changePct = Number(ticker.priceChangePercent);
+    const spot = computeSpotLeadership(changePct, Number(ticker.lastPrice), spotMap.get(pair));
 
     const metrics = computeMarketMetrics({
       price: Number(ticker.lastPrice),
-      changePct: Number(ticker.priceChangePercent),
+      changePct,
       quoteVolume: Number(ticker.quoteVolume),
       trades: Number(ticker.count ?? 0),
       high24h: Number(ticker.highPrice),
       low24h: Number(ticker.lowPrice),
       dailyCandles: daily,
       h4Candles: h4,
+      hourlyCandles: hourly,
       fundingRate: funding,
       oiHistory: oi,
       listingAgeDays: listingAgeDays(info.get(pair)?.onboardDate),
+      spotLed: spot?.spotLed ?? null,
+      relativeStrengthPct: btcChangePct === null ? null : changePct - btcChangePct,
     });
 
     const change = metrics.changePct;
     const side: MoverSide = change > 2 ? "gainer" : change < -2 ? "loser" : "unusual";
-    const row = toRow(ticker, metrics, side, system);
+    const row = toRow(ticker, metrics, side, system, spot);
+    row.rsPercentile = percentileRank(
+      tickers.map((t) => Number(t.priceChangePercent)).filter(Number.isFinite).sort((a, b) => a - b),
+      row.changePct
+    );
+    row.clusterLaggard = false;
 
     const bullish: Bias[] = ["continuation", "flush-bounce", "breakout", "accumulation"];
     const bearish: Bias[] = ["exhaustion", "breakdown"];
@@ -536,9 +698,21 @@ export async function getMoverDetail(rawSymbol: string): Promise<RadarDetail | n
         ? buildSetup(bullish.includes(row.bias) ? "BULLISH" : "BEARISH", metrics.price, atrValue)
         : null;
 
+    const liquidity = depth
+      ? computeLiquidity(
+          depth.bids.map(([price, qty]) => ({ price: Number(price), qty: Number(qty) })),
+          depth.asks.map(([price, qty]) => ({ price: Number(price), qty: Number(qty) })),
+          metrics.price
+        )
+      : null;
+
     return {
       row,
       setup,
+      netRiskRewardRatio: setup
+        ? netRiskReward((setup.entryLow + setup.entryHigh) / 2, setup.stopLoss, setup.tp1)
+        : null,
+      liquidity,
       chart: h4.slice(-60).map((k) => ({
         t: k.openTime,
         o: Number(k.open),

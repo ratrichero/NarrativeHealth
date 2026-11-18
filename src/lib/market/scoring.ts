@@ -92,6 +92,25 @@ export function scoreGainer(m: MarketMetrics): MoverScore {
     cont += 8;
     reasons.push("Đã vượt đỉnh 7 ngày");
   }
+  if (m.impulseAgeHours !== null && m.impulseAgeHours !== undefined) {
+    if (m.impulseAgeHours <= 3) {
+      cont += 8;
+      reasons.push(`Impulse mới ${m.impulseAgeHours.toFixed(1)}h`);
+    } else if (m.impulseAgeHours <= 6) {
+      cont += 4;
+    } else if (m.impulseAgeHours > 12) {
+      cont -= 8;
+      warnings.push(`Impulse đã ${m.impulseAgeHours.toFixed(0)}h — entry muộn`);
+    }
+  }
+  if (m.spotLed === true) {
+    cont += 6;
+    reasons.push("Spot dẫn perp — move có xác nhận spot");
+  }
+  if (m.relativeStrengthPct !== null && m.relativeStrengthPct !== undefined) {
+    if (m.relativeStrengthPct > 0) cont += 4;
+    else if (m.relativeStrengthPct < -2) cont -= 6;
+  }
 
   let exh = 0;
   if (mult >= 4) {
@@ -129,6 +148,10 @@ export function scoreGainer(m: MarketMetrics): MoverScore {
   if (funding !== null && funding >= 0.0005) entryQuality -= 15;
   else if (funding !== null && funding >= 0.0003) entryQuality -= 8;
   if (volRatio !== null && volRatio > 8) entryQuality -= 10;
+  if (m.impulseAgeHours !== null && m.impulseAgeHours !== undefined && m.impulseAgeHours > 6) {
+    entryQuality -= Math.min(20, (m.impulseAgeHours - 6) * 2);
+  }
+  if (m.spotLed === false) entryQuality -= 5;
 
   if (oi === null) warnings.push("Thiếu OI — tín hiệu kém tin cậy hơn");
   if (funding === null) warnings.push("Thiếu funding — không đọc được crowding");
@@ -176,6 +199,10 @@ export function scoreLoser(m: MarketMetrics): MoverScore {
   }
   if (mult >= 3) flush += 10;
   if (m.rangePosition <= 0.2) flush += 10;
+  if (m.spotLed === true) {
+    flush += 6;
+    reasons.push("Spot dẫn đà bán — flush có xác nhận spot");
+  }
 
   let breakdown = 0;
   if (trendDown) {
@@ -271,6 +298,11 @@ export function scoreUnusual(m: MarketMetrics): MoverScore {
     reasons.push(`Giá mới đổi ${pct(m.changePct)} — chưa chạy`);
   }
   if (m.fundingRate !== null && Math.abs(m.fundingRate) < 0.0003) score += 10;
+  if (m.impulseAgeHours !== null && m.impulseAgeHours !== undefined && m.impulseAgeHours <= 2) {
+    score += 8;
+    reasons.push(`Impulse mới ${m.impulseAgeHours.toFixed(1)}h — chưa chạy xa`);
+  }
+  if (m.spotLed === true) score += 5;
 
   if (m.isBreakout7d) {
     score += 10;

@@ -39,6 +39,20 @@ export interface MarketMetrics {
   oiChangePct: number | null;
   longShortRatio: number | null;
   listingAgeDays: number | null;
+  /** 1h impulse: move bắt đầu cách đây bao lâu (giờ). */
+  impulseAgeHours?: number | null;
+  /** Giá đã đi bao nhiêu ATR kể từ origin của impulse. */
+  impulseExtensionAtr?: number | null;
+  /** Số nến 1h đang consolidation sau impulse. */
+  impulseConsolidationBars?: number | null;
+  /** Có retest EMA20 1h trong impulse không. */
+  impulseRetestEma20?: boolean | null;
+  /** Volume đỉnh impulse / baseline 1h. */
+  impulseVolumeRatio?: number | null;
+  /** Spot dẫn perp trong 24h. */
+  spotLed?: boolean | null;
+  /** Chênh lệch 24h so với BTC. */
+  relativeStrengthPct?: number | null;
 }
 
 export interface MarketMetricsInput {
@@ -50,10 +64,13 @@ export interface MarketMetricsInput {
   low24h: number;
   dailyCandles: KlineData[];
   h4Candles: KlineData[];
+  hourlyCandles?: KlineData[];
   fundingRate: number | null;
   oiHistory: { timestamp: number; openInterest: number }[];
   longShortRatio?: number | null;
   listingAgeDays: number | null;
+  spotLed?: boolean | null;
+  relativeStrengthPct?: number | null;
 }
 
 export function emaLast(values: number[], period: number): number | null {
@@ -140,8 +157,7 @@ export function volumeStats(
   };
 }
 
-export function rangePosition(price: number, low: number, high: number): number {
-  if (!Number.isFinite(price) || !Number.isFinite(low) || !Number.isFinite(high) || high <= low) {
+export function rangePosition(price: number, low: number, high: number): number {  if (!Number.isFinite(price) || !Number.isFinite(low) || !Number.isFinite(high) || high <= low) {
     return 0.5;
   }
   return Math.min(1, Math.max(0, (price - low) / (high - low)));
@@ -150,6 +166,106 @@ export function rangePosition(price: number, low: number, high: number): number 
 function round(value: number | null, digits = 4): number | null {
   if (value === null || !Number.isFinite(value)) return null;
   return Number(value.toFixed(digits));
+}
+
+export interface ImpulseMetrics {
+  ageHours: number;
+  extensionAtr: number;
+  consolidationBars: number;
+  retestEma20: boolean;
+  volumeRatio: number;
+  direction: "up" | "down";
+}
+
+/**
+ * Tìm impulse gần nhất trên nến 1h: nến volume >=2.5× baseline, range >=0.8 ATR
+ * và body >=0.3 ATR. Trả null nếu không có impulse trong 48h gần nhất.
+ */
+export function computeImpulse(hourlyCandles: KlineData[]): ImpulseMetrics | null {
+  const closed = hourlyCandles.length > 1 ? hourlyCandles.slice(0, -1) : hourlyCandles;
+  if (closed.length < 30) return null;
+
+  const last = closed[closed.length - 1];
+  const closes = closed.map((c) => Number(c.close)).filter(Number.isFinite);
+  if (closes.length < 20) return null;
+
+  const trueRanges: number[] = [];
+  for (let i = closed.length - 14; i < closed.length; i += 1) {
+    if (i <= 0) continue;
+    const high = Number(closed[i].high);
+    const low = Number(closed[i].low);
+    const prev = Number(closed[i - 1].close);
+    if ([high, low, prev].every(Number.isFinite)) {
+      trueRanges.push(Math.max(high - low, Math.abs(high - prev), Math.abs(low - prev)));
+    }
+  }
+  if (trueRanges.length === 0) return null;
+  const atr = trueRanges.reduce((s, v) => s + v, 0) / trueRanges.length;
+  if (!Number.isFinite(atr) || atr <= 0) return null;
+
+  const baselineBars = closed.slice(-48, -24);
+  if (baselineBars.length < 8) return null;
+  const baseline = baselineBars.reduce((s, c) => s + Number(c.quoteVolume), 0) / baselineBars.length;
+  if (!Number.isFinite(baseline) || baseline <= 0) return null;
+
+  let ignition = -1;
+  for (let i = Math.max(24, closed.length - 48); i < closed.length; i += 1) {
+    const c = closed[i];
+    const open = Number(c.open);
+    const close = Number(c.close);
+    const high = Number(c.high);
+    const low = Number(c.low);
+    const vol = Number(c.quoteVolume);
+    if (![open, close, high, low, vol].every(Number.isFinite)) continue;
+    if (
+      vol >= baseline * 2.5 &&
+      high - low >= atr * 0.8 &&
+      Math.abs(close - open) >= atr * 0.3
+    ) {
+      ignition = i;
+    }
+  }
+  if (ignition < 0) return null;
+
+  const startBar = closed[ignition];
+  const startPrice = Number(startBar.open);
+  const direction: "up" | "down" = Number(last.close) >= startPrice ? "up" : "down";
+
+  let maxHigh = -Infinity;
+  let minLow = Infinity;
+  let maxVolume = 0;
+  for (let i = ignition; i < closed.length; i += 1) {
+    maxHigh = Math.max(maxHigh, Number(closed[i].high));
+    minLow = Math.min(minLow, Number(closed[i].low));
+    maxVolume = Math.max(maxVolume, Number(closed[i].quoteVolume));
+  }
+  const extreme = direction === "up" ? maxHigh : minLow;
+  const extension = Math.abs(extreme - startPrice) / atr;
+
+  let consolidationBars = 0;
+  for (let i = closed.length - 1; i >= ignition; i -= 1) {
+    const range = Number(closed[i].high) - Number(closed[i].low);
+    if (range <= atr * 0.8) consolidationBars += 1;
+    else break;
+  }
+
+  const ema = emaLast(closes, 20) ?? Number(last.close);
+  let retest = false;
+  for (let i = ignition + 1; i < closed.length; i += 1) {
+    const low = Number(closed[i].low);
+    const high = Number(closed[i].high);
+    if (direction === "up" && low <= ema * 1.003 && Number(last.close) >= ema) retest = true;
+    if (direction === "down" && high >= ema * 0.997 && Number(last.close) <= ema) retest = true;
+  }
+
+  return {
+    ageHours: Number(Math.max(0, (last.closeTime - startBar.openTime) / 3_600_000).toFixed(1)),
+    extensionAtr: Number(extension.toFixed(2)),
+    consolidationBars,
+    retestEma20: retest,
+    volumeRatio: Number((maxVolume / baseline).toFixed(2)),
+    direction,
+  };
 }
 
 export function computeMarketMetrics(input: MarketMetricsInput): MarketMetrics {
@@ -178,6 +294,8 @@ export function computeMarketMetrics(input: MarketMetricsInput): MarketMetrics {
     high7d !== null && input.price > 0 ? ((high7d - input.price) / input.price) * 100 : null;
 
   const { ratio7d, z } = volumeStats(input.dailyCandles, input.quoteVolume);
+  const impulse = computeImpulse(input.hourlyCandles ?? []);
+  const relativeStrength = input.relativeStrengthPct ?? null;
 
   let oiChangePct: number | null = null;
   const oi = input.oiHistory.filter((p) => Number.isFinite(p.openInterest) && p.openInterest > 0);
@@ -215,5 +333,12 @@ export function computeMarketMetrics(input: MarketMetricsInput): MarketMetrics {
     oiChangePct: round(oiChangePct, 2),
     longShortRatio: input.longShortRatio ?? null,
     listingAgeDays: input.listingAgeDays,
+    impulseAgeHours: impulse?.ageHours ?? null,
+    impulseExtensionAtr: impulse?.extensionAtr ?? null,
+    impulseConsolidationBars: impulse?.consolidationBars ?? null,
+    impulseRetestEma20: impulse?.retestEma20 ?? null,
+    impulseVolumeRatio: impulse?.volumeRatio ?? null,
+    spotLed: input.spotLed ?? null,
+    relativeStrengthPct: relativeStrength,
   };
 }

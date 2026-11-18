@@ -261,6 +261,27 @@ export async function fetchBinanceTopLongShortRatio(
 }
 
 /**
+ * Order book futures (depth) cho slippage/spread.
+ */
+export async function fetchBinanceFuturesDepth(
+  symbol: string,
+  limit: number = 50
+): Promise<{ bids: [string, string][]; asks: [string, string][] } | null> {
+  try {
+    const response = await axios.get(`${BINANCE_FUTURES_API}/depth`, {
+      params: { symbol, limit },
+      timeout: 10_000,
+    });
+    if (!Array.isArray(response.data?.bids) || !Array.isArray(response.data?.asks)) return null;
+    return { bids: response.data.bids, asks: response.data.asks };
+  } catch (error: any) {
+    const status = error.response?.status;
+    console.error(`Binance futures depth error for ${symbol}: [HTTP ${status || "N/A"}] ${error.message}`);
+    return null;
+  }
+}
+
+/**
  * Get current price from Binance
  */
 export async function fetchBinanceCurrentPrice(symbol: string): Promise<number | null> {
