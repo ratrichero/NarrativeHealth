@@ -39,9 +39,29 @@ const mockPayload = {
   ],
 };
 
+// RADAR-METRIC — card số liệu tải nằm cùng section nên mock phải trả đúng payload theo queryKey.
+const mockMetrics = {
+  cacheHits: 4,
+  cacheMisses: 1,
+  cacheHitRate: 80,
+  builds: [
+    {
+      side: "gainer",
+      builds: 2,
+      failed: 0,
+      avgDurationMs: 1200,
+      maxDurationMs: 1600,
+      avgBinanceRequests: 12,
+    },
+  ],
+};
+
 jest.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: jest.fn(async () => undefined) }),
-  useQuery: () => ({ data: mockPayload, isLoading: false, error: null }),
+  useQuery: ({ queryKey }: { queryKey: unknown[] }) =>
+    queryKey[1] === "radar-metrics"
+      ? { data: mockMetrics, isLoading: false, error: null, isFetching: false, refetch: jest.fn() }
+      : { data: mockPayload, isLoading: false, error: null },
 }));
 
 describe("RadarConfigSection", () => {
