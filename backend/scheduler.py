@@ -9,7 +9,7 @@ Architecture Note:
 """
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import logging
 import pytz
@@ -38,6 +38,17 @@ CATALYST_JOBS = (
     ("catalyst_unlocks", "unlocks", "Catalyst unlocks (event_risks read-only)"),
 )
 
+# RADAR-COHORT: cohort/ledger/alert chạy bằng job này (gọi Next.js) thay vì
+# `after()` của request /api/market/movers. Nhịp đọc từ
+# `radar.config.schedulerCohortMinutes` (fallback SCHEDULER_RADAR_COHORT_MINUTES).
+RADAR_COHORT_JOB_ID = "radar_cohort"
+
+# RADAR-BIAS-LOG: job riêng tính outcome 1h/4h/24h/3d/7d cho radar_bias_log.
+# Nhịp đọc từ `radar.config.schedulerBiasOutcomeMinutes` (fallback
+# SCHEDULER_RADAR_BIAS_OUTCOME_MINUTES). Idempotent: endpoint chỉ thêm outcome
+# cho horizon đã đủ tuổi và chưa có dòng, nên chạy trùng không nhân bản dữ liệu.
+RADAR_BIAS_OUTCOME_JOB_ID = "radar_bias_outcomes"
+
 
 def _as_bool(value, fallback: bool) -> bool:
     if isinstance(value, bool):
@@ -64,8 +75,12 @@ def _as_minutes(value, fallback: int) -> int:
     return min(CATALYST_MAX_INTERVAL_MINUTES, minutes)
 
 
-def resolve_catalyst_schedule(values) -> tuple[bool, dict]:
-    """Gộp `values` trong DB lên env/default. Trả (enabled, {scope: minutes})."""
+def resolve_scheduler_intervals(values) -> tuple[bool, dict]:
+    """Gộp `values` trong DB lên env/default.
+
+    Trả (catalyst_enabled, {scope: minutes}) cho announcements/news/unlocks và
+    `cohort` (nhịp ledger/alert, job riêng — 0 = tắt, không chịu công tắc catalyst).
+    """
     data = values if isinstance(values, dict) else {}
     enabled = _as_bool(data.get("schedulerEnabled"), settings.scheduler_catalyst_enabled)
     return enabled, {
@@ -80,6 +95,14 @@ def resolve_catalyst_schedule(values) -> tuple[bool, dict]:
         "unlocks": _as_minutes(
             data.get("schedulerUnlocksMinutes"),
             settings.scheduler_catalyst_unlocks_minutes,
+        ),
+        "cohort": _as_minutes(
+            data.get("schedulerCohortMinutes"),
+            settings.scheduler_radar_cohort_minutes,
+        ),
+        "biasOutcomes": _as_minutes(
+            data.get("schedulerBiasOutcomeMinutes"),
+            settings.scheduler_radar_bias_outcome_minutes,
         ),
     }
 
@@ -243,6 +266,8 @@ class DataRefreshScheduler:
                 'catalyst_news',
                 'catalyst_unlocks',
                 'catalyst_config_watch',
+                RADAR_COHORT_JOB_ID,
+                RADAR_BIAS_OUTCOME_JOB_ID,
             ):
                 try:
                     self.scheduler.remove_job(job_id)
@@ -311,9 +336,71 @@ class DataRefreshScheduler:
                 replace_existing=True,
             )
             print(f"Catalyst scheduler applied - '{scope}' every {minutes} minutes")
+        self._apply_radar_cohort_job(intervals.get("cohort", 0))
+        self._apply_radar_bias_outcome_job(intervals.get("biasOutcomes", 0))
+
+    def _apply_radar_cohort_job(self, minutes: int) -> None:
+        """Thêm/gỡ job cohort/ledger/alert theo nhịp mới (0 = tắt).
+
+        Job không chịu công tắc catalyst: ledger/alert vẫn cần chạy khi tắt
+        sync catalyst. FastAPI là nơi duy nhất giữ nhịp, nên tải không phụ
+        thuộc số request radar hay số instance Next.js (khoá nằm trong DB).
+        """
+        if not self.scheduler:
+            return
+        if minutes <= 0:
+            if self.scheduler.get_job(RADAR_COHORT_JOB_ID):
+                self.scheduler.remove_job(RADAR_COHORT_JOB_ID)
+                print(f"Radar cohort job '{RADAR_COHORT_JOB_ID}' removed (disabled)")
+            return
+        self.scheduler.add_job(
+            self._run_radar_cohort,
+            trigger='interval',
+            minutes=minutes,
+            id=RADAR_COHORT_JOB_ID,
+            name=f'Radar cohort/ledger/alert every {minutes}m',
+            args=[minutes],
+            # Build nguội + webhook có thể > 1 phút; không cho chồng lượt.
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+            # Lượt đầu sau khi (re)start 60 giây, không phải chờ hết một nhịp.
+            next_run_time=datetime.now(self.vietnam_tz) + timedelta(seconds=60),
+        )
+        print(f"Radar cohort scheduler applied - every {minutes} minutes")
+
+    def _apply_radar_bias_outcome_job(self, minutes: int) -> None:
+        """Thêm/gỡ job outcome radar_bias_log theo nhịp mới (0 = tắt).
+
+        Tách khỏi cohort vì outcome chỉ cần chạy khi horizon đủ tuổi; nhịp ngắn
+        (mặc định 10 phút) cho kết quả 1h/4h sát mốc hơn mà không kéo dài lượt
+        cohort (mỗi lượt cohort đã phải build snapshot + alert).
+        """
+        if not self.scheduler:
+            return
+        if minutes <= 0:
+            if self.scheduler.get_job(RADAR_BIAS_OUTCOME_JOB_ID):
+                self.scheduler.remove_job(RADAR_BIAS_OUTCOME_JOB_ID)
+                print(f"Radar bias outcome job '{RADAR_BIAS_OUTCOME_JOB_ID}' removed (disabled)")
+            return
+        self.scheduler.add_job(
+            self._run_radar_bias_outcomes,
+            trigger='interval',
+            minutes=minutes,
+            id=RADAR_BIAS_OUTCOME_JOB_ID,
+            name=f'Radar bias log outcomes every {minutes}m',
+            args=[minutes],
+            # Fetch klines cho nhiều symbol; không cho chồng lượt.
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+            # Lượt đầu sau (re)start 2 phút, để cohort kịp có dòng đầu tiên.
+            next_run_time=datetime.now(self.vietnam_tz) + timedelta(seconds=120),
+        )
+        print(f"Radar bias outcome scheduler applied - every {minutes} minutes")
 
     async def refresh_catalyst_jobs(self, force: bool = False) -> bool:
-        """Đọc radar.config và reschedule catalyst khi nhịp đổi.
+        """Đọc radar.config và reschedule job khi nhịp đổi.
 
         Trả True nếu đã áp dụng cấu hình mới. Watcher gọi hàm này mỗi 30 giây;
         chữ ký (enabled + intervals) không đổi thì không chạm vào job để
@@ -324,14 +411,14 @@ class DataRefreshScheduler:
         values = await self._read_radar_config_values()
         if values is None:
             return False
-        enabled, intervals = resolve_catalyst_schedule(values)
+        enabled, intervals = resolve_scheduler_intervals(values)
         signature = (enabled, tuple(sorted(intervals.items())))
         if not force and signature == self._catalyst_signature:
             return False
         self._apply_catalyst_jobs(enabled, intervals)
         self._catalyst_signature = signature
         logger.info(
-            "Catalyst schedule applied from %s: enabled=%s intervals=%s",
+            "Scheduler intervals applied from %s: catalyst_enabled=%s intervals=%s",
             CATALYST_CONFIG_KEY,
             enabled,
             intervals,
@@ -577,6 +664,111 @@ class DataRefreshScheduler:
         if error_message:
             logger.error("Catalyst sync (%s) failed: %s", scope, error_message)
             print(f"Catalyst sync ({scope}) failed: {error_message}")
+
+    async def _run_radar_cohort(self, minutes: int):
+        """Run radar cohort/ledger/alert via POST /api/market/radar/cohort.
+
+        Đây là đường duy nhất sinh cohort/ledger/alert (request radar không còn
+        `after()`). Endpoint Next.js tự giành khoá trong `app_settings`, nên
+        nhiều instance Next.js chỉ cho một instance chạy mỗi lượt; instance
+        khác trả `skipped="locked"` chứ không chạy trùng.
+        """
+        started_at = datetime.now(self.vietnam_tz)
+        timeout = max(60, settings.scheduler_radar_cohort_timeout)
+        error_message = None
+        result_message = None
+
+        try:
+            async with httpx.AsyncClient() as client:
+                headers = {}
+                token = (settings.scheduler_catalyst_token or "").strip()
+                if token:
+                    headers["X-Scheduler-Token"] = token
+                response = await client.post(
+                    "http://localhost:3000/api/market/radar/cohort",
+                    json={"intervalMinutes": minutes},
+                    headers=headers,
+                    timeout=timeout,
+                )
+                if response.status_code == 200:
+                    data = response.json().get('data', {}) or {}
+                    result_message = (
+                        f"ran={data.get('ran')} skipped={data.get('skipped')} "
+                        f"signals={data.get('signals')} clusters={data.get('clusterEvents')} "
+                        f"alerts={data.get('alerts')}"
+                    )
+                    if data.get('skipped') == 'locked':
+                        logger.info("Radar cohort skipped (instance khác giữ khoá)")
+                    elif data.get('ran'):
+                        logger.info(
+                            "Radar cohort completed in %ds: %s",
+                            int((datetime.now(self.vietnam_tz) - started_at).total_seconds()),
+                            result_message,
+                        )
+                    else:
+                        logger.warning("Radar cohort không chạy: %s", result_message)
+                else:
+                    error_message = (
+                        f"Radar cohort API returned status {response.status_code}: {response.text}"
+                    )
+        except ConnectError as e:
+            error_message = f"Radar cohort API connection failed: {e}"
+        except TimeoutException as e:
+            error_message = f"Radar cohort API timeout: {e}"
+        except Exception as e:
+            error_message = f"Radar cohort API error: {e}"
+
+        if error_message:
+            logger.error("Radar cohort (%sm) failed: %s", minutes, error_message)
+            print(f"Radar cohort failed: {error_message}")
+
+    async def _run_radar_bias_outcomes(self, minutes: int):
+        """Tính outcome cho radar_bias_log qua POST /api/market/radar/bias-outcomes.
+
+        Endpoint tự chọn row có horizon tới hạn mà chưa có outcome, nên job chỉ
+        cần gọi đều; insert idempotent theo (log_id, horizon).
+        """
+        started_at = datetime.now(self.vietnam_tz)
+        timeout = max(60, settings.scheduler_radar_bias_outcome_timeout)
+        error_message = None
+
+        try:
+            async with httpx.AsyncClient() as client:
+                headers = {}
+                token = (settings.scheduler_catalyst_token or "").strip()
+                if token:
+                    headers["X-Scheduler-Token"] = token
+                response = await client.post(
+                    "http://localhost:3000/api/market/radar/bias-outcomes",
+                    json={},
+                    headers=headers,
+                    timeout=timeout,
+                )
+                if response.status_code == 200:
+                    data = response.json().get('data', {}) or {}
+                    logger.info(
+                        "Radar bias outcomes (%sm) in %ds: candidates=%s symbols=%s computed=%s inserted=%s",
+                        minutes,
+                        int((datetime.now(self.vietnam_tz) - started_at).total_seconds()),
+                        data.get('candidates'),
+                        data.get('symbols'),
+                        data.get('computed'),
+                        data.get('inserted'),
+                    )
+                else:
+                    error_message = (
+                        f"Radar bias outcome API returned status {response.status_code}: {response.text}"
+                    )
+        except ConnectError as e:
+            error_message = f"Radar bias outcome API connection failed: {e}"
+        except TimeoutException as e:
+            error_message = f"Radar bias outcome API timeout: {e}"
+        except Exception as e:
+            error_message = f"Radar bias outcome API error: {e}"
+
+        if error_message:
+            logger.error("Radar bias outcomes (%sm) failed: %s", minutes, error_message)
+            print(f"Radar bias outcomes failed: {error_message}")
 
     async def _run_p3_execution(self):
         """Run the P3 historical execution loop via the Next.js API."""

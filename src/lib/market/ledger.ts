@@ -68,6 +68,20 @@ export interface RadarSignalRecord {
   hasCatalyst?: boolean;
   catalystTypes?: string[];
   catalystSources?: string[];
+  /**
+   * RADAR-LEDGER-BIAS: bias của lần chấm gần nhất cùng symbol+side trước bản ghi
+   * này (null = lần đầu thấy cặp symbol+side đó). Chỉ để đo chuyện lật bias,
+   * không tham gia score/bias/entryQuality. Bản ghi cũ không có field này.
+   */
+  prevBias?: Bias | null;
+  /** `prevBias !== null && prevBias !== bias`. Không suy ra được cho bản ghi cũ. */
+  biasChanged?: boolean;
+  /**
+   * RADAR-BIAS-GUARD: giá làm bias sai tại đúng lúc ghi (scoring trả kèm nhãn).
+   * `undefined` với tín hiệu ghi trước khi có field này.
+   */
+  invalidationPrice?: number | null;
+  invalidationNote?: string | null;
 }
 
 export interface HorizonResult {
@@ -176,6 +190,47 @@ export function isBullishBias(bias: Bias): boolean {
 
 export function isBearishBias(bias: Bias): boolean {
   return BEARISH.includes(bias);
+}
+
+/**
+ * Có ghi lượt chấm này vào ledger không: chỉ ghi khi bias khác lần chấm trước
+ * của cùng symbol+side, hoặc lần đầu thấy cặp đó.
+ *
+ * Trước đây dedupe theo `symbol|side|ngày` (sau đó thêm `|bias`), nên lật đi lật
+ * lại trong ngày — MMT: kiệt sức → tiếp diễn → kiệt sức — vẫn mất các lần quay
+ * lại nhãn cũ. Bỏ hẳn thành phần ngày: mỗi lần bias đổi là một dòng, còn các lượt
+ * cohort lặp lại cùng nhãn thì không ghi thêm (và cũng không cần).
+ */
+export function shouldRecordSignal(prevBias: Bias | null | undefined, bias: Bias): boolean {
+  if (prevBias === null || prevBias === undefined) return true;
+  return prevBias !== bias;
+}
+
+/** Khoá theo dõi bias — symbol+side, vì bias được chấm theo từng side. */
+export function biasTrackKey(symbol: string, side: SignalSide): string {
+  return `${symbol}|${side}`;
+}
+
+/**
+ * Bias gần nhất của từng `symbol|side` trong ledger cũ, để điền `prevBias` cho
+ * lượt ghi mới và tính `biasChanged`.
+ *
+ * So theo cặp symbol+side: bias phụ thuộc side (gainer chấm bằng scoreGainer,
+ * unusual bằng scoreUnusual), nên cùng coin xuất hiện ở side khác không phải là
+ * lật bias. Bản ghi có `at` hỏng bị bỏ qua.
+ */
+export function lastBiasBySymbolSide(
+  records: Array<Pick<RadarSignalRecord, "symbol" | "side" | "bias" | "at">>
+): Map<string, Bias> {
+  const latest = new Map<string, { at: number; bias: Bias }>();
+  for (const record of records) {
+    const at = Date.parse(record.at);
+    if (!Number.isFinite(at)) continue;
+    const key = biasTrackKey(record.symbol, record.side);
+    const current = latest.get(key);
+    if (!current || at > current.at) latest.set(key, { at, bias: record.bias });
+  }
+  return new Map([...latest.entries()].map(([key, value]) => [key, value.bias]));
 }
 
 /** Giá close của nến cuối cùng mở trước/đúng mốc thời gian. */

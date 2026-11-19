@@ -25,6 +25,8 @@ export interface MarketMetrics {
   changeAtrMultiple: number | null;
   ema20: number | null;
   ema50: number | null;
+  /** EMA20 khung 1h — cấu trúc ngắn hạn, dùng cho xác nhận đảo chiều + giá vô hiệu bias. */
+  ema20_1h?: number | null;
   rsi14: number | null;
   /** Đỉnh 7 nến ngày đã đóng (không tính nến đang chạy). */
   high7d: number | null;
@@ -281,6 +283,10 @@ export function computeMarketMetrics(input: MarketMetricsInput): MarketMetrics {
   const ema20 = emaLast(h4Closes, 20);
   const ema50 = emaLast(h4Closes, 50);
   const rsi14 = rsiLast(h4Closes, 14);
+  const hourlyCloses = (input.hourlyCandles ?? [])
+    .map((candle) => Number(candle.close))
+    .filter(Number.isFinite);
+  const ema20_1h = emaLast(hourlyCloses, 20);
 
   const last7 = closedDaily.slice(-7);
   const high7d = last7.length > 0 ? Math.max(...last7.map((c) => Number(c.high))) : null;
@@ -323,6 +329,7 @@ export function computeMarketMetrics(input: MarketMetricsInput): MarketMetrics {
     changeAtrMultiple: round(changeAtrMultiple, 2),
     ema20: round(ema20, 8),
     ema50: round(ema50, 8),
+    ema20_1h: round(ema20_1h, 8),
     rsi14: round(rsi14, 1),
     high7d: round(high7d, 8),
     low7d: round(low7d, 8),

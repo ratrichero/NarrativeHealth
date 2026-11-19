@@ -52,7 +52,21 @@ class Settings(BaseSettings):
     scheduler_catalyst_unlocks_minutes: int = 60
     scheduler_catalyst_timeout: int = 180  # giây; mỗi scope chỉ vài request
     # Token chung với Next (SCHEDULER_CATALYST_TOKEN). Để trống = không gửi header.
+    # Dùng luôn cho POST /api/market/radar/cohort — không thêm env token mới.
     scheduler_catalyst_token: str = ""
+
+    # RADAR-COHORT: cohort/ledger/alert chạy bằng cron thay vì `after()` của
+    # request radar. FastAPI gọi POST /api/market/radar/cohort mỗi
+    # `scheduler_radar_cohort_minutes` phút (0 = tắt). Nhịp runtime ưu tiên
+    # `app_settings.radar.config.schedulerCohortMinutes`; env chỉ là fallback.
+    scheduler_radar_cohort_minutes: int = 30
+    scheduler_radar_cohort_timeout: int = 300
+
+    # RADAR-BIAS-LOG: job tính outcome 1h/4h/24h/3d/7d cho `radar_bias_log`
+    # (POST /api/market/radar/bias-outcomes). Nhịp runtime ưu tiên
+    # `app_settings.radar.config.schedulerBiasOutcomeMinutes`; env chỉ là fallback.
+    scheduler_radar_bias_outcome_minutes: int = 10
+    scheduler_radar_bias_outcome_timeout: int = 300
 
     class Config:
         env_file = ".env"

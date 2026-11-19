@@ -1718,3 +1718,95 @@ export const topRecommendationPicks = pgTable(
 
 export type TopRecommendationPick = typeof topRecommendationPicks.$inferSelect;
 export type NewTopRecommendationPick = typeof topRecommendationPicks.$inferInsert;
+
+// ==================== RADAR_BIAS_LOG (RADAR-BIAS-LOG) ====================
+// Append-only: mỗi lượt cohort ghi MỌI row của 3 snapshot (không chỉ cohort 12).
+// Giữ cả feature đầu vào (ATR multiple, funding, OI, RSI, EMA, volume, range,
+// impulse, cluster, regime) vì backtest/ML cần biết điều kiện nào dẫn tới nhãn
+// sai, không chỉ nhãn đúng/sai. Không FK coins: radar phủ cả coin ngoài narrative.
+// Bản ghi cũ không bao giờ UPDATE; outcome nằm ở bảng riêng bên dưới.
+export const radarBiasLog = pgTable(
+  "radar_bias_log",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    loggedAt: timestamp("logged_at", { withTimezone: true }).notNull(),
+    symbol: varchar("symbol", { length: 20 }).notNull(),
+    // Side của tab đã chấm bias (gainer/loser/unusual) — bias phụ thuộc side.
+    side: varchar("side", { length: 10 }).notNull(),
+    price: real("price").notNull(),
+    bias: varchar("bias", { length: 20 }).notNull(),
+    /** Bias lần chấm trước của cùng symbol+side; null = lần đầu thấy. */
+    prevBias: varchar("prev_bias", { length: 20 }),
+    biasChanged: boolean("bias_changed").notNull().default(false),
+    score: integer("score").notNull(),
+    entryQuality: integer("entry_quality").notNull(),
+    composite: integer("composite"),
+    // Bối cảnh cụm + thị trường tại thời điểm chấm.
+    clusterId: varchar("cluster_id", { length: 80 }),
+    clusterLabel: varchar("cluster_label", { length: 200 }),
+    clusterSize: integer("cluster_size"),
+    clusterLeader: boolean("cluster_leader"),
+    clusterLaggard: boolean("cluster_laggard"),
+    btcPrice: real("btc_price"),
+    regime: varchar("regime", { length: 16 }),
+    // ─── Feature đầu vào của scoring ───
+    changePct: real("change_pct"),
+    changeAtrMultiple: real("change_atr_multiple"),
+    fundingRate: real("funding_rate"),
+    oiChangePct: real("oi_change_pct"),
+    rsi14: real("rsi14"),
+    ema20: real("ema20"),
+    ema50: real("ema50"),
+    volumeZ: real("volume_z"),
+    volumeRatio7d: real("volume_ratio_7d"),
+    rangePosition: real("range_position"),
+    rangePct7d: real("range_pct_7d"),
+    distanceFromHighPct: real("distance_from_high_pct"),
+    distanceFrom7dHighPct: real("distance_from_7d_high_pct"),
+    impulseAgeHours: real("impulse_age_hours"),
+    atrPct: real("atr_pct"),
+    listingAgeDays: integer("listing_age_days"),
+    isBreakout7d: boolean("is_breakout_7d"),
+    spotLed: boolean("spot_led"),
+    relativeStrengthPct: real("relative_strength_pct"),
+    catalystTriggered: boolean("catalyst_triggered"),
+    /** Giá làm bias sai tại đúng thời điểm chấm (scoring trả kèm nhãn). */
+    invalidationPrice: real("invalidation_price"),
+    // Phiên bản bộ trọng số đã sinh ra nhãn — bắt buộc để so sánh engine cũ/mới.
+    engineVersion: varchar("engine_version", { length: 16 }).notNull().default("v1"),
+  },
+  (table) => [
+    unique("radar_bias_log_run_unique").on(table.symbol, table.side, table.loggedAt),
+    index("radar_bias_log_logged_idx").on(table.loggedAt),
+    index("radar_bias_log_symbol_side_idx").on(table.symbol, table.side, table.loggedAt),
+    index("radar_bias_log_bias_idx").on(table.bias),
+  ]
+);
+
+// Outcome append-only theo (log, horizon). Chỉ thêm dòng khi horizon đã đủ tuổi.
+export const radarBiasOutcome = pgTable(
+  "radar_bias_outcome",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    logId: bigint("log_id", { mode: "number" })
+      .notNull()
+      .references(() => radarBiasLog.id, { onDelete: "cascade" }),
+    horizon: varchar("horizon", { length: 4 }).notNull(),
+    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+    closePct: real("close_pct"),
+    btcReturnPct: real("btc_return_pct"),
+    relativePct: real("relative_pct"),
+    mfePct: real("mfe_pct"),
+    maePct: real("mae_pct"),
+    win: boolean("win"),
+  },
+  (table) => [
+    unique("radar_bias_outcome_log_horizon_unique").on(table.logId, table.horizon),
+    index("radar_bias_outcome_horizon_idx").on(table.horizon),
+  ]
+);
+
+export type RadarBiasLogRow = typeof radarBiasLog.$inferSelect;
+export type NewRadarBiasLog = typeof radarBiasLog.$inferInsert;
+export type RadarBiasOutcomeRow = typeof radarBiasOutcome.$inferSelect;
+export type NewRadarBiasOutcome = typeof radarBiasOutcome.$inferInsert;

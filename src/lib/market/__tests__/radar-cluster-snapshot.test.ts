@@ -9,12 +9,8 @@ jest.mock("axios", () => ({
   default: { get: jest.fn() },
 }));
 
-// Route gọi after() để ghi cohort; ngoài request scope Next sẽ throw, nên bỏ qua
-// phần after trong test API.
-jest.mock("next/server", () => {
-  const actual = jest.requireActual("next/server");
-  return { ...actual, after: jest.fn() };
-});
+// Route radar không còn chạy cohort trong after(): công việc đó do job
+// scheduler gọi POST /api/market/radar/cohort.
 
 jest.mock("@/lib/collectors/binance", () => ({
   fetchBinanceFuturesKlines: jest.fn(),

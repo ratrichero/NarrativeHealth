@@ -1,6 +1,5 @@
-import { after, NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getRadarSnapshot, MinVolumeOutOfRangeError, type RadarSort } from "@/lib/market/radar";
-import { recordAllRadarCohorts } from "@/lib/market/track-record";
 import type { MoverSide } from "@/lib/market/scoring";
 import { clientIpFromHeaders, listLimiter, rateLimitHeaders } from "@/lib/market/rate-limit";
 
@@ -45,16 +44,11 @@ export async function GET(request: NextRequest) {
   const cluster = clusterRaw && clusterRaw.length <= 120 ? clusterRaw : undefined;
 
   try {
+    // RADAR-COHORT: cohort/ledger/alert KHÔNG chạy trong request này nữa.
+    // FastAPI gọi POST /api/market/radar/cohort theo nhịp cấu hình, nên tải
+    // không phụ thuộc số người mở radar và không nhân lên theo số instance
+    // (khoá trong `app_settings` chỉ cho một instance chạy mỗi lượt).
     const snapshot = await getRadarSnapshot({ side, limit, minVolume, sort, excludeSystem, cluster });
-
-    // Track record chỉ ghi tín hiệu thật; demo không được làm bẩn số liệu.
-    // Ghi đủ 3 side + cohort neutral sau response, không phụ thuộc tab đang xem
-    // và không làm chậm request hiện tại.
-    if (!snapshot.demo) {
-      after(async () => {
-        await recordAllRadarCohorts().catch(() => undefined);
-      });
-    }
 
     return NextResponse.json({ success: true, data: snapshot });
   } catch (error) {

@@ -32,6 +32,12 @@ import { shouldExplainCatalyst } from "@/lib/catalyst/matching";
 import { isEligibleTicker, listingAgeDays } from "@/lib/market/universe";
 import { buildDemoSnapshot, getDemoDetail } from "@/lib/market/demo";
 import { peekRadarRuntimeConfig, readRadarRuntimeConfig } from "@/lib/settings/radar-config";
+import {
+  recordBinanceRequest,
+  recordSnapshotCache,
+  withSnapshotBuild,
+} from "@/lib/market/binance-metrics";
+import { readLatestBiasBySymbolSide } from "@/lib/market/bias-log";
 
 const FUTURES_API = "https://fapi.binance.com/fapi/v1";
 
@@ -159,6 +165,10 @@ export interface RadarRow {
   listingAgeDays: number | null;
   isBreakout7d: boolean;
   rangePct7d: number | null;
+  /** RADAR-BIAS-LOG: feature đầu vào của scoring, ghi kèm nhãn để backtest/ML. */
+  ema20?: number | null;
+  ema50?: number | null;
+  distanceFrom7dHighPct?: number | null;
   high7d: number | null;
   inSystem: boolean;
   narratives: string[];
@@ -180,6 +190,9 @@ export interface RadarRow {
   clusterLaggard?: boolean;
   /** RADAR-06: row đủ bất thường để hiển thị panel “vì sao volume bất thường”. */
   catalystTriggered?: boolean;
+  /** Giá làm bias này sai (từ scoring) — UI/backtest đọc cùng nhãn. */
+  invalidationPrice?: number | null;
+  invalidationNote?: string | null;
   bias: Bias;
   label: string;
   score: number;
@@ -249,6 +262,7 @@ export async function fetchFuturesTickers(): Promise<FuturesTicker[]> {
 
   tickerInflight = (async () => {
     try {
+      recordBinanceRequest();
       const response = await axios.get(`${FUTURES_API}/ticker/24hr`, { timeout: 15_000 });
       if (!Array.isArray(response.data)) throw new Error("Unexpected ticker payload");
       const tickers = response.data as FuturesTicker[];
@@ -275,6 +289,7 @@ async function fetchExchangeSymbols(): Promise<Map<string, ExchangeSymbol>> {
 
   infoInflight = (async () => {
     try {
+      recordBinanceRequest();
       const response = await axios.get(`${FUTURES_API}/exchangeInfo`, { timeout: 15_000 });
       const list = Array.isArray(response.data?.symbols)
         ? (response.data.symbols as ExchangeSymbol[])
@@ -409,10 +424,12 @@ function toRow(
   metrics: MarketMetrics,
   side: MoverSide,
   system: Map<string, SystemCoin>,
-  spot: SpotLeadership | null = null
+  spot: SpotLeadership | null = null,
+  prevBias: Bias | null = null
 ): RadarRow {
   const symbol = ticker.symbol.replace(/USDT$/, "");
-  const score = scoreForSide(metrics, side);
+  // `prevBias` bật hysteresis: đổi phe phải vượt BIAS_SWITCH_MARGIN.
+  const score = scoreForSide(metrics, side, { prevBias });
   const membership = system.get(symbol);
 
   return {
@@ -436,6 +453,9 @@ function toRow(
     listingAgeDays: metrics.listingAgeDays,
     isBreakout7d: metrics.isBreakout7d,
     rangePct7d: metrics.rangePct7d,
+    ema20: metrics.ema20,
+    ema50: metrics.ema50,
+    distanceFrom7dHighPct: metrics.distanceFrom7dHighPct,
     high7d: metrics.high7d,
     inSystem: Boolean(membership),
     narratives: membership?.narratives.slice(0, 3) ?? [],
@@ -467,6 +487,8 @@ function toRow(
     composite: compositeScore(score.score, score.entryQuality),
     reasons: score.reasons,
     warnings: score.warnings,
+    invalidationPrice: score.invalidationPrice,
+    invalidationNote: score.invalidationNote,
   };
 }
 
@@ -481,7 +503,8 @@ async function enrichTicker(
   side: MoverSide,
   system: Map<string, SystemCoin>,
   spotTicker: { lastPrice: string; priceChangePercent: string; quoteVolume: string } | undefined,
-  btcChangePct: number | null
+  btcChangePct: number | null,
+  prevBias: Bias | null
 ): Promise<EnrichedRow> {
   const [daily, h4, hourly, funding, oi] = await Promise.all([
     fetchBinanceFuturesKlines(ticker.symbol, 30, "1d").catch(() => []),
@@ -511,7 +534,7 @@ async function enrichTicker(
   });
 
   return {
-    row: toRow(ticker, metrics, side, system, spot),
+    row: toRow(ticker, metrics, side, system, spot, prevBias),
     closes: hourly.map((c) => Number(c.close)).filter(Number.isFinite),
   };
 }
@@ -938,12 +961,14 @@ async function loadClusterBase(
 }
 
 async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarSnapshot> {
-  const [tickers, info, system, spotMap, btcTrend] = await Promise.all([
+  // Bias lần chấm trước (6 giờ, cache 60s) để scoring giữ nhãn ổn định.
+  const [tickers, info, system, spotMap, btcTrend, prevBiasMap] = await Promise.all([
     fetchFuturesTickers(),
     fetchExchangeSymbols(),
     getSystemCoins(),
     fetchSpotTickers(),
     getBtcTrend(),
+    readLatestBiasBySymbolSide().catch(() => new Map<string, string>()),
   ]);
 
   const eligible = tickers.filter((t) => isEligibleTicker(t, info.get(t.symbol), minVolume));
@@ -999,7 +1024,9 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
       side,
       system,
       spotMap.get(ticker.symbol),
-      btcChangePct
+      btcChangePct,
+      (prevBiasMap.get(`${ticker.symbol.replace(/USDT$/, "")}|${side}`) as Bias | undefined) ??
+        null
     ).catch((error) => {
       console.warn(
         `[RADAR] Enrich ${ticker.symbol} lỗi:`,
@@ -1115,12 +1142,21 @@ export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSna
   const cached = snapshotCache.get(key);
   let entry = cached;
   if (!entry || entry.expires <= Date.now()) {
-    const promise = buildSnapshot(side, minVolume);
+    // Chỉ build "nguội" mới gọi Binance — đây là phần cần đo tải.
+    recordSnapshotCache(false);
+    const promise = withSnapshotBuild(
+      { side, minVolume },
+      () => buildSnapshot(side, minVolume),
+      (snapshot) => ({ rows: snapshot.rows.length, clusters: snapshot.clusters?.length ?? 0 })
+    );
     entry = { expires: Date.now() + 60_000, promise };
     snapshotCache.set(key, entry);
     promise.catch(() => {
       if (snapshotCache.get(key) === entry) snapshotCache.delete(key);
     });
+  } else {
+    // Request dùng chung snapshot/in-flight build của người khác.
+    recordSnapshotCache(true);
   }
 
   return shapeRadarSnapshot(await entry.promise, query);
@@ -1231,7 +1267,11 @@ export async function getMoverDetail(rawSymbol: string): Promise<RadarDetail | n
 
     const change = metrics.changePct;
     const side: MoverSide = change > 2 ? "gainer" : change < -2 ? "loser" : "unusual";
-    const row = toRow(ticker, metrics, side, system, spot);
+    const prevBiasMap = await readLatestBiasBySymbolSide().catch(() => new Map<string, string>());
+    const prevBias =
+      (prevBiasMap.get(`${ticker.symbol.replace(/USDT$/, "")}|${side}`) as Bias | undefined) ??
+      null;
+    const row = toRow(ticker, metrics, side, system, spot, prevBias);
     row.rsPercentile = percentileRank(
       tickers.map((t) => Number(t.priceChangePercent)).filter(Number.isFinite).sort((a, b) => a - b),
       row.changePct

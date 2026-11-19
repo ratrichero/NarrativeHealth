@@ -4,6 +4,193 @@
 
 ---
 
+## RADAR-BIAS-GUARD — margin, hysteresis, xác nhận đảo chiều, giá vô hiệu (2026-11-19)
+
+Hai ca thực tế cho thấy nhãn bias đổi quá nhạy và hô đảo chiều khi trend còn nguyên:
+BREV được “tiếp diễn tăng” ở 0.087 (đã vượt đỉnh 7 ngày, volume xác nhận) rồi về
+0.076; MMT “kiệt sức” ở 0.23 rồi lên 0.29, sáng sau “tiếp diễn tăng” ở 0.24 rồi về
+0.21. Nguyên nhân trong `scoring.ts`: chọn bias bằng `score = max(cont, exh)` với
+điều kiện `exh > cont` (chỉ 1 điểm là đủ lật), không có trạng thái lần trước, và
+`exhaustion` chỉ dựa vào “move đã đi xa”. Đã siết bốn điểm:
+
+1. **Margin tối thiểu** (`BIAS_MARGIN = 10`): phe dẫn phải hơn phe kia ≥ 10 điểm và
+   đủ ngưỡng của chính nó. Không đủ → `neutral` thay vì đoán. `decideBias()` là hàm
+   thuần, test được, dùng cho cả gainer (continuation/exhaustion) và loser
+   (flush-bounce/breakdown).
+2. **Hysteresis theo bias lần trước** (`BIAS_SWITCH_MARGIN = 15`): đổi sang phe
+   khác phe cũ phải vượt 15 điểm; hai phe sát nhau thì giữ nhãn cũ. Nguồn bias cũ là
+   `radar_bias_log` 6 giờ gần nhất (`readLatestBiasBySymbolSide`, cache 60 giây),
+   khoá `symbol|side` — DB lỗi/chưa migrate thì scoring chạy thuần, không hysteresis.
+   Tab bất thường giữ nhãn accumulation/breakout cho tới khi điểm vượt 45+15.
+3. **Exhaustion phải chờ xác nhận đảo chiều** (`exhaustionConfirmed`): một trong ba
+   — giá đóng dưới **EMA20 khung 1h** (metric mới `ema20_1h`), **OI giảm ≤ 2%**
+   (vị thế đóng ra), hoặc đã **lùi ≥ 1 ATR khỏi đỉnh 24h**. Chưa xác nhận thì phe
+   fade bị loại khỏi lượt chọn (không còn “đã đi xa là kiệt sức”) và row có warning
+   “chưa có xác nhận đảo chiều”.
+4. **Giá vô hiệu bias** (`invalidationFor`): continuation/breakout/accumulation →
+   đóng 1h dưới EMA20 (fallback giá − 1 ATR); exhaustion → vượt đỉnh 24h;
+   breakdown → đóng 1h trên EMA20; flush-bounce → thủng đáy 24h; neutral → null.
+   Trả kèm trong `MoverScore`, `RadarRow` (`invalidationPrice`/`invalidationNote`)
+   và ghi vào cột `invalidation_price` của `radar_bias_log` để backtest biết bias
+   mất hiệu lực ở đâu.
+
+Hệ quả mong đợi: nhiều row `neutral` hơn, ít lật nhãn giữa hai lượt cohort, và
+nhãn “kiệt sức” chỉ xuất hiện khi có bằng chứng đảo chiều. `BIAS_ENGINE_VERSION`
+tăng lên `v2` để mọi thống kê/backtest tách được nhãn sinh bởi engine cũ.
+
+Kiểm tra: `npx tsc --noEmit` 0 lỗi; eslint 0 lỗi; `npx jest scoring.test.ts
+bias-log.test.ts metrics.test.ts radar-cluster-snapshot.test.ts` → 4 suite / 34 test
+pass (thêm test margin/hysteresis/xác nhận/giá vô hiệu). Chưa kiểm với dữ liệu
+Binance thật: hành vi thực tế của ngưỡng 10/15 và tỉ lệ neutral cần đo lại trên
+`radar_bias_log` sau vài ngày.
+
+## RADAR-BIAS-LOG — bảng radar_bias_log + job outcome cho backtest/ML (2026-11-19)
+
+Ledger `app_settings.radar.signals` không dùng được cho backtest/ML: chỉ ghi cohort
+12/side, cap 500 dòng, giữ 8 ngày, dedupe theo ngày và **không lưu feature đầu vào**.
+Hai ca thực tế (BREV: “tiếp diễn” ở 0.087 rồi về 0.076; MMT: “kiệt sức” ở 0.23 rồi
+lên 0.29, sáng sau “tiếp diễn” ở 0.24 rồi về 0.21) không thể phân tích nguyên nhân
+vì thiếu dữ liệu điều kiện tại đúng thời điểm chấm.
+
+### 1. Bảng `radar_bias_log` (append-only)
+
+- Ghi **mọi row của cả 3 snapshot** (gainer/loser/unusual) mỗi lượt cohort, không
+  chỉ 12 cohort mỗi side: `symbol, side, price, bias, prev_bias, bias_changed,
+  score, entry_quality, composite, btc_price, regime, engine_version`.
+- Cụm tại thời điểm chấm: `cluster_id, cluster_label, cluster_size, cluster_leader,
+  cluster_laggard`.
+- Toàn bộ feature đầu vào của scoring: `change_pct, change_atr_multiple,
+  funding_rate, oi_change_pct, rsi14, ema20, ema50, volume_z, volume_ratio_7d,
+  range_position, range_pct_7d, distance_from_high_pct, distance_from_7d_high_pct,
+  impulse_age_hours, atr_pct, listing_age_days, is_breakout_7d, spot_led,
+  relative_strength_pct, catalyst_triggered`.
+- `engine_version` ghi phiên bản bộ trọng số (`v1`) — đổi scoring thì tăng số này
+  để mọi thống kê tách được engine cũ/mới, chạy song song trước khi thay.
+- Writer không UPDATE/DELETE; unique `(symbol, side, logged_at)` + `INSERT ...
+  ON CONFLICT DO NOTHING` nên gọi lại cùng mốc thời gian là idempotent.
+- `RadarRow` có thêm `ema20`, `ema50`, `distanceFrom7dHighPct` (optional) vì
+  scoring dùng ba feature này nhưng payload cũ không mang theo.
+
+### 2. Bảng `radar_bias_outcome` + job
+
+- `POST /api/market/radar/bias-outcomes` (scheduler token, cùng
+  `SCHEDULER_CATALYST_TOKEN`): chọn row có horizon `1h/4h/24h/3d/7d` đã đủ tuổi mà
+  chưa có outcome, fetch klines 1h một lần cho mỗi symbol, rồi ghi
+  `close_pct, btc_return_pct, relative_pct, mfe_pct, mae_pct, win`.
+- Dùng đúng `evaluateSignal` của ledger: close nến 1h gần mốc, relative so BTC,
+  MFE/MAE theo chiều bias (long: high, short: low), `win` = đúng chiều bias.
+- Mỗi row chỉ được fetch khi có horizon tới hạn còn thiếu, nên job 10 phút/lần
+  không fetch lại klines cho row đã xong; insert idempotent theo `(log_id, horizon)`.
+- FastAPI: job `radar_bias_outcomes`, nhịp `radar.config.schedulerBiasOutcomeMinutes`
+  (Admin → Radar & Catalyst, fallback `SCHEDULER_RADAR_BIAS_OUTCOME_MINUTES`,
+  mặc định 10 phút, 0 = tắt). Không chịu công tắc catalyst, giống job cohort.
+- Cohort trả thêm `biasRows` (số row log ghi được) để thấy ngay bảng có dữ liệu.
+
+### 3. Chạy migration + kiểm tra
+
+- `drizzle/migrations/0037_radar_bias_log.sql` (idempotent: `CREATE TABLE IF NOT
+  EXISTS` + unique/index) — chạy theo quy trình migration của repo trước khi bật
+  job, nếu không writer chỉ warning chứ không làm hỏng cohort.
+- Truy vấn mẫu cho backtest:
+
+```sql
+SELECT l.bias, o.horizon, count(*) AS n,
+       avg(o.close_pct) AS avg_close,
+       avg(o.relative_pct) AS avg_rel,
+       avg(CASE WHEN o.win THEN 1 ELSE 0 END) AS win_rate
+FROM radar_bias_log l
+JOIN radar_bias_outcome o ON o.log_id = l.id
+WHERE l.logged_at >= now() - interval '30 days'
+GROUP BY l.bias, o.horizon
+ORDER BY l.bias, o.horizon;
+```
+
+- Dữ liệu ~90 row/lượt cohort (3 side × 30) ≈ 4–5k row/ngày; chưa đặt retention —
+  bảng lớn dần có chủ đích cho ML, dọn theo tháng khi cần.
+- Kiểm tra đã chạy: `npx tsc --noEmit` 0 lỗi; eslint 0 lỗi; `npx jest
+  src/lib/market/__tests__/bias-log.test.ts` pass (map feature, prevBias,
+  dueHorizons); `python3 -m py_compile backend/scheduler.py backend/config.py` OK.
+  **Chưa chạy** với Postgres/Binance thật: chưa áp migration, chưa xem row dữ liệu
+  hay outcome thật trên VPS.
+
+## RADAR-LEDGER-BIAS — ghi lật bias trong ngày (2026-11-19)
+
+Ledger tín hiệu radar dedupe theo `symbol|side|ngày`, nên mỗi coin chỉ có một dòng
+mỗi ngày cho mỗi side. Hệ quả: khi bias lật trong ngày — ví dụ MMT sáng 19/11 từ
+“kiệt sức” sang “tiếp diễn tăng” — bản ghi thứ hai bị coi là trùng và mất, không
+đo được chuyện lật bias (mọi thống kê hit-rate đều bỏ qua các lần lật).
+
+- Bỏ hẳn thành phần ngày khỏi dedupe (`shouldRecordSignal`): chỉ ghi khi bias khác
+  lần chấm trước của cùng `symbol+side`, hoặc lần đầu thấy. Nhờ vậy lật đi lật lại
+  trong ngày (MMT: kiệt sức → tiếp diễn → kiệt sức) đều có dòng, còn các lượt cohort
+  lặp lại cùng nhãn thì không sinh thêm (trước đây khoá `symbol|side|ngày|bias` vẫn
+  nuốt lần quay lại nhãn cũ).
+- Mỗi bản ghi mới có `prevBias` (bias của lần chấm gần nhất cùng `symbol+side`,
+  `null` nếu lần đầu) và `biasChanged = prevBias !== null && prevBias !== bias`.
+  `lastBiasBySymbolSide` so theo cặp symbol+side vì bias được chấm theo side —
+  cùng coin xuất hiện ở side khác không tính là lật bias.
+- Bản ghi cũ không có hai field này (`undefined`) — không suy ngược để tránh gán
+  sai lịch sử; thống kê nào dùng `biasChanged` phải lọc `typeof === "boolean"`.
+- Cả hai field chỉ để phân tích, không tham gia `score`/`bias`/`entryQuality`.
+- UI `/radar` → bảng tín hiệu gần đây hiện badge “lật từ …” khi `biasChanged`, và
+  cột **Vô hiệu** (giá) kèm tooltip điều kiện (`invalidationNote`); card mobile hiện
+  “Lật nhãn: A → B” và “Vô hiệu …”. Tín hiệu ghi trước khi có field hiện “—”.
+
+## RADAR-COHORT — cohort/ledger/alert chạy bằng cron, không theo request (2026-11-19)
+
+Cohort/ledger/alert trước đây chạy trong `after()` của `GET /api/market/movers`. Ba hệ quả:
+tải tỉ lệ với số người mở `/radar`; throttle 30 phút nằm trong RAM (`lastRecordAt`) nên mỗi
+instance Next.js tự chạy một lượt; alert/webhook cũng nhân theo instance. Nay toàn bộ công
+việc này tách khỏi request và do scheduler điều khiển.
+
+### 1. Endpoint scheduler riêng
+
+- `POST /api/market/radar/cohort` (`src/app/api/market/radar/cohort/route.ts`) chạy
+  `recordAllRadarCohorts()`: lấy snapshot chuẩn 3 side → ghi cluster history → gửi alert cụm →
+  ghi ledger tín hiệu → gửi alert row. Body `{ intervalMinutes }` (bỏ trống = đọc
+  `radar.config`), response `{ ran, skipped, signals, clusterEvents, alerts, intervalMinutes }`.
+- Auth giống `/api/catalyst/sync`: chỉ scheduler nội bộ gọi, token chung opt-in
+  `SCHEDULER_CATALYST_TOKEN` qua header `X-Scheduler-Token` (timing-safe). Không thêm token mới.
+- `GET /api/market/movers` không còn `after()`; chỉ trả snapshot như trước.
+
+### 2. Khoá chống chạy trùng giữa các instance
+
+Khoá mềm nằm ở `app_settings` key `radar.cohort.lock` (`{ owner, at, expiresAt }`). Mỗi lượt
+giành khoá bằng một câu SQL nguyên tử:
+
+```sql
+INSERT INTO app_settings (key, value, updated_at) VALUES ('radar.cohort.lock', ...)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+WHERE COALESCE((app_settings.value ->> 'expiresAt')::bigint, 0) - 60000 <= :now
+RETURNING key
+```
+
+- Chỉ instance `RETURNING` được 1 dòng mới chạy; instance khác trả `skipped: "locked"`.
+- `expiresAt = now + max(10 phút, intervalMinutes)` vừa chặn chạy chồng vừa là nhịp tối thiểu
+  (dung sai 60 giây cho tick đến sớm), nên nhiều instance cùng nhận một tick chỉ tốn một lượt.
+- Lượt lỗi nhả khoá (chỉ khi còn đúng `owner` của mình) để tick sau thử lại; khoá cũng tự hết
+  hạn nếu process chết.
+- DB lỗi khi giành khoá → `skipped: "error"`, không chạy (an toàn hơn chạy N lần).
+
+### 3. Nhịp chạy
+
+- `backend/scheduler.py`: job APScheduler `radar_cohort` gọi endpoint trên mỗi
+  `schedulerCohortMinutes` phút; lượt đầu sau khi (re)start là +60 giây. Job **không** chịu
+  công tắc `schedulerEnabled` của catalyst (ledger/alert vẫn cần chạy khi tắt sync catalyst);
+  `0` = tắt riêng job.
+- Field mới trong Admin → Vận hành → Radar & Catalyst (nhóm “Nhịp job scheduler (FastAPI)”):
+  `schedulerCohortMinutes`, fallback env `SCHEDULER_RADAR_COHORT_MINUTES` (mặc định 30).
+  FastAPI đọc lại DB mỗi 30 giây nên đổi nhịp không cần restart; env chỉ là fallback.
+- `SCHEDULER_RADAR_COHORT_TIMEOUT` (mặc định 300 giây) cho timeout HTTP.
+
+### 4. Kiểm tra
+
+`npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market/__tests__/cohort-schedule.test.ts
+src/lib/market/__tests__/radar-cluster-snapshot.test.ts src/lib/settings` pass; eslint 0 lỗi;
+`python3 -m py_compile backend/scheduler.py backend/main.py backend/config.py` OK. Chưa chạy
+thật với Binance/Postgres: khoá cohort chỉ được kiểm bằng SQL review + test pure, và job
+FastAPI chưa chạy trên VPS.
+
 ## RADAR-DEMO-CATALYST — dữ liệu catalyst mẫu cho demo mode (2026-11-18)
 
 Trước đây `RADAR_DEMO=1` chỉ có bảng so sánh catalyst với nhãn hardcode; panel “Vì sao volume
@@ -735,11 +922,13 @@ bias, và bảng tín hiệu gần đây kèm cờ `watch` cho neutral.
 
 Route list trước đây ghi cohort từ `rows` đã bị filter/sort/limit theo request,
 nên mỗi người xem tạo một cohort khác nhau và chỉ side đang mở được ghi. Nay
-`recordAllRadarCohorts` chạy **sau response** (`after` của Next), tự lấy snapshot
-chuẩn cho **cả gainer/loser/unusual** (`limit 30`, sort composite, min volume
-mặc định), rồi `planCohorts` giữ tối đa 12 non-neutral mỗi side + **một cohort
-neutral riêng** (tối đa 6, dedupe symbol) để neutral không bị nhân bản 3 lần.
-Dedupe theo symbol+side+ngày, throttle 30 phút/lần, không phụ thuộc tab người xem.
+`recordAllRadarCohorts` tự lấy snapshot chuẩn cho **cả gainer/loser/unusual**
+(`limit 30`, sort composite, min volume mặc định), rồi `planCohorts` giữ tối đa
+12 non-neutral mỗi side + **một cohort neutral riêng** (tối đa 6, dedupe symbol)
+để neutral không bị nhân bản 3 lần. Dedupe theo symbol+side+ngày+bias (xem mục
+RADAR-LEDGER-BIAS ở đầu file), không phụ thuộc tab người xem. Từ RADAR-COHORT, hàm này **không còn chạy trong `after()` của
+request** mà do `POST /api/market/radar/cohort` + job APScheduler gọi theo nhịp
+(khoá trong DB chặn chạy trùng giữa các instance) — xem mục RADAR-COHORT ở đầu file.
 
 ### 3. Rate limit + quota LLM brief
 
@@ -2917,7 +3106,25 @@ rỗng/sai thay vì alert tắt im lặng.
 `?minVolume` của `/api/market/movers` được chuẩn hoá về bucket cố định
 (`normalizeMinVolume`: 5M/10M/25M/50M/100M, làm tròn lên) trước khi làm cache key,
 vì mỗi key là một lần build Binance đầy đủ — giá trị tuỳ ý trước đây tạo cache key
-vô hạn. Giá trị DB hỏng/ngoài biên bị
+vô hạn.
+
+**Đo tải radar:** mỗi lần build snapshot (cache nguội) log một dòng
+`[RADAR-METRIC] snapshot side=… minVolume=… durationMs=… binanceRequests=… rows=… clusters=…`
+và được tổng hợp trong RAM (`src/lib/market/binance-metrics.ts`, cửa sổ 50 build
+gần nhất): avg/max duration + avg request Binance theo side, cache hit rate.
+`GET /api/admin/radar/metrics` trả số liệu của process hiện tại; tab **Radar &
+Catalyst** hiển thị trực tiếp bảng này (tự làm mới 60 giây), timeline từng build
+đọc ở các dòng log nên không lặp lại trong payload. Card không hiển thị tổng
+request toàn process: counter đó gồm cả refresh/collector/chat nên đọc thành “tải
+radar” là sai.
+
+`binanceRequests` được gán cho đúng build đã phát ra request bằng
+`AsyncLocalStorage`, nên gainer/loser/unusual build song song không cộng nhầm
+request của nhau (counter toàn process thì cả ba đều phóng đại như nhau). Request
+dùng chung cache 45s/30 phút (ticker, exchangeInfo, klines cụm) chỉ tính cho build
+tạo ra nó; build sau thấy 0 cho phần đó — avg theo side vì vậy là cận trên của
+phần thật sự phải gọi Binance khi build, không phải quota billing.
+Số liệu reset khi restart. Giá trị DB hỏng/ngoài biên bị
 bỏ qua và rơi về env/default tương ứng. API: `GET/PUT /api/admin/radar/config`
 (admin session; PUT nhận `{ values: { ... } }`).
 

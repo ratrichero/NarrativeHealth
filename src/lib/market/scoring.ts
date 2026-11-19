@@ -35,9 +35,150 @@ export interface MoverScore {
   entryQuality: number;
   reasons: string[];
   warnings: string[];
+  /**
+   * Giá làm bias này sai (đóng nến vượt mức), để người đọc biết bias mất hiệu
+   * lực ở đâu thay vì chỉ thấy một nhãn. null = không xác định được mốc.
+   */
+  invalidationPrice: number | null;
+  /** Mô tả ngắn điều kiện vô hiệu tương ứng `invalidationPrice`. */
+  invalidationNote: string | null;
 }
 
+/** Bias lần trước của cùng symbol+side — nguồn cho hysteresis. */
+export interface ScoreOptions {
+  prevBias?: Bias | null;
+}
+
+/**
+ * Khoảng cách điểm tối thiểu giữa hai phe trước khi chọn bias.
+ * Trước đây `exh > cont` là đủ: 51 vs 50 ra kiệt sức, 50 vs 51 ra tiếp diễn —
+ * coin nằm gần biên lật nhãn vì nhiễu mỗi lượt cohort.
+ */
+export const BIAS_MARGIN = 10;
+
+/** Đã có bias lần trước thì đổi phe phải vượt khoảng cách lớn hơn. */
+export const BIAS_SWITCH_MARGIN = 15;
+
 const clamp = (n: number, min = 0, max = 100) => Math.min(max, Math.max(min, Math.round(n)));
+
+const roundPrice = (value: number): number => Number(value.toFixed(8));
+
+export interface BiasCandidate {
+  bias: Bias;
+  /** Điểm của phe này (0–100). */
+  score: number;
+  /** Ngưỡng tối thiểu để phe này có hiệu lực. */
+  threshold: number;
+}
+
+export type BiasDecisionReason = "fresh" | "held" | "switched" | "tight" | "low-score";
+
+export interface BiasDecision {
+  bias: Bias;
+  /** Điểm của phe được chọn (điểm phe cũ khi `held`). */
+  score: number;
+  reason: BiasDecisionReason;
+}
+
+/**
+ * Chọn bias giữa hai phe với margin + hysteresis.
+ *
+ * Thứ tự luật:
+ * 1. Phe dẫn chưa đủ ngưỡng của chính nó → giữ bias cũ nếu bias cũ vẫn đủ ngưỡng,
+ *    không thì neutral.
+ * 2. Hai phe sát nhau (< `margin`) → giữ bias cũ, không thì neutral (không đoán).
+ * 3. Đổi sang phe khác phe cũ phải vượt `switchMargin`; không thì giữ phe cũ.
+ */
+export function decideBias(params: {
+  candidates: BiasCandidate[];
+  prevBias?: Bias | null;
+  margin?: number;
+  switchMargin?: number;
+}): BiasDecision {
+  const margin = params.margin ?? BIAS_MARGIN;
+  const switchMargin = params.switchMargin ?? BIAS_SWITCH_MARGIN;
+  const ranked = [...params.candidates].sort((a, b) => b.score - a.score);
+  const best = ranked[0];
+  if (!best) return { bias: "neutral", score: 0, reason: "low-score" };
+
+  const prev = params.prevBias ?? null;
+  const prevCandidate = prev ? ranked.find((candidate) => candidate.bias === prev) ?? null : null;
+  const holdPrev = (): BiasDecision | null =>
+    prevCandidate && prevCandidate.score >= prevCandidate.threshold
+      ? { bias: prevCandidate.bias, score: prevCandidate.score, reason: "held" }
+      : null;
+
+  if (best.score < best.threshold) {
+    return holdPrev() ?? { bias: "neutral", score: best.score, reason: "low-score" };
+  }
+
+  const runnerUp = ranked[1] ?? null;
+  if (runnerUp && best.score - runnerUp.score < margin) {
+    return holdPrev() ?? { bias: "neutral", score: best.score, reason: "tight" };
+  }
+
+  if (prevCandidate && prevCandidate.bias !== best.bias) {
+    if (best.score - prevCandidate.score < switchMargin) {
+      return {
+        bias: prevCandidate.bias,
+        score: prevCandidate.score,
+        reason: "held",
+      };
+    }
+    return { bias: best.bias, score: best.score, reason: "switched" };
+  }
+
+  return { bias: best.bias, score: best.score, reason: prevCandidate ? "held" : "fresh" };
+}
+
+/**
+ * Xác nhận đảo chiều cho exhaustion — không chỉ “move đã đi xa”.
+ *
+ * Một trong ba tín hiệu: giá đã đóng dưới EMA20 khung 1h (mất cấu trúc ngắn
+ * hạn), OI giảm (vị thế đang đóng ra), hoặc đã lùi ≥ 1 ATR khỏi đỉnh 24h
+ * (không còn là “đang ở đỉnh” nữa).
+ */
+export function exhaustionConfirmed(m: MarketMetrics): boolean {
+  const belowEma20OneHour =
+    m.ema20_1h !== null && m.ema20_1h !== undefined && m.ema20_1h > 0 && m.price < m.ema20_1h;
+  const oiUnwinding = m.oiChangePct !== null && m.oiChangePct <= -2;
+  const gaveBackAtr =
+    m.atrPct !== null && m.atrPct > 0 && m.distanceFromHighPct >= m.atrPct;
+  return belowEma20OneHour || oiUnwinding || gaveBackAtr;
+}
+
+/** Giá vô hiệu bias theo từng nhãn, kèm điều kiện đọc được. */
+export function invalidationFor(
+  bias: Bias,
+  m: MarketMetrics
+): { invalidationPrice: number | null; invalidationNote: string | null } {
+  const atrValue = m.atrPct && m.atrPct > 0 ? (m.price * m.atrPct) / 100 : null;
+  const ema1h = m.ema20_1h !== null && m.ema20_1h !== undefined && m.ema20_1h > 0 ? m.ema20_1h : null;
+
+  switch (bias) {
+    case "continuation":
+    case "breakout":
+    case "accumulation":
+      if (ema1h !== null) {
+        return { invalidationPrice: roundPrice(ema1h), invalidationNote: "đóng 1h dưới EMA20" };
+      }
+      if (atrValue !== null) {
+        return { invalidationPrice: roundPrice(m.price - atrValue), invalidationNote: "giảm 1 ATR" };
+      }
+      return { invalidationPrice: null, invalidationNote: null };
+    case "exhaustion":
+      return { invalidationPrice: roundPrice(m.high24h), invalidationNote: "vượt đỉnh 24h" };
+    case "breakdown":
+      if (ema1h !== null) {
+        return { invalidationPrice: roundPrice(ema1h), invalidationNote: "đóng 1h trên EMA20" };
+      }
+      return { invalidationPrice: null, invalidationNote: null };
+    case "flush-bounce":
+      return { invalidationPrice: roundPrice(m.low24h), invalidationNote: "thủng đáy 24h" };
+    default:
+      return { invalidationPrice: null, invalidationNote: null };
+  }
+}
 
 function pct(value: number | null, digits = 1): string {
   if (value === null || !Number.isFinite(value)) return "—";
@@ -57,7 +198,7 @@ function atrMult(m: MarketMetrics): number {
  * Gainer: tiếp diễn (trend + volume + OI xác nhận, chưa crowded)
  * vs kiệt sức (move quá nhiều ATR, funding cực đoan, OI giảm, RSI cao).
  */
-export function scoreGainer(m: MarketMetrics): MoverScore {
+export function scoreGainer(m: MarketMetrics, options: ScoreOptions = {}): MoverScore {
   const mult = atrMult(m);
   const funding = m.fundingRate;
   const oi = m.oiChangePct;
@@ -137,10 +278,26 @@ export function scoreGainer(m: MarketMetrics): MoverScore {
 
   if (mult > 3) cont -= Math.min(30, (mult - 3) * 6);
 
-  let bias: Bias = "neutral";
-  let score = Math.max(cont, exh);
-  if (exh >= 55 && exh > cont) bias = "exhaustion";
-  else if (cont >= 45) bias = "continuation";
+  // Exhaustion phải chờ xác nhận đảo chiều: “đã đi xa” một mình chỉ là điều
+  // kiện cần. Không xác nhận thì phe fade bị loại khỏi lượt chọn, để nhãn
+  // không hô đảo chiều khi trend còn nguyên.
+  const reversalConfirmed = exhaustionConfirmed(m);
+  if (exh >= 55 && !reversalConfirmed) {
+    warnings.push(
+      "Đã đi xa nhưng chưa có xác nhận đảo chiều — chưa gọi kiệt sức (cần đóng 1h dưới EMA20, OI giảm, hoặc lùi ≥ 1 ATR khỏi đỉnh 24h)"
+    );
+  }
+  const decision = decideBias({
+    candidates: [
+      { bias: "continuation", score: cont, threshold: 45 },
+      ...(reversalConfirmed
+        ? [{ bias: "exhaustion" as Bias, score: exh, threshold: 55 }]
+        : []),
+    ],
+    prevBias: options.prevBias,
+  });
+  const bias: Bias = decision.bias;
+  const score = bias === "neutral" ? Math.max(cont, exh) : decision.score;
 
   let entryQuality = 100;
   entryQuality -= Math.min(70, Math.max(0, mult - 1) * 12);
@@ -163,6 +320,7 @@ export function scoreGainer(m: MarketMetrics): MoverScore {
     entryQuality: clamp(entryQuality),
     reasons: reasons.slice(0, 5),
     warnings,
+    ...invalidationFor(bias, m),
   };
 }
 
@@ -170,7 +328,7 @@ export function scoreGainer(m: MarketMetrics): MoverScore {
  * Loser: bắt hồi sau flush (long liquidation, funding âm, RSI thấp)
  * vs breakdown tiếp diễn (trend giảm + OI tăng = short mới).
  */
-export function scoreLoser(m: MarketMetrics): MoverScore {
+export function scoreLoser(m: MarketMetrics, options: ScoreOptions = {}): MoverScore {
   const mult = atrMult(m);
   const funding = m.fundingRate;
   const oi = m.oiChangePct;
@@ -227,10 +385,15 @@ export function scoreLoser(m: MarketMetrics): MoverScore {
     warnings.push("Sát đáy tuyệt đối 24h — short muộn rất rủi ro");
   }
 
-  let bias: Bias = "neutral";
-  let score = Math.max(flush, breakdown);
-  if (flush >= 55 && flush > breakdown) bias = "flush-bounce";
-  else if (breakdown >= 50) bias = "breakdown";
+  const decision = decideBias({
+    candidates: [
+      { bias: "flush-bounce", score: flush, threshold: 55 },
+      { bias: "breakdown", score: breakdown, threshold: 50 },
+    ],
+    prevBias: options.prevBias,
+  });
+  const bias: Bias = decision.bias;
+  const score = bias === "neutral" ? Math.max(flush, breakdown) : decision.score;
 
   let entryQuality = 100;
   entryQuality -= Math.min(60, Math.max(0, mult - 1.5) * 12);
@@ -245,6 +408,7 @@ export function scoreLoser(m: MarketMetrics): MoverScore {
     entryQuality: clamp(entryQuality),
     reasons: reasons.slice(0, 5),
     warnings,
+    ...invalidationFor(bias, m),
   };
 }
 
@@ -252,7 +416,7 @@ export function scoreLoser(m: MarketMetrics): MoverScore {
  * Radar: coin chưa chạy mạnh nhưng volume/OI bất thường, biên độ nén.
  * Đây là tab tìm cơ hội TRƯỚC breakout.
  */
-export function scoreUnusual(m: MarketMetrics): MoverScore {
+export function scoreUnusual(m: MarketMetrics, options: ScoreOptions = {}): MoverScore {
   const volZ = m.volumeZ ?? 0;
   const volRatio = m.volumeRatio7d;
   const oi = m.oiChangePct;
@@ -318,6 +482,19 @@ export function scoreUnusual(m: MarketMetrics): MoverScore {
   } else if (score >= 45 && absChange <= 6) {
     bias = "accumulation";
   }
+  // Hysteresis cho tab bất thường: đang accumulation/breakout thì đổi nhãn cần
+  // điểm vượt ngưỡng + switch margin, tránh nhảy qua lại giữa hai nhãn cùng chiều.
+  const prev = options.prevBias ?? null;
+  if (
+    (prev === "accumulation" || prev === "breakout") &&
+    bias !== prev &&
+    score < 45 + BIAS_SWITCH_MARGIN
+  ) {
+    warnings.push(
+      `Giữ nhãn ${BIAS_LABELS[prev]} — điểm ${Math.round(score)} chưa đủ ${45 + BIAS_SWITCH_MARGIN} để đổi nhãn`
+    );
+    bias = prev;
+  }
 
   if (volRatio !== null && volRatio > 10) warnings.push("Volume đột biến >10× — kiểm tra tin tức/listing");
   if (oi === null) warnings.push("Thiếu OI — radar kém tin cậy hơn");
@@ -334,13 +511,18 @@ export function scoreUnusual(m: MarketMetrics): MoverScore {
     entryQuality: clamp(entryQuality),
     reasons: reasons.slice(0, 5),
     warnings,
+    ...invalidationFor(bias, m),
   };
 }
 
-export function scoreForSide(m: MarketMetrics, side: MoverSide): MoverScore {
-  if (side === "gainer") return scoreGainer(m);
-  if (side === "loser") return scoreLoser(m);
-  return scoreUnusual(m);
+export function scoreForSide(
+  m: MarketMetrics,
+  side: MoverSide,
+  options: ScoreOptions = {}
+): MoverScore {
+  if (side === "gainer") return scoreGainer(m, options);
+  if (side === "loser") return scoreLoser(m, options);
+  return scoreUnusual(m, options);
 }
 
 /** Điểm xếp hạng mặc định: bias + độ mới của move. */

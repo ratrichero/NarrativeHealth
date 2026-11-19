@@ -1,10 +1,13 @@
 import type { KlineData } from "@/lib/collectors/binance";
 import {
   aggregateHorizon,
+  biasTrackKey,
   compareCatalystOutcomes,
   compareCatalystOutcomesByBucket,
   evaluateSignal,
+  lastBiasBySymbolSide,
   planCohorts,
+  shouldRecordSignal,
   selectCohort,
   selectSignalsForEvaluation,
   summarizeByBias,
@@ -18,6 +21,31 @@ import type { RadarRow } from "@/lib/market/radar";
 
 const T0 = Date.parse("2026-01-01T00:00:00Z");
 const HOUR = 3_600_000;
+
+describe("ledger bias transition", () => {
+  it("ghi khi bias đổi, bỏ lượt lặp lại cùng nhãn, và vẫn ghi khi lật lại nhãn cũ", () => {
+    // MMT trong một ngày: kiệt sức → tiếp diễn → kiệt sức.
+    expect(shouldRecordSignal(null, "exhaustion")).toBe(true); // lần đầu thấy
+    expect(shouldRecordSignal("exhaustion", "continuation")).toBe(true); // lật nhãn
+    expect(shouldRecordSignal("continuation", "exhaustion")).toBe(true); // lật lại nhãn cũ
+    expect(shouldRecordSignal("exhaustion", "exhaustion")).toBe(false); // cohort lặp lại
+    expect(shouldRecordSignal(undefined, "neutral")).toBe(true);
+  });
+
+  it("prevBias lấy lần chấm gần nhất cùng symbol+side, bỏ qua bản ghi at hỏng", () => {
+    const records = [
+      { symbol: "MMT", side: "gainer" as const, bias: "exhaustion" as const, at: "2026-11-19T01:00:00.000Z" },
+      { symbol: "MMT", side: "gainer" as const, bias: "neutral" as const, at: "2026-11-18T01:00:00.000Z" },
+      { symbol: "MMT", side: "unusual" as const, bias: "accumulation" as const, at: "2026-11-19T02:00:00.000Z" },
+      { symbol: "BREV", side: "gainer" as const, bias: "continuation" as const, at: "not-a-date" },
+    ];
+
+    const latest = lastBiasBySymbolSide(records);
+    expect(latest.get(biasTrackKey("MMT", "gainer"))).toBe("exhaustion");
+    expect(latest.get(biasTrackKey("MMT", "unusual"))).toBe("accumulation");
+    expect(latest.has(biasTrackKey("BREV", "gainer"))).toBe(false);
+  });
+});
 
 function candle(openTime: number, o: number, h: number, l: number, c: number): KlineData {
   return {
