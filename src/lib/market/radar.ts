@@ -32,6 +32,12 @@ import { shouldExplainCatalyst } from "@/lib/catalyst/matching";
 import { isEligibleTicker, listingAgeDays } from "@/lib/market/universe";
 import { buildDemoSnapshot, getDemoDetail } from "@/lib/market/demo";
 import { peekRadarRuntimeConfig, readRadarRuntimeConfig } from "@/lib/settings/radar-config";
+import {
+  binanceRequestTotal,
+  recordBinanceRequest,
+  recordSnapshotBuild,
+  recordSnapshotCache,
+} from "@/lib/market/binance-metrics";
 
 const FUTURES_API = "https://fapi.binance.com/fapi/v1";
 
@@ -229,6 +235,7 @@ export async function fetchFuturesTickers(): Promise<FuturesTicker[]> {
 
   tickerInflight = (async () => {
     try {
+      recordBinanceRequest();
       const response = await axios.get(`${FUTURES_API}/ticker/24hr`, { timeout: 15_000 });
       if (!Array.isArray(response.data)) throw new Error("Unexpected ticker payload");
       const tickers = response.data as FuturesTicker[];
@@ -255,6 +262,7 @@ async function fetchExchangeSymbols(): Promise<Map<string, ExchangeSymbol>> {
 
   infoInflight = (async () => {
     try {
+      recordBinanceRequest();
       const response = await axios.get(`${FUTURES_API}/exchangeInfo`, { timeout: 15_000 });
       const list = Array.isArray(response.data?.symbols)
         ? (response.data.symbols as ExchangeSymbol[])
@@ -1089,12 +1097,45 @@ export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSna
   const cached = snapshotCache.get(key);
   let entry = cached;
   if (!entry || entry.expires <= Date.now()) {
-    const promise = buildSnapshot(side, minVolume);
+    // Chỉ build "nguội" mới gọi Binance — đây là phần cần đo tải.
+    recordSnapshotCache(false);
+    const startedAt = Date.now();
+    const requestsBefore = binanceRequestTotal();
+    const promise = buildSnapshot(side, minVolume)
+      .then((snapshot) => {
+        recordSnapshotBuild({
+          side,
+          minVolume,
+          durationMs: Date.now() - startedAt,
+          binanceRequests: binanceRequestTotal() - requestsBefore,
+          rows: snapshot.rows.length,
+          clusters: snapshot.clusters?.length ?? 0,
+          failed: false,
+          at: new Date().toISOString(),
+        });
+        return snapshot;
+      })
+      .catch((error) => {
+        recordSnapshotBuild({
+          side,
+          minVolume,
+          durationMs: Date.now() - startedAt,
+          binanceRequests: binanceRequestTotal() - requestsBefore,
+          rows: 0,
+          clusters: 0,
+          failed: true,
+          at: new Date().toISOString(),
+        });
+        throw error;
+      });
     entry = { expires: Date.now() + 60_000, promise };
     snapshotCache.set(key, entry);
     promise.catch(() => {
       if (snapshotCache.get(key) === entry) snapshotCache.delete(key);
     });
+  } else {
+    // Request dùng chung snapshot/in-flight build của người khác.
+    recordSnapshotCache(true);
   }
 
   return shapeRadarSnapshot(await entry.promise, query);

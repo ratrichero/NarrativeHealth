@@ -3,6 +3,7 @@
 // ở một số môi trường bị chặn fapi.
 
 import axios from "axios";
+import { recordBinanceRequest } from "@/lib/market/binance-metrics";
 
 const SPOT_24H_URL = "https://data-api.binance.vision/api/v3/ticker/24hr";
 
@@ -22,6 +23,7 @@ export async function fetchSpotTickers(): Promise<Map<string, SpotTicker>> {
 
   inflight = (async () => {
     try {
+      recordBinanceRequest();
       const response = await axios.get(SPOT_24H_URL, { timeout: 12_000 });
       const list = Array.isArray(response.data) ? (response.data as SpotTicker[]) : [];
       const map = new Map(list.map((t) => [t.symbol, t]));

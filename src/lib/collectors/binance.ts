@@ -1,10 +1,17 @@
 // Binance data collector - Spot and Futures
 
 import axios from "axios";
+import { recordBinanceRequest } from "@/lib/market/binance-metrics";
 
 const BINANCE_SPOT_API = "https://api.binance.com/api/v3";
 const BINANCE_FUTURES_API = "https://fapi.binance.com/fapi/v1";
 const BINANCE_FUTURES_DATA_API = "https://fapi.binance.com/futures/data";
+
+/** Mọi request Binance đi qua đây để radar đếm được request mỗi lần build. */
+function binanceGet(url: string, config?: Parameters<typeof axios.get>[1]) {
+  recordBinanceRequest();
+  return axios.get(url, config);
+}
 
 export interface KlineData {
   openTime: number;
@@ -39,7 +46,7 @@ export async function fetchBinanceSpotKlines(
   interval: BinanceInterval = "1d"
 ): Promise<KlineData[]> {
   try {
-    const response = await axios.get(`${BINANCE_SPOT_API}/klines`, {
+    const response = await binanceGet(`${BINANCE_SPOT_API}/klines`, {
       params: {
         symbol,
         interval,
@@ -79,7 +86,7 @@ export async function fetchBinanceFuturesKlines(
   startTime?: number
 ): Promise<KlineData[]> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_API}/klines`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_API}/klines`, {
       params: {
         symbol,
         interval,
@@ -115,7 +122,7 @@ export async function fetchBinanceFuturesKlines(
  */
 export async function fetchBinanceFuturesOI(symbol: string): Promise<number | null> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_API}/openInterest`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_API}/openInterest`, {
       params: { symbol },
       timeout: 10000,
     });
@@ -138,7 +145,7 @@ export async function fetchBinanceFuturesOI(symbol: string): Promise<number | nu
  */
 export async function fetchBinanceFundingRate(symbol: string): Promise<number | null> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_API}/premiumIndex`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_API}/premiumIndex`, {
       params: { symbol },
       timeout: 10000,
     });
@@ -177,7 +184,7 @@ export async function fetchBinanceOIHistory(
   limit: number = 2
 ): Promise<{ timestamp: number; openInterest: number }[]> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_DATA_API}/openInterestHist`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_DATA_API}/openInterestHist`, {
       params: {
         symbol,
         period,
@@ -211,7 +218,7 @@ export async function fetchBinanceGlobalLongShortRatio(
   limit: number = 1
 ): Promise<LongShortRatio> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_DATA_API}/globalLongShortAccountRatio`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_DATA_API}/globalLongShortAccountRatio`, {
       params: { symbol, period, limit },
       timeout: 10000,
     });
@@ -240,7 +247,7 @@ export async function fetchBinanceTopLongShortRatio(
   limit: number = 1
 ): Promise<LongShortRatio> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_DATA_API}/topLongShortAccountRatio`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_DATA_API}/topLongShortAccountRatio`, {
       params: { symbol, period, limit },
       timeout: 10000,
     });
@@ -268,7 +275,7 @@ export async function fetchBinanceFuturesDepth(
   limit: number = 50
 ): Promise<{ bids: [string, string][]; asks: [string, string][] } | null> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_API}/depth`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_API}/depth`, {
       params: { symbol, limit },
       timeout: 10_000,
     });
@@ -286,7 +293,7 @@ export async function fetchBinanceFuturesDepth(
  */
 export async function fetchBinanceCurrentPrice(symbol: string): Promise<number | null> {
   try {
-    const response = await axios.get(`${BINANCE_SPOT_API}/ticker/price`, {
+    const response = await binanceGet(`${BINANCE_SPOT_API}/ticker/price`, {
       params: { symbol },
       timeout: 10000,
     });
@@ -303,7 +310,7 @@ export async function fetchBinanceCurrentPrice(symbol: string): Promise<number |
  */
 export async function fetchBinanceFuturesCurrentPrice(symbol: string): Promise<number | null> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_API}/ticker/price`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_API}/ticker/price`, {
       params: { symbol },
       timeout: 10000,
     });
@@ -320,7 +327,7 @@ export async function fetchBinanceFuturesCurrentPrice(symbol: string): Promise<n
  */
 export async function fetchBinanceSpotTicker(symbol: string): Promise<any | null> {
   try {
-    const response = await axios.get(`${BINANCE_SPOT_API}/ticker/24hr`, {
+    const response = await binanceGet(`${BINANCE_SPOT_API}/ticker/24hr`, {
       params: { symbol },
       timeout: 10000,
     });
@@ -337,7 +344,7 @@ export async function fetchBinanceSpotTicker(symbol: string): Promise<any | null
  */
 export async function fetchBinanceFuturesTicker(symbol: string): Promise<any | null> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_API}/ticker/24hr`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_API}/ticker/24hr`, {
       params: { symbol },
       timeout: 10000,
     });
@@ -354,7 +361,7 @@ export async function fetchBinanceFuturesTicker(symbol: string): Promise<any | n
  */
 export async function checkBinanceSpotSymbol(symbol: string): Promise<boolean> {
   try {
-    const response = await axios.get(`${BINANCE_SPOT_API}/ticker/price`, {
+    const response = await binanceGet(`${BINANCE_SPOT_API}/ticker/price`, {
       params: { symbol },
       timeout: 5000,
     });
@@ -369,7 +376,7 @@ export async function checkBinanceSpotSymbol(symbol: string): Promise<boolean> {
  */
 export async function checkBinanceFuturesSymbol(symbol: string): Promise<boolean> {
   try {
-    const response = await axios.get(`${BINANCE_FUTURES_API}/premiumIndex`, {
+    const response = await binanceGet(`${BINANCE_FUTURES_API}/premiumIndex`, {
       params: { symbol },
       timeout: 5000,
     });
