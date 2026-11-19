@@ -1,8 +1,93 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-11-18
+## Ngày cập nhật: 2026-11-19
 
 ---
+
+## RADAR-HARDEN — bucket minVolume, bỏ ghim config runtime, quota LLM atomic, parity env ↔ FastAPI (2026-11-19)
+
+Bốn lỗi còn lại sau đợt cohort/bias-guard, cùng gốc “cấu hình/env và dữ liệu thực tế
+không khớp nhau”. Sửa gộp một đợt vì chúng chạm cùng các file cấu hình và ledger.
+
+### 1. Tách nhóm theo bucket `minVolume` (không lọc bỏ)
+
+`minVolume` là một phần cache key snapshot: mỗi key là một lần build Binance đầy đủ
+(ticker + enrich klines/OI/funding ~30 coin). Nhận giá trị tuỳ ý nghĩa là cache key vô
+hạn — chỉ cần `?minVolume=10000001` là thêm một lần build.
+
+- `MIN_VOLUME_BUCKETS = [5M, 10M, 25M, 50M, 100M]`; `normalizeMinVolume()` làm tròn
+  **lên** mốc gần nhất (filter không bao giờ lỏng hơn yêu cầu). Vượt 100M →
+  `MinVolumeOutOfRangeError` → `/api/market/movers` trả **400**, không kẹp xuống vì
+  kẹp xuống sẽ trả dữ liệu lỏng hơn người dùng hỏi. Env `RADAR_MIN_VOLUME_USD` thì
+  `minVolumeDefault()` kẹp về bucket cao nhất.
+- `RadarSnapshot.minVolume` ghi **bucket thực đã áp** (không phải env hay
+  `?minVolume`), và ledger lưu theo từng tín hiệu.
+- Ledger tách nhóm theo bucket thay vì trộn chung: `summarizeByBias` khoá
+  `bias|bucket`, `summarizeByCluster` khoá `side|clusterLabel|role|bucket`,
+  `compareCatalystOutcomesByBucket` khoá `bucket`. Thứ tự: bucket cao → thấp, nhóm
+  tín hiệu cũ **chưa có `minVolume`** (`volumeBucketLabel` → “chưa rõ bucket”) xuống
+  cuối — không trộn và không bỏ dòng nào.
+- `TrackRecordResult.catalyst` đổi thành `CatalystComparison[]` (mỗi bucket một
+  entry), `scripts/check-radar-ui.ts` đọc theo dạng mảng.
+- UI `/radar`: badge bucket ở mỗi nhóm, chip lọc bucket chỉ hiện khi có >1 bucket;
+  `radarHref` giữ đúng bucket khi đổi side/sort; select dùng
+  `volumeOptionFor(data?.minVolume ?? minVolume)` thay cho `useEffect` đồng bộ lại
+  state (bỏ một vòng render và tránh select hiện sai bucket khi dữ liệu về muộn).
+
+### 2. Bỏ ghim (unpin) config runtime
+
+Trước đây “Lưu” luôn ghi giá trị hiện tại vào `app_settings.radar.config`, kể cả khi
+nó trùng env — env fallback mất nghĩa, và không có cách nào quay lại dùng env.
+
+- `PUT /api/admin/radar/config` nhận `{ values, unpin }`;
+  `updateRadarRuntimeConfig(patch, updatedBy, unpin)` xoá các key trong `unpin` khỏi
+  DB. `values` rỗng và `unpin` rỗng → 400 (không có gì để làm).
+- `buildRadarConfigPayload()`: field có giá trị **trùng env** đi vào `unpin` thay vì
+  ghi lại; field đã bấm “Bỏ ghim” mà bị sửa tiếp thì giá trị mới thắng (không để ý
+  định unpin cũ nuốt giá trị vừa nhập); URL được trim trước khi so env; ô số rỗng bị
+  chặn trước khi gọi API.
+- UI: nút **Bỏ ghim** chỉ hiện với field đang nằm trong DB, kèm nhãn `DB` / `env`,
+  và câu nhắc “Lưu chỉ ghi field khác env”.
+
+### 3. Quota LLM catalyst atomic
+
+- Cấp lượt là **một câu** `INSERT … ON CONFLICT DO UPDATE … WHERE used < limit …
+  RETURNING value`. Không còn đọc-rồi-ghi, nên hai request đồng thời không cùng vượt
+  trần; không row trả về = đã chạm trần.
+- Hoàn lượt (`releaseCatalystLlmQuota`) chỉ chạy khi `quota.limit > 0`: với `limit = 0`
+  (không giới hạn) việc hoàn lượt sẽ tạo bộ đếm giả và ăn vào hạn mức sau này.
+- `storedUsed()` chỉ đọc `used` khớp `^[0-9]{1,9}$`; số rác khổng lồ bị coi là 0 thay
+  vì làm cast `::int` overflow — overflow sẽ ném lỗi SQL và biến **mọi** lượt trong
+  ngày thành fail-closed “storage”. Vẫn giữ nguyên tắc fail-closed khi DB lỗi.
+
+### 4. Parity env ↔ FastAPI của nhịp scheduler/STALE
+
+Env ở app Next và `_as_minutes` trong `backend/scheduler.py` phải hiểu giống nhau,
+không thì health báo STALE cho job đã bị gỡ (hoặc bỏ sót feed chết).
+
+- `SCHEDULER_CATALYST_ENABLED` đọc qua `flag()`: nhận `1/true/yes/on` và
+  `0/false/no/off`; chuỗi rác giữ fallback thay vì âm thầm gỡ job. Trước đây `off`
+  vẫn bị coi là bật.
+- `schedulerMinutes()`: nhịp **âm = 0** (gỡ job), nhịp **> 1440 bị kẹp 1440**
+  (`SCHEDULER_MAX_INTERVAL_MINUTES`), khớp `_as_minutes` bên FastAPI. Trước đây nhịp
+  âm giữ nguyên và nhịp lớn không bị chặn.
+- `catalystScopeIntervalMinutes()` trả `null` khi scope `all`, khi
+  `schedulerEnabled = false`, hoặc nhịp 0 → health **không** xét STALE cho nguồn đó
+  (tránh STALE vĩnh viễn và spam webhook cho job không còn chạy).
+- Dọn code chết cùng đợt: `DEFAULT_INTERVAL_MINUTES`, nhánh không bao giờ tới trong
+  `health.ts`, và sanitize no-op trong `readSignals`.
+- Test: `src/lib/settings/__tests__/radar-config.test.ts`, `health.test.ts`,
+  `src/lib/catalyst/__tests__/llm-quota.test.ts`, `summarize.test.ts`,
+  `src/lib/market/__tests__/{ledger,min-volume-bucket,track-record-window}.test.ts`,
+  `src/components/admin/__tests__/radar-config-section.test.tsx`,
+  `backend/test_catalyst_schedule.py`.
+
+Kiểm tra đã chạy: `npx tsc --noEmit` 0 lỗi; `npx jest src/lib/market src/lib/settings`
+→ 23 suite / 178 test pass; `npx jest src/lib/catalyst src/components/admin
+src/app/api/admin src/app/api/market src/app/radar` → 13 suite / 89 test pass. Chưa chạy
+toàn bộ suite (vượt giới hạn thời gian của môi trường), chưa xem UI bằng browser, và
+chưa test live: Binance Futures trả HTTP 451 từ VM, webhook STALE thật chưa cấu hình
+`RADAR_ALERT_WEBHOOK_URL`.
 
 ## RADAR-BIAS-GUARD — margin, hysteresis, xác nhận đảo chiều, giá vô hiệu (2026-11-19)
 
