@@ -3,14 +3,17 @@
 
 import { db } from "@/db";
 import { appSettings } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { fetchBinanceFuturesKlines } from "@/lib/collectors/binance";
 import {
   LEDGER_NOTE,
+  biasTrackKey,
   compareCatalystOutcomes,
   evaluateSignal,
+  lastBiasBySymbolSide,
   planCohorts,
   selectSignalsForEvaluation,
+  shouldRecordSignal,
   summarizeByBias,
   summarizeByCluster,
   type RadarSignalRecord,
@@ -19,6 +22,7 @@ import {
 import { buildSetup, type SetupLevels } from "@/lib/market/setup";
 import { dispatchClusterAlerts, dispatchRadarAlerts } from "@/lib/market/alerts";
 import { recordClusterSnapshots } from "@/lib/market/cluster-history";
+import { recordBiasSnapshot } from "@/lib/market/bias-log";
 import { isBearishBias, isBullishBias } from "@/lib/market/ledger";
 import { getRadarSnapshot, type RadarRow } from "@/lib/market/radar";
 import { matchCatalystsForSymbol } from "@/lib/catalyst/matching";
@@ -31,6 +35,108 @@ const KEY = "radar.signals";
 const MAX_SIGNALS = 500;
 const KEEP_DAYS = 8;
 const MAX_RECENT = 20;
+
+/**
+ * RADAR-COHORT: cohort/ledger/alert không còn chạy trong `after()` của request
+ * radar. FastAPI gọi `POST /api/market/radar/cohort` theo nhịp cấu hình, nên
+ * tải không phụ thuộc số người mở /radar và không nhân lên theo số instance.
+ *
+ * Khoá mềm nằm ở `app_settings[COHORT_LOCK_KEY]`: mỗi lượt phải giành khoá
+ * bằng một câu INSERT ... ON CONFLICT ... WHERE hết hạn, nên nhiều instance
+ * cùng nhận một tick chỉ có đúng một instance chạy. `expiresAt` = thời điểm
+ * sớm nhất được chạy lượt kế tiếp (nhịp tối thiểu), đồng thời chặn chạy chồng.
+ */
+export const COHORT_LOCK_KEY = "radar.cohort.lock";
+export const DEFAULT_COHORT_INTERVAL_MINUTES = 30;
+export const MAX_COHORT_INTERVAL_MINUTES = 1440;
+/** Sàn khoá: một lượt build nguội + alert có thể tới ~1 phút. */
+export const MIN_COHORT_LEASE_MINUTES = 10;
+/** Tick đến sớm hơn hạn khoá chưa tới 1 phút vẫn coi là tới hạn (tránh lệch nhịp). */
+export const COHORT_DUE_TOLERANCE_MS = 60_000;
+
+export type CohortSkipReason = "test" | "demo" | "disabled" | "locked" | "error";
+
+export interface CohortRunResult {
+  ran: boolean;
+  skipped: CohortSkipReason | null;
+  intervalMinutes: number;
+  /** Số tín hiệu mới thực sự ghi vào ledger. */
+  signals: number;
+  /** Số cụm snapshot đã ghi (kèm event mới phát hiện). */
+  clusterEvents: number;
+  /** Số row ghi vào `radar_bias_log` (mọi row của 3 snapshot). */
+  biasRows: number;
+  /** Số alert đã gửi thành công (row + cluster). */
+  alerts: number;
+  at: string;
+}
+
+/** Nhịp job cohort (phút); 0 = tắt, giá trị hỏng/lớn quá bị kẹp. */
+export function cohortIntervalMinutes(
+  raw: unknown,
+  fallback = DEFAULT_COHORT_INTERVAL_MINUTES
+): number {
+  // Thiếu tham số (undefined/null/"") = dùng nhịp mặc định; chỉ số 0 mới là “tắt”.
+  if (raw === null || raw === undefined || raw === "") return fallback;
+  const value = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return Math.min(MAX_COHORT_INTERVAL_MINUTES, Math.floor(value));
+}
+
+/** Thời gian giữ khoá = nhịp chạy, sàn 10 phút. */
+export function cohortLeaseMs(intervalMinutes: number): number {
+  const minutes = Number.isFinite(intervalMinutes) ? Math.max(0, intervalMinutes) : 0;
+  return Math.max(MIN_COHORT_LEASE_MINUTES, minutes) * 60_000;
+}
+
+const COHORT_OWNER = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+
+function returnedRows(result: unknown): unknown[] {
+  if (Array.isArray(result)) return result;
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** true = giành được khoá; false = instance khác đang giữ; null = DB lỗi. */
+async function acquireCohortLock(now: number, leaseMs: number): Promise<boolean | null> {
+  try {
+    const value = JSON.stringify({
+      owner: COHORT_OWNER,
+      at: new Date(now).toISOString(),
+      expiresAt: now + leaseMs,
+    });
+    const result = await db.execute(sql`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES (${COHORT_LOCK_KEY}, ${value}::jsonb, now())
+      ON CONFLICT (key) DO UPDATE
+        SET value = EXCLUDED.value, updated_at = now()
+        WHERE COALESCE((app_settings.value ->> 'expiresAt')::bigint, 0) - ${COHORT_DUE_TOLERANCE_MS} <= ${now}
+      RETURNING key
+    `);
+    return returnedRows(result).length > 0;
+  } catch (error) {
+    console.warn(
+      "[RADAR-TRACK] Không giành được khoá cohort:",
+      error instanceof Error ? error.message : String(error)
+    );
+    return null;
+  }
+}
+
+/** Nhả khoá khi lượt chạy lỗi để tick sau còn thử lại; chỉ nhả khoá của mình. */
+async function releaseCohortLock(): Promise<void> {
+  try {
+    await db.execute(sql`
+      UPDATE app_settings
+      SET value = jsonb_build_object('owner', ${COHORT_OWNER}, 'releasedAt', now()),
+          updated_at = now()
+      WHERE key = ${COHORT_LOCK_KEY}
+        AND value ->> 'owner' = ${COHORT_OWNER}
+    `);
+  } catch {
+    // Best effort: khoá vẫn tự hết hạn theo `expiresAt`.
+  }
+}
 
 interface CatalystLedgerLabels {
   hasCatalyst: boolean;
@@ -116,18 +222,38 @@ async function writeSignals(signals: RadarSignalRecord[]): Promise<void> {
     });
 }
 
-let lastRecordAt = 0;
-
 /**
  * Ghi đủ cohort 3 side + cohort neutral mỗi ngày, dùng snapshot chuẩn chứ không
  * phải rows đã filter/sort theo tab người xem. Dedupe symbol+side+ngày.
+ *
+ * Chỉ chạy từ endpoint scheduler (cron FastAPI) hoặc gọi tay có token; không
+ * chạy trong request radar. Khoá DB quyết định instance nào chạy và nhịp tối
+ * thiểu, thay cho throttle RAM trước đây (mỗi process một biến → N instance =
+ * N lượt chạy).
  */
-export async function recordAllRadarCohorts(): Promise<void> {
-  if (process.env.NODE_ENV === "test" || process.env.RADAR_DEMO === "1") return;
+export async function recordAllRadarCohorts(
+  options: { intervalMinutes?: number } = {}
+): Promise<CohortRunResult> {
+  const intervalMinutes = cohortIntervalMinutes(options.intervalMinutes);
+  const empty = (skipped: CohortSkipReason): CohortRunResult => ({
+    ran: false,
+    skipped,
+    intervalMinutes,
+    signals: 0,
+    clusterEvents: 0,
+    biasRows: 0,
+    alerts: 0,
+    at: new Date().toISOString(),
+  });
+
+  if (process.env.NODE_ENV === "test") return empty("test");
+  if (process.env.RADAR_DEMO === "1") return empty("demo");
+  if (intervalMinutes <= 0) return empty("disabled");
 
   const now = Date.now();
-  if (now - lastRecordAt < 30 * 60_000) return;
-  lastRecordAt = now;
+  const lock = await acquireCohortLock(now, cohortLeaseMs(intervalMinutes));
+  if (lock === null) return empty("error");
+  if (!lock) return empty("locked");
 
   let snapshots;
   try {
@@ -141,20 +267,33 @@ export async function recordAllRadarCohorts(): Promise<void> {
       "[RADAR-TRACK] Không lấy được snapshot chuẩn cho cohort:",
       error instanceof Error ? error.message : String(error)
     );
-    return;
+    await releaseCohortLock();
+    return empty("error");
   }
 
   const [gainer, loser, unusual] = snapshots;
 
   // Cluster history + cảnh báo cấp cụm độc lập với việc có signal mới hay không.
   const clusterEvents = await recordClusterSnapshots(snapshots).catch(() => []);
+  let clusterAlerts = 0;
   if (clusterEvents.length > 0) {
-    await dispatchClusterAlerts(clusterEvents, gainer.market).catch(() => 0);
+    clusterAlerts = await dispatchClusterAlerts(clusterEvents, gainer.market).catch(() => 0);
   }
+
+  // RADAR-BIAS-LOG: ghi MỌI row của 3 snapshot (không chỉ cohort 12/side) kèm
+  // feature đầu vào — dữ liệu thô cho backtest/ML. Không throw: lỗi bảng log
+  // không được làm hỏng ledger/alert.
+  const biasLog = await recordBiasSnapshot(
+    [
+      { side: "gainer", snapshot: gainer },
+      { side: "loser", snapshot: loser },
+      { side: "unusual", snapshot: unusual },
+    ],
+    new Date(now)
+  );
 
   const plan = planCohorts({ gainer: gainer.rows, loser: loser.rows, unusual: unusual.rows });
   const btcPrice = gainer.market.btcPrice;
-  const day = new Date(now).toISOString().slice(0, 10);
 
   // RADAR-06-LEDGER: chụp nhãn catalyst + clusterId tại đúng thời điểm ghi.
   // Một lần đọc DB cho cả cohort; không có dữ liệu catalyst thì để trống nhãn
@@ -169,13 +308,24 @@ export async function recordAllRadarCohorts(): Promise<void> {
     );
   }
 
+  // Đọc ledger một lần: vừa để dedupe, vừa để biết bias lần trước của mỗi
+  // symbol+side — cơ sở của `prevBias`/`biasChanged` khi bias lật trong ngày.
+  // `readSignals()` không throw: lỗi DB trả [] như trước.
+  const existing = await readSignals();
+  const prevBiasByKey = lastBiasBySymbolSide(existing);
+
   const candidates = plan.map<RadarSignalRecord>(({ side, row }) => {
     const setup = setupFor(row);
     const labels = labelsBySymbol.get(row.symbol) ?? null;
+    const prevBias = prevBiasByKey.get(biasTrackKey(row.symbol, side)) ?? null;
     return {
       symbol: row.symbol,
       side,
       bias: row.bias,
+      prevBias,
+      biasChanged: prevBias !== null && prevBias !== row.bias,
+      invalidationPrice: row.invalidationPrice ?? null,
+      invalidationNote: row.invalidationNote ?? null,
       score: row.score,
       entryQuality: row.entryQuality,
       price: row.price,
@@ -206,30 +356,52 @@ export async function recordAllRadarCohorts(): Promise<void> {
         : {}),
     };
   });
-  if (candidates.length === 0) return;
+  let signals = 0;
+  let rowAlerts = 0;
 
-  try {
-    const existing = await readSignals();
-    const seen = new Set(existing.map((s) => `${s.symbol}|${s.side}|${s.at.slice(0, 10)}`));
-    const fresh = candidates.filter((s) => !seen.has(`${s.symbol}|${s.side}|${day}`));
-    if (fresh.length === 0) return;
+  if (candidates.length > 0) {
+    try {
+      // Chỉ ghi khi bias đổi so với lần chấm trước (hoặc lần đầu thấy). Không còn
+      // khoá theo ngày, nên lật đi lật lại trong ngày vẫn đủ dòng.
+      const fresh = candidates.filter((signal) =>
+        shouldRecordSignal(signal.prevBias, signal.bias)
+      );
 
-    const cutoff = now - KEEP_DAYS * 86_400_000;
-    const kept = existing
-      .filter((s) => {
-        const at = new Date(s.at).getTime();
-        return Number.isFinite(at) && at >= cutoff;
-      })
-      .concat(fresh)
-      .slice(-MAX_SIGNALS);
-    await writeSignals(kept);
-    await dispatchRadarAlerts(plan.map((entry) => entry.row), gainer.market).catch(() => 0);
-  } catch (error) {
-    console.warn(
-      "[RADAR-TRACK] Không ghi được signals:",
-      error instanceof Error ? error.message : String(error)
-    );
+      if (fresh.length > 0) {
+        const cutoff = now - KEEP_DAYS * 86_400_000;
+        const kept = existing
+          .filter((s) => {
+            const at = new Date(s.at).getTime();
+            return Number.isFinite(at) && at >= cutoff;
+          })
+          .concat(fresh)
+          .slice(-MAX_SIGNALS);
+        await writeSignals(kept);
+        signals = fresh.length;
+        rowAlerts = await dispatchRadarAlerts(plan.map((entry) => entry.row), gainer.market).catch(
+          () => 0
+        );
+      }
+    } catch (error) {
+      console.warn(
+        "[RADAR-TRACK] Không ghi được signals:",
+        error instanceof Error ? error.message : String(error)
+      );
+      await releaseCohortLock();
+      return empty("error");
+    }
   }
+
+  return {
+    ran: true,
+    skipped: null,
+    intervalMinutes,
+    signals,
+    clusterEvents: clusterEvents.length,
+    biasRows: biasLog.inserted,
+    alerts: clusterAlerts + rowAlerts,
+    at: new Date().toISOString(),
+  };
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {

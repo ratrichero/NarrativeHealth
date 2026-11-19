@@ -1,6 +1,7 @@
 import type { MarketMetrics } from "@/lib/market/metrics";
 import {
   compositeScore,
+  decideBias,
   scoreForSide,
   scoreGainer,
   scoreLoser,
@@ -22,6 +23,7 @@ const base: MarketMetrics = {
   changeAtrMultiple: 2.5,
   ema20: 101,
   ema50: 99,
+  ema20_1h: null,
   rsi14: 60,
   high7d: 104,
   low7d: 90,
@@ -192,5 +194,171 @@ describe("scoreForSide + composite", () => {
   it("composite ưu tiên score nhưng vẫn phạt move cũ", () => {
     expect(compositeScore(80, 20)).toBe(56);
     expect(compositeScore(80, 80)).toBe(80);
+  });
+});
+
+describe("decideBias — margin + hysteresis", () => {
+  it("hai phe sát nhau (< margin) → neutral, không đoán", () => {
+    const decision = decideBias({
+      candidates: [
+        { bias: "continuation", score: 55, threshold: 45 },
+        { bias: "exhaustion", score: 50, threshold: 55 },
+      ],
+    });
+    expect(decision.bias).toBe("neutral");
+    expect(decision.reason).toBe("tight");
+  });
+
+  it("hai phe sát nhau nhưng đã có bias cũ → giữ bias cũ", () => {
+    const decision = decideBias({
+      prevBias: "continuation",
+      candidates: [
+        { bias: "continuation", score: 55, threshold: 45 },
+        { bias: "exhaustion", score: 50, threshold: 55 },
+      ],
+    });
+    expect(decision.bias).toBe("continuation");
+    expect(decision.reason).toBe("held");
+  });
+
+  it("đổi phe phải vượt switchMargin, vượt rồi thì đổi", () => {
+    const held = decideBias({
+      prevBias: "exhaustion",
+      candidates: [
+        { bias: "continuation", score: 70, threshold: 45 },
+        { bias: "exhaustion", score: 60, threshold: 55 },
+      ],
+    });
+    expect(held.bias).toBe("exhaustion");
+    expect(held.reason).toBe("held");
+
+    const switched = decideBias({
+      prevBias: "exhaustion",
+      candidates: [
+        { bias: "continuation", score: 80, threshold: 45 },
+        { bias: "exhaustion", score: 60, threshold: 55 },
+      ],
+    });
+    expect(switched.bias).toBe("continuation");
+    expect(switched.reason).toBe("switched");
+  });
+
+  it("phe dẫn chưa đủ ngưỡng → neutral thay vì nhãn yếu", () => {
+    const decision = decideBias({
+      candidates: [
+        { bias: "continuation", score: 40, threshold: 45 },
+        { bias: "exhaustion", score: 20, threshold: 55 },
+      ],
+    });
+    expect(decision.bias).toBe("neutral");
+    expect(decision.reason).toBe("low-score");
+  });
+});
+
+describe("exhaustion cần xác nhận đảo chiều", () => {
+  it("move quá xa nhưng chưa xác nhận thì không gọi kiệt sức", () => {
+    const result = scoreGainer(
+      m({
+        price: 110,
+        changePct: 42,
+        atrPct: 6,
+        changeAtrMultiple: 7,
+        volumeRatio7d: 9,
+        oiChangePct: 12,
+        fundingRate: 0.0009,
+        rangePosition: 0.98,
+        distanceFromHighPct: 0.1,
+        rsi14: 82,
+        ema20_1h: 90,
+      })
+    );
+    expect(result.bias).not.toBe("exhaustion");
+    expect(result.warnings.join(" ")).toContain("xác nhận");
+  });
+
+  it("xác nhận bằng OI giảm → vẫn gọi kiệt sức như trước", () => {
+    const result = scoreGainer(
+      m({
+        changePct: 42,
+        atrPct: 6,
+        changeAtrMultiple: 7,
+        volumeRatio7d: 9,
+        oiChangePct: -8,
+        fundingRate: 0.0009,
+        rangePosition: 0.98,
+        distanceFromHighPct: 0.1,
+        rsi14: 82,
+      })
+    );
+    expect(result.bias).toBe("exhaustion");
+  });
+
+  it("hysteresis giữ exhaustion khi bằng chứng chưa đổi phe", () => {
+    const metrics = m({
+      changePct: 42,
+      atrPct: 6,
+      changeAtrMultiple: 7,
+      volumeRatio7d: 9,
+      oiChangePct: -8,
+      fundingRate: 0.0009,
+      rangePosition: 0.98,
+      distanceFromHighPct: 0.1,
+      rsi14: 82,
+    });
+    expect(scoreGainer(metrics, { prevBias: "exhaustion" }).bias).toBe("exhaustion");
+    // Bằng chứng đủ mạnh (chênh > switch margin) vẫn đổi được sang continuation.
+    expect(scoreGainer(metrics, { prevBias: "continuation" }).bias).toBe("exhaustion");
+  });
+});
+
+describe("giá vô hiệu bias", () => {
+  it("continuation vô hiệu khi đóng dưới EMA20 1h", () => {
+    const result = scoreGainer(m({ ema20_1h: 98.5 }));
+    expect(result.bias).toBe("continuation");
+    expect(result.invalidationPrice).toBe(98.5);
+    expect(result.invalidationNote).toContain("EMA20");
+  });
+
+  it("exhaustion vô hiệu khi vượt đỉnh 24h", () => {
+    const result = scoreGainer(
+      m({
+        changePct: 42,
+        atrPct: 6,
+        changeAtrMultiple: 7,
+        fundingRate: 0.0009,
+        oiChangePct: -8,
+        rsi14: 82,
+        rangePosition: 0.98,
+        distanceFromHighPct: 0.1,
+      })
+    );
+    expect(result.bias).toBe("exhaustion");
+    expect(result.invalidationPrice).toBe(105);
+    expect(result.invalidationNote).toContain("24h");
+  });
+
+  it("flush-bounce vô hiệu khi thủng đáy 24h", () => {
+    const result = scoreLoser(
+      m({
+        changePct: -25,
+        changeAtrMultiple: 5,
+        atrPct: 5,
+        volumeRatio7d: 3,
+        oiChangePct: -15,
+        fundingRate: -0.0008,
+        rangePosition: 0.1,
+        rsi14: 25,
+        ema20: 80,
+        ema50: 110,
+      })
+    );
+    expect(result.bias).toBe("flush-bounce");
+    expect(result.invalidationPrice).toBe(95);
+  });
+
+  it("neutral không có mốc vô hiệu", () => {
+    const result = scoreUnusual(m({ changePct: 0.5, volumeZ: 0.3, volumeRatio7d: 1, oiChangePct: 0, rangePct7d: 40 }));
+    expect(result.bias).toBe("neutral");
+    expect(result.invalidationPrice).toBeNull();
   });
 });

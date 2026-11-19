@@ -107,7 +107,7 @@ gộp về một universe quét chung.
 
 | Nội dung báo cáo | Kết luận | Chi tiết |
 |---|---|---|
-| Alert chỉ chạy khi có request `/api/market/movers` qua `after()` | **ĐÚNG** | `recordAllRadarCohorts` → `dispatchRadarAlerts`; chỉ route list gọi, trong `after()` (`movers/route.ts:50-54`). Không có cron độc lập, không retry |
+| Alert chỉ chạy khi có request `/api/market/movers` qua `after()` | **ĐÚNG (đã sửa ở RADAR-COHORT)** | Tại thời điểm audit: `recordAllRadarCohorts` → `dispatchRadarAlerts`; chỉ route list gọi, trong `after()` (`movers/route.ts:50-54`), không có cron độc lập. Nay route list không còn `after()`; `POST /api/market/radar/cohort` + job APScheduler `radar_cohort` chạy theo nhịp, khoá `radar.cohort.lock` chặn chạy trùng giữa các instance (xem `docs/Upgrade.md` mục RADAR-COHORT) |
 | “Không có lịch sử gửi” | **ĐÚNG MỘT PHẦN** | Có `app_settings["radar.alerts.sent"]`: chỉ ghi lần gửi **thành công**, giữ 7 ngày / 200 bản, dùng để dedupe `symbol+bias+ngày` và cooldown `symbol` (`alerts.ts:11-13`, `140-190`). Đây là dedupe state, **không phải** audit log: lần gửi lỗi không được lưu, không có retry queue |
 | Liquidity chỉ fetch ở detail; UI chỉ hiện slippage mua | **ĐÚNG** | `computeLiquidity` tính cả `buySlippageBps` và `sellSlippageBps`; UI chỉ render buy $10k/$50k (`page.tsx:391-414`) |
 | Permalink chưa hỗ trợ cụm | **ĐÚNG** | `page.tsx:615-629` chỉ đọc 5 param; panel cụm không sinh link, chỉ `setSelected(symbol)` (`page.tsx:765-775`) |

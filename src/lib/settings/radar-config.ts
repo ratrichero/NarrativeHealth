@@ -44,6 +44,10 @@ export interface RadarRuntimeConfig {
   schedulerAnnouncementsMinutes: number;
   schedulerNewsMinutes: number;
   schedulerUnlocksMinutes: number;
+  // Nhịp job cohort/ledger/alert (SCHEDULER_RADAR_COHORT_MINUTES)
+  schedulerCohortMinutes: number;
+  // Nhịp job outcome radar_bias_log (SCHEDULER_RADAR_BIAS_OUTCOME_MINUTES)
+  schedulerBiasOutcomeMinutes: number;
 }
 
 export interface RadarConfigField {
@@ -76,8 +80,8 @@ export const RADAR_CONFIG_GROUPS: Array<{ id: RadarConfigGroup; label: string; h
   },
   {
     id: "scheduler",
-    label: "Nhịp job catalyst (FastAPI)",
-    hint: "FastAPI đọc lại DB mỗi 30 giây và reschedule khi nhịp đổi — không cần restart. Nhịp ở đây cũng là ngưỡng cảnh báo STALE. Token scheduler vẫn nằm ở env.",
+    label: "Nhịp job scheduler (FastAPI)",
+    hint: "FastAPI đọc lại DB mỗi 30 giây và reschedule khi nhịp đổi — không cần restart. Nhịp catalyst ở đây cũng là ngưỡng cảnh báo STALE; nhịp cohort là khoảng cách tối thiểu giữa hai lượt ghi ledger/gửi alert. Token scheduler vẫn nằm ở env.",
   },
 ];
 
@@ -290,6 +294,26 @@ export const RADAR_CONFIG_FIELDS: RadarConfigField[] = [
     min: 0,
     max: 1440,
   },
+  {
+    key: "schedulerCohortMinutes",
+    env: "SCHEDULER_RADAR_COHORT_MINUTES",
+    label: "Nhịp cohort/ledger/alert (phút)",
+    hint: "0 = tắt job. FastAPI gọi POST /api/market/radar/cohort theo nhịp này; đây cũng là khoảng cách tối thiểu giữa 2 lượt (khoá DB, sàn 10 phút) nên nhiều instance không chạy trùng. Đổi nhịp không cần restart FastAPI.",
+    group: "scheduler",
+    type: "int",
+    min: 0,
+    max: 1440,
+  },
+  {
+    key: "schedulerBiasOutcomeMinutes",
+    env: "SCHEDULER_RADAR_BIAS_OUTCOME_MINUTES",
+    label: "Nhịp tính outcome bias (phút)",
+    hint: "0 = tắt job. FastAPI gọi POST /api/market/radar/bias-outcomes theo nhịp này để điền close/relative/MFE/MAE cho horizon 1h–7d trong radar_bias_log. Idempotent, chỉ đọc log — không đổi bias hiển thị.",
+    group: "scheduler",
+    type: "int",
+    min: 0,
+    max: 1440,
+  },
 ];
 
 /** Giá trị fallback lấy từ env (đúng như hành vi trước khi có config DB). */
@@ -321,6 +345,8 @@ export function envRadarConfig(env: NodeJS.ProcessEnv = process.env): RadarRunti
     schedulerAnnouncementsMinutes: num("SCHEDULER_CATALYST_ANNOUNCEMENTS_MINUTES", 5),
     schedulerNewsMinutes: num("SCHEDULER_CATALYST_NEWS_MINUTES", 15),
     schedulerUnlocksMinutes: num("SCHEDULER_CATALYST_UNLOCKS_MINUTES", 60),
+    schedulerCohortMinutes: num("SCHEDULER_RADAR_COHORT_MINUTES", 30),
+    schedulerBiasOutcomeMinutes: num("SCHEDULER_RADAR_BIAS_OUTCOME_MINUTES", 10),
   };
 }
 
