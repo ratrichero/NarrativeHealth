@@ -132,6 +132,9 @@ mỗi ngày cho mỗi side. Hệ quả: khi bias lật trong ngày — ví dụ 
 - Bản ghi cũ không có hai field này (`undefined`) — không suy ngược để tránh gán
   sai lịch sử; thống kê nào dùng `biasChanged` phải lọc `typeof === "boolean"`.
 - Cả hai field chỉ để phân tích, không tham gia `score`/`bias`/`entryQuality`.
+- UI `/radar` → bảng tín hiệu gần đây hiện badge “lật từ …” khi `biasChanged`, và
+  cột **Vô hiệu** (giá) kèm tooltip điều kiện (`invalidationNote`); card mobile hiện
+  “Lật nhãn: A → B” và “Vô hiệu …”. Tín hiệu ghi trước khi có field hiện “—”.
 
 ## RADAR-COHORT — cohort/ledger/alert chạy bằng cron, không theo request (2026-11-19)
 

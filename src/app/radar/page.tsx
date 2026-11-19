@@ -871,6 +871,11 @@ function TrackRecord() {
                       <p className="mt-0.5 text-[11px] text-slate-500">
                         {BIAS_LABELS[row.bias]} · score {row.score} · ${formatPrice(row.price)}
                       </p>
+                      {row.biasChanged && row.prevBias ? (
+                        <p className="mt-0.5 text-[10px] text-amber-300">
+                          Lật nhãn: {BIAS_LABELS[row.prevBias]} → {BIAS_LABELS[row.bias]}
+                        </p>
+                      ) : null}
                     </div>
                     <div className="shrink-0 text-right">
                       <p
@@ -920,17 +925,24 @@ function TrackRecord() {
                               ? "—"
                               : "chưa chạm"}
                     </span>
+                    <span className="tabular-nums" title={row.invalidationNote ?? undefined}>
+                      Vô hiệu{" "}
+                      {row.invalidationPrice === null || row.invalidationPrice === undefined
+                        ? "—"
+                        : formatPrice(row.invalidationPrice)}
+                    </span>
                   </div>
                 </div>
               );
             })}
           </div>
           <div className="hidden overflow-x-auto sm:block">
-            <table className="w-full min-w-[760px] text-left text-xs">
+            <table className="w-full min-w-[860px] text-left text-xs">
               <thead className="text-slate-500">
                 <tr>
                   <th className="py-1.5 pr-3 font-medium">Coin</th>
                   <th className="py-1.5 pr-3 font-medium">Bias lúc ghi</th>
+                  <th className="py-1.5 pr-3 font-medium">Vô hiệu</th>
                   <th className="py-1.5 pr-3 font-medium">Score</th>
                   <th className="py-1.5 pr-3 font-medium">Giá lúc ghi</th>
                   <th className="py-1.5 pr-3 font-medium">{horizonMeta.label}</th>
@@ -951,7 +963,22 @@ function TrackRecord() {
                           <span className="ml-1 rounded border border-slate-700 px-1 py-0.5 text-[9px] text-slate-500">watch</span>
                         ) : null}
                       </td>
-                      <td className="py-1.5 pr-3">{BIAS_LABELS[row.bias]}</td>
+                      <td className="py-1.5 pr-3">
+                        {BIAS_LABELS[row.bias]}
+                        {row.biasChanged && row.prevBias ? (
+                          <span className="ml-1 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[9px] text-amber-300">
+                            lật từ {BIAS_LABELS[row.prevBias]}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td
+                        className="py-1.5 pr-3 tabular-nums text-slate-400"
+                        title={row.invalidationNote ?? undefined}
+                      >
+                        {row.invalidationPrice === null || row.invalidationPrice === undefined
+                          ? "—"
+                          : formatPrice(row.invalidationPrice)}
+                      </td>
                       <td className="py-1.5 pr-3">{row.score}</td>
                       <td className="py-1.5 pr-3 tabular-nums">{formatPrice(row.price)}</td>
                       <td className={cn("py-1.5 pr-3 tabular-nums", (h?.returnPct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
