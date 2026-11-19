@@ -1,10 +1,10 @@
 import {
-  binanceRequestTotal,
   recordBinanceRequest,
   recordSnapshotBuild,
   recordSnapshotCache,
   resetRadarMetrics,
   snapshotBuildStats,
+  withSnapshotBuild,
   type SnapshotBuildMetric,
 } from "../binance-metrics";
 
@@ -17,10 +17,11 @@ function build(overrides: Partial<SnapshotBuildMetric> = {}): SnapshotBuildMetri
     rows: 12,
     clusters: 3,
     failed: false,
-    at: "2026-11-18T10:00:00.000Z",
     ...overrides,
   };
 }
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
 
 describe("radar metrics", () => {
   beforeEach(() => {
@@ -45,12 +46,10 @@ describe("radar metrics", () => {
     expect(gainer.avgDurationMs).toBe(200);
     expect(gainer.maxDurationMs).toBe(300);
     expect(gainer.avgBinanceRequests).toBe(150);
-    expect(gainer.lastDurationMs).toBe(300);
 
     const loser = stats.builds[1];
     expect(loser.builds).toBe(1);
     expect(loser.avgDurationMs).toBe(50);
-    expect(stats.recent).toHaveLength(3);
   });
 
   it("đếm build lỗi riêng và vẫn giữ số liệu", () => {
@@ -60,23 +59,19 @@ describe("radar metrics", () => {
     expect(gainer.maxDurationMs).toBe(20_000);
   });
 
-  it("tính cache hit rate và tổng request Binance", () => {
+  it("tính cache hit rate", () => {
     recordSnapshotCache(true);
     recordSnapshotCache(true);
     recordSnapshotCache(true);
     recordSnapshotCache(false);
-    recordBinanceRequest(4);
-    recordBinanceRequest();
 
     const stats = snapshotBuildStats();
     expect(stats.cacheHits).toBe(3);
     expect(stats.cacheMisses).toBe(1);
     expect(stats.cacheHitRate).toBe(75);
-    expect(stats.binanceRequestsTotal).toBe(5);
-    expect(binanceRequestTotal()).toBe(5);
   });
 
-  it("chưa có request nào → hit rate null, không chia cho 0", () => {
+  it("chưa có lượt tra nào → hit rate null, không chia cho 0", () => {
     expect(snapshotBuildStats().cacheHitRate).toBeNull();
   });
 
@@ -84,20 +79,82 @@ describe("radar metrics", () => {
     for (let index = 0; index < 60; index += 1) {
       recordSnapshotBuild(build({ durationMs: index }));
     }
-    const stats = snapshotBuildStats();
-    expect(stats.recent).toHaveLength(50);
-    expect(stats.recent[0].durationMs).toBe(10);
-    expect(stats.builds[0].builds).toBe(50);
+    const [gainer] = snapshotBuildStats().builds;
+    expect(gainer.builds).toBe(50);
+    expect(gainer.maxDurationMs).toBe(59);
   });
 
   it("reset xoá sạch số liệu", () => {
     recordSnapshotBuild(build());
     recordSnapshotCache(true);
-    recordBinanceRequest();
     resetRadarMetrics();
     const stats = snapshotBuildStats();
-    expect(stats.recent).toHaveLength(0);
-    expect(stats.binanceRequestsTotal).toBe(0);
+    expect(stats.builds).toHaveLength(0);
     expect(stats.cacheHitRate).toBeNull();
+  });
+
+  it("gán request cho đúng build khi nhiều build chạy song song", async () => {
+    const slow = withSnapshotBuild(
+      { side: "gainer", minVolume: 10_000_000 },
+      async () => {
+        recordBinanceRequest();
+        await tick();
+        recordBinanceRequest();
+        recordBinanceRequest();
+        await tick();
+        return { rows: [1, 2, 3], clusters: [1] };
+      },
+      (result) => ({ rows: result.rows.length, clusters: result.clusters.length })
+    );
+
+    const fast = withSnapshotBuild(
+      { side: "loser", minVolume: 10_000_000 },
+      async () => {
+        recordBinanceRequest();
+        return { rows: [] as number[], clusters: [] as number[] };
+      },
+      (result) => ({ rows: result.rows.length, clusters: result.clusters.length })
+    );
+
+    await Promise.all([slow, fast]);
+
+    const stats = snapshotBuildStats();
+    expect(stats.builds.find((item) => item.side === "gainer")?.avgBinanceRequests).toBe(3);
+    expect(stats.builds.find((item) => item.side === "loser")?.avgBinanceRequests).toBe(1);
+  });
+
+  it("request ngoài build không bị tính vào build nào", async () => {
+    recordBinanceRequest();
+    recordBinanceRequest();
+
+    const built = await withSnapshotBuild(
+      { side: "unusual", minVolume: 10_000_000 },
+      async () => {
+        recordBinanceRequest();
+        return { rows: [] as number[], clusters: [] as number[] };
+      },
+      (result) => ({ rows: result.rows.length, clusters: result.clusters.length })
+    );
+    expect(built.rows).toHaveLength(0);
+    expect(snapshotBuildStats().builds[0].avgBinanceRequests).toBe(1);
+  });
+
+  it("build lỗi vẫn ghi nhận request đã phát ra", async () => {
+    await expect(
+      withSnapshotBuild(
+        { side: "unusual", minVolume: 10_000_000 },
+        async () => {
+          recordBinanceRequest();
+          recordBinanceRequest();
+          throw new Error("binance down");
+        },
+        () => ({ rows: 0, clusters: 0 })
+      )
+    ).rejects.toThrow("binance down");
+
+    const [unusual] = snapshotBuildStats().builds;
+    expect(unusual.side).toBe("unusual");
+    expect(unusual.failed).toBe(1);
+    expect(unusual.avgBinanceRequests).toBe(2);
   });
 });

@@ -6,7 +6,7 @@
 
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RotateCcw, Save, Send, SlidersHorizontal } from "lucide-react";
+import { Activity, Loader2, RefreshCw, RotateCcw, Save, Send, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface RadarConfigField {
@@ -33,6 +33,139 @@ interface RadarConfigPayload {
 }
 
 type DraftValue = string | boolean;
+
+// RADAR-METRIC — số liệu tải của process đang phục vụ request (RAM, reset khi restart).
+interface RadarBuildAggregate {
+  side: string;
+  builds: number;
+  failed: number;
+  avgDurationMs: number;
+  maxDurationMs: number;
+  avgBinanceRequests: number;
+}
+
+interface RadarMetricsPayload {
+  cacheHits: number;
+  cacheMisses: number;
+  cacheHitRate: number | null;
+  builds: RadarBuildAggregate[];
+}
+
+const SIDE_LABELS: Record<string, string> = {
+  gainer: "Top tăng",
+  loser: "Top giảm",
+  unusual: "Bất thường",
+};
+
+function formatMs(value: number): string {
+  return value >= 1000 ? `${(value / 1000).toFixed(1)} s` : `${Math.round(value)} ms`;
+}
+
+/** Card số liệu đo tải build snapshot, đọc từ `/api/admin/radar/metrics`. */
+function RadarMetricsCard() {
+  const { data, isLoading, error, isFetching, refetch } = useQuery<RadarMetricsPayload>({
+      queryKey: ["admin", "radar-metrics"],
+      queryFn: async () => {
+        const res = await fetch("/api/admin/radar/metrics", { cache: "no-store" });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error ?? "Không đọc được số liệu tải radar.");
+        return json.data as RadarMetricsPayload;
+      },
+      refetchInterval: 60_000,
+    });
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="flex items-center gap-2 text-sm font-semibold text-white">
+            <Activity className="h-4 w-4 text-cyan-400" /> Tải radar (process này)
+          </h4>
+          <p className="mt-0.5 max-w-2xl text-[11px] leading-relaxed text-slate-500">
+            Build nguội (cache snapshot 60 giây) trong 50 lượt gần nhất: thời gian và request Binance
+            của chính build đó. Số liệu nằm trong RAM instance này, reset khi restart; timeline từng
+            build nằm ở log <code>[RADAR-METRIC]</code>.
+          </p>
+        </div>
+        <button
+          onClick={() => void refetch()}
+          disabled={isFetching}
+          className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+        >
+          {isFetching ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5" />
+          )}
+          Làm mới
+        </button>
+      </div>
+
+      {isLoading ? (
+        <p className="mt-3 text-xs text-slate-400">
+          <Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" /> Đang đọc số liệu…
+        </p>
+      ) : error || !data ? (
+        <p className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
+          {error instanceof Error ? error.message : "Không đọc được số liệu tải radar."}
+        </p>
+      ) : (
+        <>
+          <p className="mt-3 text-[11px] text-slate-400">
+            Cache hit snapshot:{" "}
+            <span className="font-semibold tabular-nums text-slate-200">
+              {data.cacheHitRate === null ? "—" : `${data.cacheHitRate}%`}
+            </span>{" "}
+            <span className="text-slate-500">
+              ({data.cacheHits} hit / {data.cacheMisses} miss từ lúc process khởi động)
+            </span>
+          </p>
+
+          {data.builds.length === 0 ? (
+            <p className="mt-2 text-xs text-slate-400">
+              Chưa có build nào — mở /radar (cache nguội) hoặc chờ job cohort rồi làm mới.
+            </p>
+          ) : (
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-[10px] uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">Side</th>
+                    <th className="py-2 pr-3 text-right font-medium">Build</th>
+                    <th className="py-2 pr-3 text-right font-medium">Avg / Max</th>
+                    <th className="py-2 text-right font-medium">Request/build</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/70">
+                  {data.builds.map((build) => (
+                    <tr key={build.side} className="text-slate-300">
+                      <td className="py-2 pr-3 font-medium text-slate-200">
+                        {SIDE_LABELS[build.side] ?? build.side}
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums">
+                        {build.builds}
+                        {build.failed > 0 ? (
+                          <span className="text-rose-300"> · {build.failed} lỗi</span>
+                        ) : null}
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums">
+                        {formatMs(build.avgDurationMs)}{" "}
+                        <span className="text-slate-500">/ {formatMs(build.maxDurationMs)}</span>
+                      </td>
+                      <td className="py-2 text-right tabular-nums">
+                        {Math.round(build.avgBinanceRequests)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function toDraft(payload: RadarConfigPayload): Record<string, DraftValue> {
   const draft: Record<string, DraftValue> = {};
@@ -236,6 +369,8 @@ export function RadarConfigSection() {
           {message.text}
         </div>
       ) : null}
+
+      <RadarMetricsCard />
 
       {groups.map((group) => (
         <div key={group.id} className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">

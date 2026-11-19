@@ -1,40 +1,49 @@
 // RADAR-METRIC — đo tải thật của radar: thời gian build snapshot và số request
 // Binance tiêu tốn cho mỗi lần build.
 //
-// Số liệu nằm trong RAM **từng process** (không phải metrics hệ thống): đủ để trả
-// lời "radar có quá tải không" trước khi tối ưu tiếp. Build là phần đắt duy nhất
-// (ticker + enrich klines/OI/funding cho ~30 coin); request phục vụ từ cache 60s
-// không tạo build nên không tính vào đây.
+// Số liệu nằm trong RAM **từng process**: đủ để trả lời "radar có quá tải không"
+// trước khi tối ưu tiếp. Request phục vụ từ cache 60s hoặc từ build đang chạy của
+// người khác không tạo build nên không tính vào đây; cache hit được đếm riêng.
+//
+// Request được gán cho đúng build đã phát ra nó bằng AsyncLocalStorage. Counter
+// toàn process không dùng được: gainer/loser/unusual build song song sẽ cùng nhìn
+// thấy request của nhau, và cả ba đều phóng đại như nhau.
+
+import { AsyncLocalStorage } from "node:async_hooks";
 
 export interface SnapshotBuildMetric {
   side: string;
   minVolume: number;
   durationMs: number;
-  /** Số request Binance trong khoảng build (delta của counter toàn process). */
+  /** Request Binance phát ra trong ngữ cảnh build này. */
   binanceRequests: number;
   rows: number;
   clusters: number;
   failed: boolean;
-  at: string;
 }
 
-const RECENT_LIMIT = 50;
+const WINDOW_SIZE = 50;
 
-let binanceRequests = 0;
+interface BuildMeter {
+  requests: number;
+}
+
+const buildMeter = new AsyncLocalStorage<BuildMeter>();
+
 let cacheHits = 0;
 let cacheMisses = 0;
 const recentBuilds: SnapshotBuildMetric[] = [];
 
-/** Gọi ở mọi request Binance của radar (kể cả request lấy từ cache nội bộ). */
-export function recordBinanceRequest(count = 1): void {
-  binanceRequests += Math.max(0, Math.floor(count));
+/** Gọi ở mọi request Binance của radar; chỉ tính khi đang trong một build. */
+export function recordBinanceRequest(): void {
+  const meter = buildMeter.getStore();
+  if (meter) meter.requests += 1;
 }
 
-/** Tổng request Binance đã phát ra từ process này. */
-export function binanceRequestTotal(): number {
-  return binanceRequests;
-}
-
+/**
+ * Đếm ở mức **lượt tra snapshot** (kể cả lượt gọi nội bộ từ detail/cohort), nên
+ * hit rate = tỉ lệ lượt tra không phải build, không phải tỉ lệ request của người dùng.
+ */
 export function recordSnapshotCache(hit: boolean): void {
   if (hit) cacheHits += 1;
   else cacheMisses += 1;
@@ -43,11 +52,51 @@ export function recordSnapshotCache(hit: boolean): void {
 /** Ghi nhận 1 lần build (thành công hoặc lỗi) + log 1 dòng để grep trên VPS. */
 export function recordSnapshotBuild(metric: SnapshotBuildMetric): void {
   recentBuilds.push(metric);
-  if (recentBuilds.length > RECENT_LIMIT) recentBuilds.shift();
+  if (recentBuilds.length > WINDOW_SIZE) recentBuilds.shift();
   console.info(
     `[RADAR-METRIC] snapshot side=${metric.side} minVolume=${metric.minVolume} ` +
       `durationMs=${metric.durationMs} binanceRequests=${metric.binanceRequests} ` +
       `rows=${metric.rows} clusters=${metric.clusters}${metric.failed ? " failed=1" : ""}`
+  );
+}
+
+/**
+ * Chạy một build snapshot trong ngữ cảnh đếm riêng và ghi metric khi xong.
+ *
+ * Đây là chỗ duy nhất dựng metric build: request Binance phát ra bên trong `build`
+ * (kể cả trong các promise con) được cộng cho build này, không lẫn với build khác.
+ */
+export function withSnapshotBuild<T>(
+  base: { side: string; minVolume: number },
+  build: () => Promise<T>,
+  measure: (result: T) => { rows: number; clusters: number }
+): Promise<T> {
+  const meter: BuildMeter = { requests: 0 };
+  const startedAt = Date.now();
+
+  return buildMeter.run(meter, build).then(
+    (result) => {
+      recordSnapshotBuild({
+        ...base,
+        ...measure(result),
+        durationMs: Date.now() - startedAt,
+        binanceRequests: meter.requests,
+        failed: false,
+      });
+      return result;
+    },
+    (error: unknown) => {
+      // Build lỗi vẫn phải hiện trong số liệu: lỗi thường là build chậm/timeout.
+      recordSnapshotBuild({
+        ...base,
+        rows: 0,
+        clusters: 0,
+        durationMs: Date.now() - startedAt,
+        binanceRequests: meter.requests,
+        failed: true,
+      });
+      throw error;
+    }
   );
 }
 
@@ -58,23 +107,22 @@ export interface SnapshotBuildAggregate {
   avgDurationMs: number;
   maxDurationMs: number;
   avgBinanceRequests: number;
-  lastDurationMs: number | null;
-  lastAt: string | null;
 }
 
 export interface RadarRuntimeMetrics {
-  binanceRequestsTotal: number;
   cacheHits: number;
   cacheMisses: number;
-  /** null khi chưa có request nào (chưa đo được). */
+  /** null khi chưa có lượt tra nào (chưa đo được). */
   cacheHitRate: number | null;
   builds: SnapshotBuildAggregate[];
-  recent: SnapshotBuildMetric[];
 }
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
-/** Tổng hợp theo side từ tối đa 50 build gần nhất. */
+/**
+ * Tổng hợp theo side trong cửa sổ build gần nhất. Timeline từng build không trả
+ * ở đây — mỗi build đã có một dòng `[RADAR-METRIC]` trong log.
+ */
 export function snapshotBuildStats(): RadarRuntimeMetrics {
   const bySide = new Map<string, SnapshotBuildMetric[]>();
   for (const build of recentBuilds) {
@@ -85,7 +133,6 @@ export function snapshotBuildStats(): RadarRuntimeMetrics {
 
   const builds: SnapshotBuildAggregate[] = [...bySide.entries()]
     .map(([side, list]) => {
-      const last = list[list.length - 1];
       const sumDuration = list.reduce((sum, item) => sum + item.durationMs, 0);
       const sumRequests = list.reduce((sum, item) => sum + item.binanceRequests, 0);
       return {
@@ -95,26 +142,21 @@ export function snapshotBuildStats(): RadarRuntimeMetrics {
         avgDurationMs: round(sumDuration / list.length),
         maxDurationMs: Math.max(...list.map((item) => item.durationMs)),
         avgBinanceRequests: round(sumRequests / list.length),
-        lastDurationMs: last ? last.durationMs : null,
-        lastAt: last ? last.at : null,
       };
     })
     .sort((a, b) => a.side.localeCompare(b.side));
 
   const lookups = cacheHits + cacheMisses;
   return {
-    binanceRequestsTotal: binanceRequests,
     cacheHits,
     cacheMisses,
     cacheHitRate: lookups > 0 ? round((cacheHits / lookups) * 100) : null,
     builds,
-    recent: [...recentBuilds],
   };
 }
 
-/** Xoá số liệu (test hoặc sau khi đổi cấu hình để đo lại từ đầu). */
+/** Xoá số liệu (test). */
 export function resetRadarMetrics(): void {
-  binanceRequests = 0;
   cacheHits = 0;
   cacheMisses = 0;
   recentBuilds.length = 0;

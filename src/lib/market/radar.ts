@@ -33,10 +33,9 @@ import { isEligibleTicker, listingAgeDays } from "@/lib/market/universe";
 import { buildDemoSnapshot, getDemoDetail } from "@/lib/market/demo";
 import { peekRadarRuntimeConfig, readRadarRuntimeConfig } from "@/lib/settings/radar-config";
 import {
-  binanceRequestTotal,
   recordBinanceRequest,
-  recordSnapshotBuild,
   recordSnapshotCache,
+  withSnapshotBuild,
 } from "@/lib/market/binance-metrics";
 
 const FUTURES_API = "https://fapi.binance.com/fapi/v1";
@@ -1099,35 +1098,11 @@ export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSna
   if (!entry || entry.expires <= Date.now()) {
     // Chỉ build "nguội" mới gọi Binance — đây là phần cần đo tải.
     recordSnapshotCache(false);
-    const startedAt = Date.now();
-    const requestsBefore = binanceRequestTotal();
-    const promise = buildSnapshot(side, minVolume)
-      .then((snapshot) => {
-        recordSnapshotBuild({
-          side,
-          minVolume,
-          durationMs: Date.now() - startedAt,
-          binanceRequests: binanceRequestTotal() - requestsBefore,
-          rows: snapshot.rows.length,
-          clusters: snapshot.clusters?.length ?? 0,
-          failed: false,
-          at: new Date().toISOString(),
-        });
-        return snapshot;
-      })
-      .catch((error) => {
-        recordSnapshotBuild({
-          side,
-          minVolume,
-          durationMs: Date.now() - startedAt,
-          binanceRequests: binanceRequestTotal() - requestsBefore,
-          rows: 0,
-          clusters: 0,
-          failed: true,
-          at: new Date().toISOString(),
-        });
-        throw error;
-      });
+    const promise = withSnapshotBuild(
+      { side, minVolume },
+      () => buildSnapshot(side, minVolume),
+      (snapshot) => ({ rows: snapshot.rows.length, clusters: snapshot.clusters?.length ?? 0 })
+    );
     entry = { expires: Date.now() + 60_000, promise };
     snapshotCache.set(key, entry);
     promise.catch(() => {

@@ -2921,11 +2921,20 @@ vô hạn.
 
 **Đo tải radar:** mỗi lần build snapshot (cache nguội) log một dòng
 `[RADAR-METRIC] snapshot side=… minVolume=… durationMs=… binanceRequests=… rows=… clusters=…`
-và được tổng hợp trong RAM (`src/lib/market/binance-metrics.ts`): tối đa 50 build
-gần nhất, avg/max duration, avg request Binance theo side, cache hit rate.
-`GET /api/admin/radar/metrics` trả số liệu của process hiện tại. Counter request
-là toàn process nên nếu hai build chạy song song, delta của mỗi build có thể gồm
-cả request của build kia — đủ để phát hiện bất thường, không phải số đo billing.
+và được tổng hợp trong RAM (`src/lib/market/binance-metrics.ts`, cửa sổ 50 build
+gần nhất): avg/max duration + avg request Binance theo side, cache hit rate.
+`GET /api/admin/radar/metrics` trả số liệu của process hiện tại; tab **Radar &
+Catalyst** hiển thị trực tiếp bảng này (tự làm mới 60 giây), timeline từng build
+đọc ở các dòng log nên không lặp lại trong payload. Card không hiển thị tổng
+request toàn process: counter đó gồm cả refresh/collector/chat nên đọc thành “tải
+radar” là sai.
+
+`binanceRequests` được gán cho đúng build đã phát ra request bằng
+`AsyncLocalStorage`, nên gainer/loser/unusual build song song không cộng nhầm
+request của nhau (counter toàn process thì cả ba đều phóng đại như nhau). Request
+dùng chung cache 45s/30 phút (ticker, exchangeInfo, klines cụm) chỉ tính cho build
+tạo ra nó; build sau thấy 0 cho phần đó — avg theo side vì vậy là cận trên của
+phần thật sự phải gọi Binance khi build, không phải quota billing.
 Số liệu reset khi restart. Giá trị DB hỏng/ngoài biên bị
 bỏ qua và rơi về env/default tương ứng. API: `GET/PUT /api/admin/radar/config`
 (admin session; PUT nhận `{ values: { ... } }`).
