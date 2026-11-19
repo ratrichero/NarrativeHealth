@@ -59,7 +59,9 @@ describe("catalyst demo data (RADAR_DEMO=1)", () => {
     for (const row of labeled) {
       expect(demoHasCatalyst(row.symbol)).toBe(true);
     }
-    expect(record.catalyst?.labeled).toBeGreaterThan(0);
-    expect(record.catalyst?.withCatalyst).toBeGreaterThan(0);
+    // Ledger demo không ghi bucket minVolume → đúng một nhóm ("chưa rõ bucket").
+    expect(record.catalyst).toHaveLength(1);
+    expect(record.catalyst?.[0].labeled).toBeGreaterThan(0);
+    expect(record.catalyst?.[0].withCatalyst).toBeGreaterThan(0);
   });
 });

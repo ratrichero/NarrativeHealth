@@ -7,7 +7,7 @@ import { eq } from "drizzle-orm";
 import { fetchBinanceFuturesKlines } from "@/lib/collectors/binance";
 import {
   LEDGER_NOTE,
-  compareCatalystOutcomes,
+  compareCatalystOutcomesByBucket,
   evaluateSignal,
   planCohorts,
   selectSignalsForEvaluation,
@@ -154,6 +154,10 @@ export async function recordAllRadarCohorts(): Promise<void> {
 
   const plan = planCohorts({ gainer: gainer.rows, loser: loser.rows, unusual: unusual.rows });
   const btcPrice = gainer.market.btcPrice;
+  // Cả 3 snapshot dùng cùng filter mặc định, nhưng ghi bucket hiệu lực của
+  // snapshot thay vì env thô: env lẻ/bị kẹp sẽ được làm tròn đúng bucket mà
+  // rows thực sự đã lọc, để track-record không so lệch filter về sau.
+  const minVolume = gainer.minVolume;
   const day = new Date(now).toISOString().slice(0, 10);
 
   // RADAR-06-LEDGER: chụp nhãn catalyst + clusterId tại đúng thời điểm ghi.
@@ -180,6 +184,7 @@ export async function recordAllRadarCohorts(): Promise<void> {
       entryQuality: row.entryQuality,
       price: row.price,
       at: new Date(now).toISOString(),
+      minVolume,
       btcPrice: btcPrice !== null && Number.isFinite(btcPrice) && btcPrice > 0 ? btcPrice : null,
       setup: setup
         ? {
@@ -260,7 +265,7 @@ export async function evaluateRadarSignals(): Promise<TrackRecordResult> {
     return {
       summaries: [],
       clusterSummaries: [],
-      catalyst: compareCatalystOutcomes([]),
+      catalyst: [],
       recent: [],
       total: 0,
       actionable: 0,
@@ -293,7 +298,7 @@ export async function evaluateRadarSignals(): Promise<TrackRecordResult> {
   const result: TrackRecordResult = {
     summaries: summarizeByBias(tracked),
     clusterSummaries: summarizeByCluster(tracked),
-    catalyst: compareCatalystOutcomes(tracked),
+    catalyst: compareCatalystOutcomesByBucket(tracked),
     recent: tracked.slice(0, MAX_RECENT),
     total: tracked.length,
     actionable: tracked.filter((s) => s.actionable).length,

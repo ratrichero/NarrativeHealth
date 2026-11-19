@@ -29,6 +29,7 @@ import { catalystSourceLabel, catalystSyncSourceLabel } from "@/lib/catalyst/sum
 import { catalystStaleness } from "@/lib/catalyst/health";
 import { countLiveCatalystFacts } from "@/lib/catalyst/store";
 import { demoCatalystSyncStatus, demoLiveCatalystCounts } from "@/lib/catalyst/demo-facts";
+import { readRadarRuntimeConfig } from "@/lib/settings/radar-config";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
@@ -40,6 +41,10 @@ export async function POST(request: NextRequest) {
   const scope = parseCatalystSyncScope(rawScope);
 
   try {
+    // Nạp config runtime (DB > env) trước khi sync: STALE cooldown, nhịp scope và
+    // LLM quota đọc bằng `peek*` bên trong, cold start mà chưa preload sẽ tính
+    // bằng env thay vì DB.
+    await readRadarRuntimeConfig();
     const summary = await syncCatalysts(Date.now(), scope);
     return NextResponse.json({ success: true, data: summary });
   } catch (error) {
@@ -54,6 +59,9 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   // Demo mode: dùng status + số fact mẫu, không đọc DB (cùng nguồn với panel).
   const demo = process.env.RADAR_DEMO === "1";
+  // STALE dùng `peekRadarRuntimeConfig()` (sync); preload ở đây để cold start
+  // không lấy nhịp env trong khi DB đã có nhịp khác. Demo cố ý không đọc DB.
+  if (!demo) await readRadarRuntimeConfig();
   const status = demo ? demoCatalystSyncStatus() : await readCatalystSyncStatus();
   const info = catalystSyncInfo(status);
   const statuses = catalystSourceStatuses(status);

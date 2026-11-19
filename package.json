@@ -7,7 +7,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "jest",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "test:live": "jest --config jest.live.config.js",
     "eval:llm": "tsx scripts/eval-llm.ts",
     "eval:gate": "tsx scripts/eval-llm.ts --gate",

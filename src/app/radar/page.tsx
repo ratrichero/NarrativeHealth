@@ -28,7 +28,13 @@ import type {
 } from "@/lib/market/radar";
 import { CatalystPanel } from "@/components/CatalystPanel";
 import type { BriefResult } from "@/lib/market/brief";
-import { HORIZONS, type HorizonId, type TrackRecordResult } from "@/lib/market/ledger";
+import {
+  HORIZONS,
+  volumeBucketKey,
+  volumeBucketLabel,
+  type HorizonId,
+  type TrackRecordResult,
+} from "@/lib/market/ledger";
 
 const SIDE_TABS: { id: MoverSide; label: string; hint: string }[] = [
   { id: "gainer", label: "Tăng mạnh", hint: "Move còn tiếp diễn hay đã kiệt sức?" },
@@ -41,7 +47,21 @@ const VOLUME_OPTIONS = [
   { value: 10_000_000, label: "$10M" },
   { value: 25_000_000, label: "$25M" },
   { value: 50_000_000, label: "$50M" },
+  { value: 100_000_000, label: "$100M" },
 ];
+
+/**
+ * Mốc gần nhất >= giá trị yêu cầu, khớp cách server làm tròn LÊN, để `<select>`
+ * luôn có option hợp lệ kể cả khi URL mang giá trị thô (26M) hoặc vượt bucket
+ * cao nhất (500M) — không bao giờ render select trống.
+ */
+function volumeOptionFor(value: number | undefined): number {
+  if (value === undefined) return 10_000_000;
+  return (
+    VOLUME_OPTIONS.find((option) => option.value >= value)?.value ??
+    VOLUME_OPTIONS[VOLUME_OPTIONS.length - 1].value
+  );
+}
 
 const SORT_OPTIONS: { value: RadarSort; label: string }[] = [
   { value: "composite", label: "Điểm hành động" },
@@ -452,6 +472,21 @@ function DetailDrawer({ symbol, onClose }: { symbol: string; onClose: () => void
   );
 }
 
+/**
+ * Chip bucket `minVolume` của một nhóm trong track-record. Chỉ render khi cohort
+ * trộn nhiều bucket, nên chưa đổi ngưỡng volume thì bảng giữ nguyên như cũ.
+ */
+function VolumeBucketBadge({ minVolume }: { minVolume?: number }) {
+  return (
+    <span
+      className="shrink-0 rounded border border-slate-700 bg-slate-900/80 px-1.5 py-0.5 text-[9px] font-normal text-slate-400"
+      title="Bucket lọc volume 24h đã áp khi ghi tín hiệu — không gộp chung với bucket khác"
+    >
+      {volumeBucketLabel(minVolume)}
+    </span>
+  );
+}
+
 function TrackRecord() {
   const [horizon, setHorizon] = useState<HorizonId>("24h");
   const { data, isLoading, error } = useQuery<TrackRecordResult>({
@@ -463,6 +498,14 @@ function TrackRecord() {
 
   const horizonMeta = HORIZONS.find((h) => h.id === horizon) ?? HORIZONS[2];
   const summaries = data?.summaries ?? [];
+  const clusterSummaries = data?.clusterSummaries ?? [];
+  // Chỉ hiện chip bucket khi cohort thật sự trộn nhiều bucket; nhóm tín hiệu cũ
+  // chưa có `minVolume` vào nhóm riêng và xếp cuối.
+  const catalystGroups = (data?.catalyst ?? []).filter((group) => group.labeled > 0);
+  const showBiasBuckets = new Set(summaries.map((row) => volumeBucketKey(row.minVolume))).size > 1;
+  const showClusterBuckets =
+    new Set(clusterSummaries.map((row) => volumeBucketKey(row.minVolume))).size > 1;
+  const showCatalystBuckets = catalystGroups.length > 1;
 
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
@@ -518,9 +561,15 @@ function TrackRecord() {
             {summaries.map((summary) => {
               const h = summary.horizons.find((item) => item.horizon === horizon);
               return (
-                <div key={summary.bias} className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+                <div
+                  key={`${summary.bias}|${volumeBucketKey(summary.minVolume)}`}
+                  className="rounded-lg border border-slate-800 bg-slate-900/40 p-3"
+                >
                   <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-medium text-slate-100">{summary.label}</p>
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <p className="truncate text-sm font-medium text-slate-100">{summary.label}</p>
+                      {showBiasBuckets ? <VolumeBucketBadge minVolume={summary.minVolume} /> : null}
+                    </div>
                     <span
                       className={cn(
                         "shrink-0 text-sm font-semibold tabular-nums",
@@ -589,8 +638,16 @@ function TrackRecord() {
                 {summaries.map((summary) => {
                   const h = summary.horizons.find((item) => item.horizon === horizon);
                   return (
-                    <tr key={summary.bias} className="border-t border-slate-800/70">
-                      <td className="px-3 py-2 font-medium text-slate-200">{summary.label}</td>
+                    <tr
+                      key={`${summary.bias}|${volumeBucketKey(summary.minVolume)}`}
+                      className="border-t border-slate-800/70"
+                    >
+                      <td className="px-3 py-2 font-medium text-slate-200">
+                        <span className="inline-flex items-center gap-1.5">
+                          {summary.label}
+                          {showBiasBuckets ? <VolumeBucketBadge minVolume={summary.minVolume} /> : null}
+                        </span>
+                      </td>
                       <td className="px-3 py-2 tabular-nums">{h?.n ?? 0}</td>
                       <td className="px-3 py-2 tabular-nums">
                         {h?.hitRate === null || h?.hitRate === undefined ? "—" : `${h.hitRate}%`}
@@ -635,7 +692,12 @@ function TrackRecord() {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-slate-100">{cluster.label}</p>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <p className="truncate text-sm font-medium text-slate-100">{cluster.label}</p>
+                            {showClusterBuckets ? (
+                              <VolumeBucketBadge minVolume={cluster.minVolume} />
+                            ) : null}
+                          </div>
                           <p className="mt-0.5 text-[11px] text-slate-500">
                             {cluster.side} · {roleLabel}
                           </p>
@@ -698,7 +760,14 @@ function TrackRecord() {
                       const h = cluster.horizons.find((item) => item.horizon === horizon);
                       return (
                         <tr key={cluster.key} className="border-t border-violet-500/10">
-                          <td className="px-3 py-2 font-medium text-slate-200">{cluster.label}</td>
+                          <td className="px-3 py-2 font-medium text-slate-200">
+                            <span className="inline-flex items-center gap-1.5">
+                              {cluster.label}
+                              {showClusterBuckets ? (
+                                <VolumeBucketBadge minVolume={cluster.minVolume} />
+                              ) : null}
+                            </span>
+                          </td>
                           <td className="px-3 py-2 text-slate-400">{cluster.side}</td>
                           <td className="px-3 py-2 text-slate-400">
                             {cluster.role === "leader" ? "Leader" : cluster.role === "laggard" ? "Laggard" : "Khác"}
@@ -722,20 +791,24 @@ function TrackRecord() {
             </div>
           ) : null}
 
-          {data.catalyst && data.catalyst.labeled > 0 ? (
-            <div className="rounded-lg border border-violet-500/25 bg-violet-500/5 p-3">
+          {catalystGroups.map((group) => (
+            <div
+              key={`catalyst|${volumeBucketKey(group.minVolume)}`}
+              className="rounded-lg border border-violet-500/25 bg-violet-500/5 p-3"
+            >
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-xs font-semibold text-violet-200">
                   Catalyst có giúp outlier đi tiếp? (chỉ phân tích, không vào scoring)
                 </h3>
+                {showCatalystBuckets ? <VolumeBucketBadge minVolume={group.minVolume} /> : null}
                 <span className="text-[10px] text-slate-500">
-                  {data.catalyst.withCatalyst} có catalyst · {data.catalyst.withoutCatalyst} không ·{" "}
-                  {data.catalyst.unlabeled} chưa gắn nhãn
+                  {group.withCatalyst} có catalyst · {group.withoutCatalyst} không ·{" "}
+                  {group.unlabeled} chưa gắn nhãn
                 </span>
               </div>
               {/* Mobile: mỗi horizon một card, không phải vuốt ngang. */}
               <div className="mt-2 space-y-2 sm:hidden">
-                {data.catalyst.horizons.map((row) => (
+                {group.horizons.map((row) => (
                   <div key={row.horizon} className="rounded-lg border border-violet-500/20 bg-slate-950/40 p-3">
                     <p className="text-xs font-semibold text-slate-200">
                       {HORIZONS.find((h) => h.id === row.horizon)?.label ?? row.horizon}
@@ -803,7 +876,7 @@ function TrackRecord() {
                     </tr>
                   </thead>
                   <tbody className="text-slate-300">
-                    {data.catalyst.horizons.map((row) => (
+                    {group.horizons.map((row) => (
                       <tr key={row.horizon} className="border-t border-slate-800/70">
                         <td className="py-1.5 pr-3 text-slate-400">
                           {HORIZONS.find((h) => h.id === row.horizon)?.label ?? row.horizon}
@@ -845,9 +918,9 @@ function TrackRecord() {
                   </tbody>
                 </table>
               </div>
-              <p className="mt-2 text-[11px] leading-relaxed text-slate-500">{data.catalyst.note}</p>
+              <p className="mt-2 text-[11px] leading-relaxed text-slate-500">{group.note}</p>
             </div>
-          ) : null}
+          ))}
 
           {/* Mobile: ledger gần đây dạng card, không vuốt ngang 9 cột. */}
           <div className="space-y-2 sm:hidden">
@@ -1213,12 +1286,19 @@ function RadarScreen() {
     : null;
   const updatedLabel = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString("vi-VN") : "—";
 
+  // Select phải nói đúng bucket server đã áp mà KHÔNG đồng bộ state: URL có thể
+  // mang giá trị thô (26M) hoặc không có gì (env 25M), trong khi filter thật là
+  // bucket server làm tròn lên. Dẫn xuất ngay khi render để tránh request thứ
+  // hai (state đổi → query key đổi) và tránh select trống với URL lạ.
+  const volumeSelectValue = volumeOptionFor(data?.minVolume ?? minVolume);
+
   const radarHref = (
     clusterIdValue: string | null = clusterId,
     symbolValue: string | null = selected
   ) => {
     const params = new URLSearchParams({ side, sort });
-    if (minVolume) params.set("minVolume", String(minVolume));
+    const effectiveMinVolume = data?.minVolume ?? minVolume;
+    if (effectiveMinVolume) params.set("minVolume", String(effectiveMinVolume));
     if (excludeSystem) params.set("excludeSystem", "1");
     if (clusterIdValue) params.set("cluster", clusterIdValue);
     if (symbolValue) params.set("symbol", symbolValue);
@@ -1408,7 +1488,7 @@ function RadarScreen() {
         </div>
 
         <select
-          value={minVolume ?? 10_000_000}
+          value={volumeSelectValue}
           onChange={(e) => setMinVolume(Number(e.target.value))}
           className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs text-slate-300"
           aria-label="Volume tối thiểu 24h"

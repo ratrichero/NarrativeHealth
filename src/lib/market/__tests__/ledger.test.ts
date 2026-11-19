@@ -2,12 +2,15 @@ import type { KlineData } from "@/lib/collectors/binance";
 import {
   aggregateHorizon,
   compareCatalystOutcomes,
+  compareCatalystOutcomesByBucket,
   evaluateSignal,
   planCohorts,
   selectCohort,
   selectSignalsForEvaluation,
   summarizeByBias,
   summarizeByCluster,
+  volumeBucketKey,
+  volumeBucketLabel,
   type RadarSignalRecord,
   type TrackedSignal,
 } from "@/lib/market/ledger";
@@ -434,5 +437,96 @@ describe("planCohorts", () => {
       unusual: [radarRow("UUSDT", "breakout", 60)],
     });
     expect(plan.filter((p) => p.side === "neutral").map((p) => p.row.pair)).toEqual(["LUSDT"]);
+  });
+});
+
+// `minVolume` là universe filter, không phải biến thể chiến lược: gộp hai bucket
+// vào một hit rate/return TB là con số sai âm thầm. Tín hiệu cũ chưa có field vào
+// nhóm "chưa rõ bucket" riêng (không trộn, không bị bỏ) và xếp cuối.
+describe("tách nhóm theo bucket minVolume", () => {
+  function tracked(
+    symbol: string,
+    minVolume: number | undefined,
+    returnPct: number,
+    overrides: Partial<TrackedSignal> = {}
+  ): TrackedSignal {
+    return {
+      ...baseSignal,
+      symbol,
+      minVolume,
+      ageHours: 30,
+      horizons: {
+        "1h": {
+          returnPct,
+          btcReturnPct: 0,
+          relativePct: returnPct,
+          mfePct: Math.max(returnPct, 0),
+          maePct: Math.min(returnPct, 0),
+          tp1Hit: null,
+          slHit: null,
+          firstEvent: null,
+          win: returnPct > 0,
+          pending: false,
+        },
+      },
+      ...overrides,
+    };
+  }
+
+  it("nhãn/khoá bucket, kể cả nhóm chưa rõ", () => {
+    expect(volumeBucketKey(25_000_000)).toBe("25000000");
+    expect(volumeBucketKey(undefined)).toBe("unknown");
+    expect(volumeBucketLabel(25_000_000)).toBe("$25M");
+    expect(volumeBucketLabel(undefined)).toBe("chưa rõ bucket");
+  });
+
+  it("summarizeByBias không gộp hai bucket và xếp nhóm chưa rõ xuống cuối", () => {
+    const summaries = summarizeByBias([
+      tracked("A", 10_000_000, 5),
+      tracked("B", 50_000_000, -1),
+      tracked("C", 50_000_000, -3),
+      tracked("D", undefined, 100),
+    ]);
+
+    expect(summaries).toHaveLength(3);
+    expect(summaries.map((row) => row.minVolume)).toEqual([50_000_000, 10_000_000, undefined]);
+    // Số liệu tính trong từng bucket, không bị pha loãng giữa hai universe.
+    expect(summaries[0].horizons[0].n).toBe(2);
+    expect(summaries[0].horizons[0].avgReturnPct).toBe(-2);
+    expect(summaries[1].horizons[0].avgReturnPct).toBe(5);
+    expect(summaries[2].horizons[0].avgReturnPct).toBe(100);
+  });
+
+  it("summarizeByCluster tách cụm cùng label/vai trò khác bucket", () => {
+    const summaries = summarizeByCluster([
+      tracked("A", 10_000_000, 1, { clusterLabel: "AI", clusterLeader: true }),
+      tracked("B", 50_000_000, 2, { clusterLabel: "AI", clusterLeader: true }),
+      tracked("C", 50_000_000, 3, { clusterLabel: "AI", clusterLeader: true }),
+    ]);
+
+    expect(summaries).toHaveLength(2);
+    expect(new Set(summaries.map((row) => row.key)).size).toBe(2);
+    expect(summaries.map((row) => row.minVolume)).toEqual([50_000_000, 10_000_000]);
+    expect(summaries[0].horizons[0].n).toBe(2);
+    expect(summaries[1].horizons[0].n).toBe(1);
+  });
+
+  it("compareCatalystOutcomesByBucket chỉ so trong cùng bucket", () => {
+    const groups = compareCatalystOutcomesByBucket([
+      tracked("A", 10_000_000, 4, { hasCatalyst: true }),
+      tracked("B", 10_000_000, -2, { hasCatalyst: false }),
+      tracked("C", 50_000_000, 9, { hasCatalyst: true }),
+      tracked("D", 50_000_000, 3, { hasCatalyst: false }),
+      tracked("E", undefined, 7, { hasCatalyst: true }),
+    ]);
+
+    expect(groups).toHaveLength(3);
+    expect(groups.map((row) => row.minVolume)).toEqual([50_000_000, 10_000_000, undefined]);
+    // Delta chỉ có nghĩa trong cùng universe: 9 − 3 = 6 và 4 − (−2) = 6.
+    expect(groups[0].horizons[0].deltaAvgReturnPct).toBe(6);
+    expect(groups[1].horizons[0].deltaAvgReturnPct).toBe(6);
+    // Nhóm chưa rõ chỉ có phía "có" → delta null chứ không bịa 0.
+    expect(groups[2].labeled).toBe(1);
+    expect(groups[2].horizons[0].deltaAvgReturnPct).toBeNull();
   });
 });

@@ -53,7 +53,12 @@ function signal(overrides: Partial<RadarSignalRecord> & Pick<RadarSignalRecord, 
 
 // 60 tín hiệu mới nhất (nửa giờ tuổi): chưa horizon nào đủ tuổi.
 const recent: RadarSignalRecord[] = Array.from({ length: 60 }, (_, i) =>
-  signal({ symbol: `REC${i}`, at: new Date(NOW - 0.5 * HOUR).toISOString() })
+  signal({
+    symbol: `REC${i}`,
+    at: new Date(NOW - 0.5 * HOUR).toISOString(),
+    // Bucket hiệu lực tại lúc ghi — track-record phải giữ nguyên khi đọc lại.
+    minVolume: 25_000_000,
+  })
 );
 
 // Hai tín hiệu nằm ngoài 60 bản ghi mới nhất: 4 ngày và ~7,1 ngày tuổi.
@@ -89,6 +94,25 @@ describe("evaluateRadarSignals — cửa sổ đánh giá", () => {
       async (_symbol: string, limit = 200, _interval = "1h", startTime?: number) =>
         candlesFrom(startTime ?? NOW - 8 * 24 * HOUR, limit)
     );
+  });
+
+  it("giữ bucket minVolume hiệu lực của bản ghi khi đọc lại", async () => {
+    const result = await evaluateRadarSignals();
+    expect(result.recent.length).toBeGreaterThan(0);
+    expect(result.recent.every((signal) => signal.minVolume === 25_000_000)).toBe(true);
+  });
+
+  it("tín hiệu cũ chưa có minVolume vào nhóm riêng, không gộp bucket hiện tại", async () => {
+    const result = await evaluateRadarSignals();
+
+    const continuation = result.summaries.filter((summary) => summary.bias === "continuation");
+    expect(continuation).toHaveLength(1);
+    expect(continuation[0].minVolume).toBe(25_000_000);
+
+    // aged3d/aged7d ghi trước khi ledger có field → nhóm "chưa rõ", không trộn vào 25M.
+    const exhaustion = result.summaries.filter((summary) => summary.bias === "exhaustion");
+    expect(exhaustion).toHaveLength(1);
+    expect(exhaustion[0].minVolume).toBeUndefined();
   });
 
   it("đo được tín hiệu cũ hơn 60 bản ghi ở horizon 3d và 7d", async () => {

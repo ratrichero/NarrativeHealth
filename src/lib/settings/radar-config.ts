@@ -77,7 +77,7 @@ export const RADAR_CONFIG_GROUPS: Array<{ id: RadarConfigGroup; label: string; h
   {
     id: "scheduler",
     label: "Nhịp job catalyst (FastAPI)",
-    hint: "FastAPI đọc lại DB mỗi 30 giây và reschedule khi nhịp đổi — không cần restart. Nhịp ở đây cũng là ngưỡng cảnh báo STALE. Token scheduler vẫn nằm ở env.",
+    hint: "FastAPI đọc lại DB mỗi 30 giây và reschedule khi nhịp đổi — không cần restart. Nhịp ở đây cũng là ngưỡng cảnh báo STALE: tắt job (bỏ bật hoặc đặt nhịp 0) thì nguồn đó không bị báo STALE. Token scheduler vẫn nằm ở env.",
   },
 ];
 
@@ -292,11 +292,34 @@ export const RADAR_CONFIG_FIELDS: RadarConfigField[] = [
   },
 ];
 
+/** Nhịp job tối đa — khớp `CATALYST_MAX_INTERVAL_MINUTES` của FastAPI. */
+export const SCHEDULER_MAX_INTERVAL_MINUTES = 1440;
+
 /** Giá trị fallback lấy từ env (đúng như hành vi trước khi có config DB). */
 export function envRadarConfig(env: NodeJS.ProcessEnv = process.env): RadarRuntimeConfig {
   const num = (name: string, fallback: number) => {
     const value = Number(env[name]);
     return Number.isFinite(value) && value >= 0 ? value : fallback;
+  };
+  const rawValue = (name: string) => String(env[name] ?? "").trim();
+  // Cùng quy ước với FastAPI (`backend/scheduler.py`): "0/false/no/off" là tắt;
+  // giá trị rác giữ fallback thay vì âm thầm gỡ job.
+  const flag = (name: string, fallback: boolean) => {
+    const raw = rawValue(name).toLowerCase();
+    if (!raw) return fallback;
+    if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") return true;
+    if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return false;
+    return fallback;
+  };
+  // "0" = gỡ job, nhịp âm = 0, nhịp > 1440 bị kẹp — đúng như `_as_minutes`
+  // bên FastAPI. Lệch ở đây làm health báo STALE cho job đã bị gỡ (nhịp âm /
+  // enabled=false) hoặc bỏ sót feed chết (ngưỡng quá rộng khi nhịp > 1440).
+  const schedulerMinutes = (name: string, fallback: number) => {
+    const raw = rawValue(name);
+    if (!raw) return fallback;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(SCHEDULER_MAX_INTERVAL_MINUTES, Math.max(0, Math.floor(value)));
   };
   return {
     clusterUniverse: num("RADAR_CLUSTER_UNIVERSE", 32),
@@ -316,11 +339,10 @@ export function envRadarConfig(env: NodeJS.ProcessEnv = process.env): RadarRunti
     catalystLlmDailyLimit: num("CATALYST_LLM_DAILY_LIMIT", 200),
     catalystPerIpPerMin: Math.max(1, Math.floor(num("CATALYST_PER_IP_PER_MIN", 20))),
     catalystStaleCooldownHours: num("CATALYST_STALE_ALERT_COOLDOWN_HOURS", 6),
-    schedulerEnabled:
-      String(env.SCHEDULER_CATALYST_ENABLED ?? "1").toLowerCase() !== "0",
-    schedulerAnnouncementsMinutes: num("SCHEDULER_CATALYST_ANNOUNCEMENTS_MINUTES", 5),
-    schedulerNewsMinutes: num("SCHEDULER_CATALYST_NEWS_MINUTES", 15),
-    schedulerUnlocksMinutes: num("SCHEDULER_CATALYST_UNLOCKS_MINUTES", 60),
+    schedulerEnabled: flag("SCHEDULER_CATALYST_ENABLED", true),
+    schedulerAnnouncementsMinutes: schedulerMinutes("SCHEDULER_CATALYST_ANNOUNCEMENTS_MINUTES", 5),
+    schedulerNewsMinutes: schedulerMinutes("SCHEDULER_CATALYST_NEWS_MINUTES", 15),
+    schedulerUnlocksMinutes: schedulerMinutes("SCHEDULER_CATALYST_UNLOCKS_MINUTES", 60),
   };
 }
 
@@ -477,12 +499,18 @@ export function peekRadarRuntimeConfig(): RadarRuntimeConfig {
   return cache?.config ?? envRadarConfig();
 }
 
-/** Ghi đè một phần cấu hình; validate toàn bộ trước khi lưu. */
+/**
+ * Ghi đè một phần cấu hình; validate toàn bộ trước khi lưu.
+ *
+ * `unpin`: xoá các field khỏi DB để quay lại env fallback. Đây là cách duy nhất
+ * bỏ một pin đã lưu, vì API không cho ghi giá trị `undefined`.
+ */
 export async function updateRadarRuntimeConfig(
   patch: Record<string, unknown>,
-  updatedBy = "admin"
+  updatedBy = "admin",
+  unpin: readonly string[] = []
 ): Promise<RadarConfigSnapshot> {
-  if (!patch || typeof patch !== "object") {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
     throw new RadarConfigError("Payload phải là object { values }.");
   }
   const current = await readRadarRuntimeConfig();
@@ -493,6 +521,12 @@ export async function updateRadarRuntimeConfig(
     }
     const spec = fieldSpec(key as keyof RadarRuntimeConfig);
     (values as Record<string, unknown>)[spec.key] = coerceFieldValue(spec, raw);
+  }
+  for (const key of unpin) {
+    if (!RADAR_CONFIG_FIELDS.some((field) => field.key === key)) {
+      throw new RadarConfigError(`Tham số không hợp lệ: ${key}.`);
+    }
+    delete (values as Record<string, unknown>)[key];
   }
 
   const { config, applied } = resolveRadarConfig({ values });

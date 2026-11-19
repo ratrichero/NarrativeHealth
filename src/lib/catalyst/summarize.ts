@@ -4,7 +4,11 @@
 
 import { generateMoversWithLLM } from "@/lib/square/content-generator";
 import { peekRadarRuntimeConfig } from "@/lib/settings/radar-config";
-import { catalystLlmDailyLimit, consumeCatalystLlmQuota } from "./llm-quota";
+import {
+  catalystLlmDailyLimit,
+  consumeCatalystLlmQuota,
+  releaseCatalystLlmQuota,
+} from "./llm-quota";
 import type { CatalystFact, CatalystSyncInfo } from "./types";
 
 // \b của JS chỉ hiểu ASCII nên không bắt được "vì"/"bán"; dùng biên theo \p{L}.
@@ -143,18 +147,30 @@ export async function summarizeCatalysts(
       note:
         quota.reason === "storage"
           ? "Không đọc/ghi được quota LLM (app_settings) — dùng template facts."
-          : `Đã đạt trần CATALYST_LLM_DAILY_LIMIT (${quota.limit} lượt/ngày, đã dùng ${quota.used}) — dùng template facts.`,
+          : `Đã đạt trần CATALYST_LLM_DAILY_LIMIT (${quota.limit} lượt/ngày) — dùng template facts.`,
     };
   }
 
   const prompt = buildCatalystPrompt(symbol, facts);
+  // Provider trả text nhưng validator loại hết → không có output nào dùng được,
+  // hoàn lại lượt vừa cấp để budget không mất vô ích.
+  let rejectedByValidator = false;
   const llm = await generateMoversWithLLM(
     prompt,
-    (text) => validateCatalystSummary(text, symbol, facts),
+    (text) => {
+      const validated = validateCatalystSummary(text, symbol, facts);
+      if (!validated) rejectedByValidator = true;
+      return validated;
+    },
     "catalyst"
   );
   if (llm) {
     return { text: llm.text, mode: "llm", provider: llm.provider, note: "AI tóm tắt từ facts của nguồn." };
+  }
+  // `limit <= 0` = không giới hạn và KHÔNG ghi usage, nên không có lượt nào để
+  // hoàn — release lúc này sẽ trừ nhầm lượt của request khác trong ngày.
+  if (quota.limit > 0 && rejectedByValidator) {
+    await releaseCatalystLlmQuota(quota.date);
   }
   return {
     text: template,

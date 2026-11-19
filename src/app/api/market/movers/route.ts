@@ -1,5 +1,5 @@
 import { after, NextRequest, NextResponse } from "next/server";
-import { getRadarSnapshot, type RadarSort } from "@/lib/market/radar";
+import { getRadarSnapshot, MinVolumeOutOfRangeError, type RadarSort } from "@/lib/market/radar";
 import { recordAllRadarCohorts } from "@/lib/market/track-record";
 import type { MoverSide } from "@/lib/market/scoring";
 import { clientIpFromHeaders, listLimiter, rateLimitHeaders } from "@/lib/market/rate-limit";
@@ -58,6 +58,10 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ success: true, data: snapshot });
   } catch (error) {
+    // Giá trị vượt bucket cao nhất: từ chối thay vì lặng lẽ trả dữ liệu lỏng hơn.
+    if (error instanceof MinVolumeOutOfRangeError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: 400 });
+    }
     const message = error instanceof Error ? error.message : "Không lấy được dữ liệu Binance";
     console.error("[RADAR] Snapshot failed:", message);
     return NextResponse.json(

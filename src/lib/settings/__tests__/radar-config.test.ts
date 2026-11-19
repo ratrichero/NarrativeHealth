@@ -42,6 +42,55 @@ describe("envRadarConfig", () => {
     expect(config.schedulerEnabled).toBe(false);
     expect(config.schedulerNewsMinutes).toBe(7);
   });
+
+  // Parity với FastAPI (`_as_minutes`): nhịp âm = 0 = gỡ job, KHÔNG fallback
+  // về default (fallback sẽ khiến health báo STALE vĩnh viễn cho job đã gỡ).
+  it("nhịp âm = 0, không fallback default", () => {
+    const config = envRadarConfig({
+      SCHEDULER_CATALYST_ANNOUNCEMENTS_MINUTES: "-5",
+      SCHEDULER_CATALYST_NEWS_MINUTES: "-0.5",
+      SCHEDULER_CATALYST_UNLOCKS_MINUTES: "0",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(config.schedulerAnnouncementsMinutes).toBe(0);
+    expect(config.schedulerNewsMinutes).toBe(0);
+    expect(config.schedulerUnlocksMinutes).toBe(0);
+  });
+
+  it("nhịp > 1440 bị kẹp 1440, số lẻ được floor", () => {
+    const config = envRadarConfig({
+      SCHEDULER_CATALYST_ANNOUNCEMENTS_MINUTES: "99999",
+      SCHEDULER_CATALYST_NEWS_MINUTES: "2.9",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(config.schedulerAnnouncementsMinutes).toBe(1440);
+    expect(config.schedulerNewsMinutes).toBe(2);
+  });
+
+  it("SCHEDULER_CATALYST_ENABLED nhận false/no/off như FastAPI", () => {
+    for (const raw of ["0", "false", "off", "NO"]) {
+      const config = envRadarConfig({
+        SCHEDULER_CATALYST_ENABLED: raw,
+      } as unknown as NodeJS.ProcessEnv);
+      expect(config.schedulerEnabled).toBe(false);
+    }
+    expect(
+      envRadarConfig({ SCHEDULER_CATALYST_ENABLED: "on" } as unknown as NodeJS.ProcessEnv)
+        .schedulerEnabled
+    ).toBe(true);
+    // Giá trị rác giữ fallback (job vẫn bật), không âm thầm gỡ job.
+    expect(
+      envRadarConfig({ SCHEDULER_CATALYST_ENABLED: "maybe" } as unknown as NodeJS.ProcessEnv)
+        .schedulerEnabled
+    ).toBe(true);
+  });
+
+  it("nhịp rỗng/không phải số vẫn dùng default như FastAPI", () => {
+    const config = envRadarConfig({
+      SCHEDULER_CATALYST_NEWS_MINUTES: "",
+      SCHEDULER_CATALYST_UNLOCKS_MINUTES: "abc",
+    } as unknown as NodeJS.ProcessEnv);
+    expect(config.schedulerNewsMinutes).toBe(15);
+    expect(config.schedulerUnlocksMinutes).toBe(60);
+  });
 });
 
 describe("resolveRadarConfig", () => {

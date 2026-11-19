@@ -40,6 +40,7 @@ function snapshot(): RadarSnapshot {
     clusters: top,
     // Cụm thật nhưng ngoài top 6 panel (id permalink cũ vẫn còn trong universe).
     allClusters: [...top, cluster("cluster-outside", 3)],
+    minVolume: 10_000_000,
     collectedAt: new Date("2026-11-18T00:00:00Z").toISOString(),
   };
 }

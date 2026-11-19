@@ -3,7 +3,11 @@ import {
   summarizeCatalysts,
   validateCatalystSummary,
 } from "@/lib/catalyst/summarize";
-import { catalystLlmDailyLimit, consumeCatalystLlmQuota } from "@/lib/catalyst/llm-quota";
+import {
+  catalystLlmDailyLimit,
+  consumeCatalystLlmQuota,
+  releaseCatalystLlmQuota,
+} from "@/lib/catalyst/llm-quota";
 import { generateMoversWithLLM } from "@/lib/square/content-generator";
 import type { CatalystFact } from "@/lib/catalyst/types";
 
@@ -11,9 +15,11 @@ jest.mock("@/lib/square/content-generator", () => ({ generateMoversWithLLM: jest
 jest.mock("@/lib/catalyst/llm-quota", () => ({
   catalystLlmDailyLimit: jest.fn(() => 200),
   consumeCatalystLlmQuota: jest.fn(),
+  releaseCatalystLlmQuota: jest.fn(() => Promise.resolve(true)),
 }));
 
 const consumeQuotaMock = consumeCatalystLlmQuota as jest.Mock;
+const releaseQuotaMock = releaseCatalystLlmQuota as jest.Mock;
 const generateMock = generateMoversWithLLM as jest.Mock;
 
 const facts: CatalystFact[] = [
@@ -189,5 +195,54 @@ describe("summarizeCatalysts", () => {
     expect(generateMock).toHaveBeenCalledTimes(1);
     expect(result.mode).toBe("llm");
     expect(result.provider).toBe("test-provider");
+    expect(releaseQuotaMock).not.toHaveBeenCalled();
+  });
+
+  it("provider trả output bị validator loại → hoàn lại lượt đã cấp", async () => {
+    generateMock.mockImplementation(
+      async (_prompt: string, validate: (text: string) => string | null) => {
+        // Câu nhân quả: validator loại.
+        validate("$ARB tăng vì dòng tiền lớn quay lại.");
+        return null;
+      }
+    );
+
+    const result = await summarizeCatalysts("ARB", facts);
+
+    expect(result.mode).toBe("template");
+    expect(releaseQuotaMock).toHaveBeenCalledWith("2026-11-18");
+  });
+
+  it("limit 0 (không ghi usage) → output bị loại cũng không hoàn lượt", async () => {
+    (catalystLlmDailyLimit as jest.Mock).mockReturnValue(0);
+    consumeQuotaMock.mockResolvedValue({
+      allowed: true,
+      used: 0,
+      limit: 0,
+      date: "2026-11-18",
+      remaining: Number.POSITIVE_INFINITY,
+    });
+    generateMock.mockImplementation(
+      async (_prompt: string, validate: (text: string) => string | null) => {
+        // Validator loại, nhưng lượt này chưa từng được ghi vào usage.
+        validate("$ARB tăng vì dòng tiền lớn quay lại.");
+        return null;
+      }
+    );
+
+    const result = await summarizeCatalysts("ARB", facts);
+
+    expect(result.mode).toBe("template");
+    // Release lúc này sẽ trừ nhầm lượt của request khác trong ngày.
+    expect(releaseQuotaMock).not.toHaveBeenCalled();
+  });
+
+  it("provider lỗi, không có output để validate → không hoàn lượt", async () => {
+    generateMock.mockResolvedValue(null);
+
+    const result = await summarizeCatalysts("ARB", facts);
+
+    expect(result.mode).toBe("template");
+    expect(releaseQuotaMock).not.toHaveBeenCalled();
   });
 });

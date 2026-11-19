@@ -203,23 +203,26 @@ async function main() {
       success?: boolean;
       data?: {
         clusterSummaries?: unknown[];
-        catalyst?: { labeled?: number; withCatalyst?: number; horizons?: unknown[] };
+        catalyst?: Array<{ labeled?: number; withCatalyst?: number; horizons?: unknown[] }>;
       };
     }>(`${baseUrl}/api/market/radar/track-record`);
-    const catalyst = track.body?.data?.catalyst;
+    // Track record tách bảng theo bucket minVolume → cộng gộp mọi nhóm.
+    const catalystGroups = track.body?.data?.catalyst ?? [];
+    const catalystLabeled = catalystGroups.reduce((sum, group) => sum + (group.labeled ?? 0), 0);
+    const catalystWith = catalystGroups.reduce((sum, group) => sum + (group.withCatalyst ?? 0), 0);
+    const catalystHasTable = catalystGroups.some(
+      (group) => (group.labeled ?? 0) > 0 && (group.horizons?.length ?? 0) > 0
+    );
     if (
       track.status === 200 &&
       (track.body?.data?.clusterSummaries?.length ?? 0) > 0 &&
-      (catalyst?.labeled ?? 0) > 0 &&
-      (catalyst?.horizons?.length ?? 0) > 0
+      catalystHasTable
     ) {
-      ok(
-        `bảng catalyst có dữ liệu (${catalyst?.withCatalyst}/${catalyst?.labeled} tín hiệu có catalyst)`
-      );
+      ok(`bảng catalyst có dữ liệu (${catalystWith}/${catalystLabeled} tín hiệu có catalyst)`);
     } else {
       bad(
         "bảng catalyst không có dữ liệu",
-        `HTTP ${track.status}, labeled=${catalyst?.labeled ?? "?"}`
+        `HTTP ${track.status}, labeled=${catalystLabeled}`
       );
     }
 

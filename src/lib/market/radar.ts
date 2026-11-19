@@ -55,14 +55,28 @@ export const MIN_VOLUME_BUCKETS = [
 
 /**
  * Làm tròn LÊN mốc gần nhất để filter không bao giờ lỏng hơn mức người dùng
- * yêu cầu; vượt mốc cao nhất thì giữ mốc cao nhất. Giá trị thiếu/không hợp lệ
- * dùng default của hệ thống (`RADAR_MIN_VOLUME_USD` hoặc 10M).
+ * yêu cầu. Vượt mốc cao nhất thì TỪ CHỐI (`MinVolumeOutOfRangeError`) chứ không
+ * kẹp xuống — kẹp xuống sẽ trả dữ liệu lỏng hơn yêu cầu. Giá trị thiếu/không hợp
+ * lệ dùng default của hệ thống (`RADAR_MIN_VOLUME_USD` hoặc 10M).
  */
 export function normalizeMinVolume(raw?: number | null): number {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) return minVolumeDefault();
   const bucket = MIN_VOLUME_BUCKETS.find((candidate) => candidate >= value);
-  return bucket ?? MIN_VOLUME_BUCKETS[MIN_VOLUME_BUCKETS.length - 1];
+  if (!bucket) throw new MinVolumeOutOfRangeError(value);
+  return bucket;
+}
+
+/** Mốc lọc cao nhất hỗ trợ; vượt mốc này request bị từ chối (400). */
+export const MIN_VOLUME_MAX_USD = MIN_VOLUME_BUCKETS[MIN_VOLUME_BUCKETS.length - 1];
+
+export class MinVolumeOutOfRangeError extends Error {
+  constructor(readonly value: number) {
+    super(
+      `minVolume tối đa ${MIN_VOLUME_MAX_USD.toLocaleString("en-US")} USD (nhận ${value}).`
+    );
+    this.name = "MinVolumeOutOfRangeError";
+  }
 }
 const UNUSUAL_POOL_VOLUME_USD = 20_000_000;
 const CLUSTER_CACHE_MS = 5 * 60_000;
@@ -198,6 +212,12 @@ export interface RadarSnapshot {
   side: MoverSide;
   rows: RadarRow[];
   market: RadarMarketContext;
+  /**
+   * Bucket minVolume (USD) thực sự đã áp cho rows/clusters — làm tròn LÊN mốc
+   * gần nhất với tham số yêu cầu, nên không bao giờ lỏng hơn. Permalink và
+   * ledger phải so sánh theo giá trị này, không theo `?minVolume` thô.
+   */
+  minVolume: number;
   /** Cụm phát hiện trên universe quét rộng (gồm coin ngoài top rows). */
   clusters?: RadarClusterSummary[];
   /**
@@ -336,7 +356,12 @@ export async function getSystemCoins(): Promise<Map<string, SystemCoin>> {
 
 function minVolumeDefault(): number {
   const raw = Number(process.env.RADAR_MIN_VOLUME_USD);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MIN_VOLUME_USD;
+  const value = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MIN_VOLUME_USD;
+  // Env cũng phải nằm trong bucket: giá trị lẻ (15M) tạo cache key ngoài bucket,
+  // còn giá trị > mốc cao nhất sẽ lọt qua filter UI. Cấu hình env sai không được
+  // làm sập cả trang market nên kẹp về bucket cao nhất thay vì throw như tham số
+  // người dùng gửi lên.
+  return MIN_VOLUME_BUCKETS.find((candidate) => candidate >= value) ?? MIN_VOLUME_MAX_USD;
 }
 
 async function mapLimit<T, R>(
@@ -1023,6 +1048,7 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     market,
     clusters: clusterSummaries,
     allClusters: clusterBase.allSummaries,
+    minVolume,
     collectedAt: new Date().toISOString(),
   };
 }
@@ -1079,7 +1105,7 @@ export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSna
       : minVolumeDefault();
 
   if (process.env.RADAR_DEMO === "1") {
-    return shapeRadarSnapshot(buildDemoSnapshot(side), query);
+    return shapeRadarSnapshot(buildDemoSnapshot(side, minVolume), query);
   }
 
   // Nạp config runtime (DB > env) trước khi snapshot dùng tuning sync.

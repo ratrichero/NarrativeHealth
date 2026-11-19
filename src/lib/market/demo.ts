@@ -15,7 +15,7 @@ import {
   type HorizonId,
   type HorizonResult,
   type RadarSignalRecord,
-  compareCatalystOutcomes,
+  compareCatalystOutcomesByBucket,
   type TrackRecordResult,
   type TrackedSignal,
 } from "@/lib/market/ledger";
@@ -230,7 +230,7 @@ function demoClusters(): RadarClusterSummary[] {
     .slice(0, 4);
 }
 
-export function buildDemoSnapshot(side: MoverSide): RadarSnapshot {
+export function buildDemoSnapshot(side: MoverSide, minVolume: number): RadarSnapshot {
   const rows = demoRows(side);
   const clusters = demoClusters();
   for (const cluster of clusters) {
@@ -260,6 +260,7 @@ export function buildDemoSnapshot(side: MoverSide): RadarSnapshot {
       regime: "risk-on",
     },
     collectedAt: new Date().toISOString(),
+    minVolume,
     demo: true,
     notice:
       "Dữ liệu MẪU: server hiện tại không truy cập được Binance Futures (HTTP 451). " +
@@ -418,7 +419,7 @@ export function buildDemoTrackRecord(): TrackRecordResult {
   return {
     summaries: summarizeByBias(tracked),
     clusterSummaries: summarizeByCluster(tracked),
-    catalyst: compareCatalystOutcomes(tracked),
+    catalyst: compareCatalystOutcomesByBucket(tracked),
     recent: [...tracked].sort((a, b) => a.ageHours - b.ageHours).slice(0, 20),
     total: tracked.length,
     actionable: tracked.filter((s) => s.actionable).length,

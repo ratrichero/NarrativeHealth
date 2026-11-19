@@ -6,6 +6,11 @@
 //     ngưỡng), hoặc
 //   • 2 lượt liên tiếp lấy được 0 fact mà không lỗi (feed trả 200 nhưng rỗng).
 //
+// Ngoại lệ quan trọng: scope đang TẮT thì không xét STALE. FastAPI coi
+// `schedulerEnabled=false` hoặc nhịp 0 là "gỡ job" (scheduler.py), nên nguồn
+// không còn được kỳ vọng tự chạy — nếu vẫn tính quá hạn thì mọi nguồn sẽ STALE
+// vĩnh viễn và spam webhook.
+//
 // Unlock đọc thẳng `event_risks`: nếu bảng còn dữ liệu nhưng adapter trả 0 liên
 // tiếp thì gần như chắc chắn là query/mapping hỏng, không phải "không có unlock".
 //
@@ -27,29 +32,28 @@ const ALERTS_KEY = "catalyst.stale.alerts";
 const ALERT_MAX_RECORDS = 100;
 const ALERT_KEEP_DAYS = 30;
 
-const DEFAULT_INTERVAL_MINUTES: Record<Exclude<CatalystSyncScope, "all">, number> = {
-  announcements: 5,
-  news: 15,
-  unlocks: 60,
-};
-
 /**
  * Nhịp kỳ vọng của scope (phút), config runtime DB > env (`SCHEDULER_CATALYST_*`)
- * > default; `all` = chạy tay. Dùng cùng nguồn với FastAPI để nhịp đổi trên Admin
- * thì ngưỡng STALE đổi theo, không báo nhầm.
+ * > default. Dùng cùng nguồn với FastAPI để nhịp đổi trên Admin thì ngưỡng STALE
+ * đổi theo, không báo nhầm.
+ *
+ * `null` = không có nhịp để so, tức là không xét STALE: scope `all` (chạy tay)
+ * hoặc job đang tắt — `schedulerEnabled=false` hay nhịp 0. Cùng quy ước với
+ * `scheduler.py` (`0` = gỡ job, không phải "dùng default").
  */
 export function catalystScopeIntervalMinutes(scope: CatalystSyncScope): number | null {
   if (scope === "all") return null;
   const cfg = peekRadarRuntimeConfig();
+  if (!cfg.schedulerEnabled) return null;
   const configured =
     scope === "announcements"
       ? cfg.schedulerAnnouncementsMinutes
       : scope === "news"
         ? cfg.schedulerNewsMinutes
         : cfg.schedulerUnlocksMinutes;
-  return Number.isFinite(configured) && configured > 0
-    ? configured
-    : DEFAULT_INTERVAL_MINUTES[scope];
+  // Env và DB đều đã chuẩn hoá (0 = gỡ job, kẹp 0–1440) nên chỉ còn 0 là
+  // trường hợp "không có nhịp để so".
+  return configured > 0 ? configured : null;
 }
 
 /**
@@ -105,8 +109,12 @@ export function catalystStaleness(
 ): CatalystSourceStaleness[] {
   return sources.map((source) => {
     const scope = catalystSourceScope(source.name);
+    // null = scope chạy tay hoặc job đang tắt → không áp ngưỡng, không xét STALE.
     const expectedEveryMinutes = catalystScopeIntervalMinutes(scope);
-    const staleAfter = staleAfterMinutes?.[scope] ?? catalystScopeStaleAfterMinutes(scope);
+    const scheduled = expectedEveryMinutes !== null;
+    const staleAfter = scheduled
+      ? (staleAfterMinutes?.[scope] ?? catalystScopeStaleAfterMinutes(scope))
+      : null;
     const last = source.lastRunAt ? Date.parse(source.lastRunAt) : NaN;
     const minutesSince = Number.isFinite(last) ? Math.max(0, Math.round((now - last) / 60_000)) : null;
     const minutesLate =
@@ -114,7 +122,10 @@ export function catalystStaleness(
 
     const reasons: CatalystStaleReason[] = [];
     if (staleAfter !== null && (minutesSince === null || minutesSince > staleAfter)) reasons.push("overdue");
-    if (!source.failing && (source.emptyStreak ?? 0) >= CATALYST_STALE_ZERO_RUNS) reasons.push("zero_facts");
+    // Job tắt thì 0 fact là bình thường (không ai chạy), không phải feed chết.
+    if (scheduled && !source.failing && (source.emptyStreak ?? 0) >= CATALYST_STALE_ZERO_RUNS) {
+      reasons.push("zero_facts");
+    }
 
     return {
       name: source.name,

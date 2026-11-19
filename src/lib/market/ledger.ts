@@ -54,6 +54,13 @@ export interface RadarSignalRecord {
   /** Đủ mạnh để coi là tín hiệu hành động tại thời điểm ghi. */
   actionable: boolean;
   /**
+   * Bucket `minVolume` (USD) thực sự đã áp cho snapshot lúc ghi — lấy từ
+   * `snapshot.minVolume` (đã làm tròn lên bucket), không phải env/`?minVolume`
+   * thô. Tín hiệu cũ chưa có field này; đổi ngưỡng volume giữa chừng thì
+   * track-record vẫn phân biệt được mẫu nào thuộc filter nào.
+   */
+  minVolume?: number;
+  /**
    * RADAR-06-LEDGER: nhãn catalyst tại thời điểm ghi — CHỈ để phân tích,
    * không tham gia score/bias/entryQuality và không đổi hành vi P4/P5.
    * `undefined` = chưa gắn nhãn (tín hiệu cũ hoặc lúc ghi chưa có dữ liệu catalyst).
@@ -98,16 +105,24 @@ export interface HorizonSummary {
 export interface BiasSummary {
   bias: Bias;
   label: string;
+  /**
+   * Bucket `minVolume` của các tín hiệu trong nhóm; `undefined` = tín hiệu cũ
+   * chưa có field. Hai bucket KHÔNG bị gộp: mỗi population là một hàng riêng.
+   */
+  minVolume?: number;
   horizons: HorizonSummary[];
 }
 
 export type ClusterRole = "leader" | "laggard" | "member";
 
 export interface ClusterPerformanceSummary {
+  /** `side|label|role|bucket` — khác bucket là khác nhóm. */
   key: string;
   side: SignalSide;
   label: string;
   role: ClusterRole;
+  /** `undefined` = tín hiệu cũ chưa có field. */
+  minVolume?: number;
   horizons: HorizonSummary[];
 }
 
@@ -122,6 +137,8 @@ export interface CatalystHorizonComparison {
 }
 
 export interface CatalystComparison {
+  /** Bucket `minVolume` của nhóm; `undefined` = tín hiệu cũ chưa có field. */
+  minVolume?: number;
   horizons: CatalystHorizonComparison[];
   /** Tín hiệu có nhãn hasCatalyst (ghi từ RADAR-06-LEDGER trở đi). */
   labeled: number;
@@ -135,8 +152,11 @@ export interface CatalystComparison {
 export interface TrackRecordResult {
   summaries: BiasSummary[];
   clusterSummaries?: ClusterPerformanceSummary[];
-  /** RADAR-06-LEDGER: so sánh forward return của outlier có/không catalyst. */
-  catalyst?: CatalystComparison;
+  /**
+   * RADAR-06-LEDGER: so sánh forward return của outlier có/không catalyst, một
+   * entry cho mỗi bucket `minVolume` (không so chéo hai universe với nhau).
+   */
+  catalyst?: CatalystComparison[];
   recent: TrackedSignal[];
   total: number;
   actionable: number;
@@ -340,20 +360,62 @@ export function aggregateHorizon(rows: TrackedSignal[], horizon: HorizonId): Hor
   };
 }
 
+function minVolumeOf(row: { minVolume?: number }): number | undefined {
+  const value = row.minVolume;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Khoá nhóm theo bucket `minVolume` của bản ghi. `"unknown"` = tín hiệu ghi
+ * trước khi ledger có field (hoặc giá trị hỏng) — một nhóm riêng, không bị trộn
+ * vào bucket hiện tại.
+ */
+export function volumeBucketKey(minVolume?: number | null): string {
+  const value = minVolumeOf({ minVolume: minVolume ?? undefined });
+  return value === undefined ? "unknown" : String(value);
+}
+
+/** Nhãn hiển thị của bucket: `$25M`, hoặc “chưa rõ bucket” cho tín hiệu cũ. */
+export function volumeBucketLabel(minVolume?: number | null): string {
+  const value = minVolumeOf({ minVolume: minVolume ?? undefined });
+  if (value === undefined) return "chưa rõ bucket";
+  return value % 1_000_000 === 0
+    ? `$${value / 1_000_000}M`
+    : `$${value.toLocaleString("en-US")}`;
+}
+
+/**
+ * Thứ tự nhóm: bucket cụ thể trước (cao → thấp), nhóm “chưa rõ bucket” xuống
+ * cuối. Bucket chỉ tồn tại tối đa 8 ngày (KEEP_DAYS) nên không phân mảnh lâu dài.
+ */
+function compareVolumeBuckets(a: { minVolume?: number }, b: { minVolume?: number }): number {
+  const aValue = minVolumeOf(a);
+  const bValue = minVolumeOf(b);
+  if (aValue === bValue) return 0;
+  if (aValue === undefined) return 1;
+  if (bValue === undefined) return -1;
+  return bValue - aValue;
+}
+
 export function summarizeByBias(rows: TrackedSignal[]): BiasSummary[] {
-  const byBias = new Map<Bias, TrackedSignal[]>();
+  const groups = new Map<string, { bias: Bias; minVolume?: number; rows: TrackedSignal[] }>();
   for (const row of rows) {
-    const list = byBias.get(row.bias) ?? [];
-    list.push(row);
-    byBias.set(row.bias, list);
+    const minVolume = minVolumeOf(row);
+    const key = `${row.bias}|${volumeBucketKey(minVolume)}`;
+    const group = groups.get(key) ?? { bias: row.bias, minVolume, rows: [] };
+    group.rows.push(row);
+    groups.set(key, group);
   }
-  return [...byBias.entries()]
-    .map(([bias, list]) => ({
-      bias,
-      label: BIAS_LABELS[bias],
-      horizons: HORIZONS.map((h) => aggregateHorizon(list, h.id)),
+  return [...groups.values()]
+    .map((group) => ({
+      bias: group.bias,
+      label: BIAS_LABELS[group.bias],
+      ...(group.minVolume === undefined ? {} : { minVolume: group.minVolume }),
+      horizons: HORIZONS.map((h) => aggregateHorizon(group.rows, h.id)),
     }))
     .sort((a, b) => {
+      const bucket = compareVolumeBuckets(a, b);
+      if (bucket !== 0) return bucket;
       const aN = a.horizons.find((h) => h.horizon === "24h")?.n ?? 0;
       const bN = b.horizons.find((h) => h.horizon === "24h")?.n ?? 0;
       return bN - aN;
@@ -363,7 +425,13 @@ export function summarizeByBias(rows: TrackedSignal[]): BiasSummary[] {
 export function summarizeByCluster(rows: TrackedSignal[]): ClusterPerformanceSummary[] {
   const groups = new Map<
     string,
-    { side: SignalSide; label: string; role: ClusterRole; rows: TrackedSignal[] }
+    {
+      side: SignalSide;
+      label: string;
+      role: ClusterRole;
+      minVolume?: number;
+      rows: TrackedSignal[];
+    }
   >();
 
   for (const row of rows) {
@@ -373,11 +441,13 @@ export function summarizeByCluster(rows: TrackedSignal[]): ClusterPerformanceSum
       : row.clusterLaggard
         ? "laggard"
         : "member";
-    const key = `${row.side}|${row.clusterLabel}|${role}`;
+    const minVolume = minVolumeOf(row);
+    const key = `${row.side}|${row.clusterLabel}|${role}|${volumeBucketKey(minVolume)}`;
     const group = groups.get(key) ?? {
       side: row.side,
       label: row.clusterLabel,
       role,
+      minVolume,
       rows: [],
     };
     group.rows.push(row);
@@ -390,9 +460,12 @@ export function summarizeByCluster(rows: TrackedSignal[]): ClusterPerformanceSum
       side: group.side,
       label: group.label,
       role: group.role,
+      ...(group.minVolume === undefined ? {} : { minVolume: group.minVolume }),
       horizons: HORIZONS.map((horizon) => aggregateHorizon(group.rows, horizon.id)),
     }))
     .sort((a, b) => {
+      const bucket = compareVolumeBuckets(a, b);
+      if (bucket !== 0) return bucket;
       const aN = a.horizons.find((horizon) => horizon.horizon === "24h")?.n ?? 0;
       const bN = b.horizons.find((horizon) => horizon.horizon === "24h")?.n ?? 0;
       return bN - aN || a.label.localeCompare(b.label);
@@ -408,7 +481,10 @@ export const CATALYST_COMPARISON_NOTE =
  * Neutral vẫn được tính (cùng quy ước với summarizeByBias: neutral không có win
  * nên chỉ đóng góp return/MFE/MAE, không đóng góp hit rate).
  */
-export function compareCatalystOutcomes(rows: TrackedSignal[]): CatalystComparison {
+export function compareCatalystOutcomes(
+  rows: TrackedSignal[],
+  minVolume?: number
+): CatalystComparison {
   const labeled = rows.filter((row) => typeof row.hasCatalyst === "boolean");
   const withCatalyst = labeled.filter((row) => row.hasCatalyst === true);
   const withoutCatalyst = labeled.filter((row) => row.hasCatalyst === false);
@@ -428,6 +504,7 @@ export function compareCatalystOutcomes(rows: TrackedSignal[]): CatalystComparis
   });
 
   return {
+    ...(minVolume === undefined ? {} : { minVolume }),
     horizons,
     labeled: labeled.length,
     withCatalyst: withCatalyst.length,
@@ -435,6 +512,24 @@ export function compareCatalystOutcomes(rows: TrackedSignal[]): CatalystComparis
     unlabeled: rows.length - labeled.length,
     note: CATALYST_COMPARISON_NOTE,
   };
+}
+
+/**
+ * So sánh catalyst theo TỪNG bucket: delta `có − không` chỉ có nghĩa khi hai
+ * phía cùng universe. Tín hiệu cũ chưa có `minVolume` vào nhóm riêng.
+ */
+export function compareCatalystOutcomesByBucket(rows: TrackedSignal[]): CatalystComparison[] {
+  const groups = new Map<string, { minVolume?: number; rows: TrackedSignal[] }>();
+  for (const row of rows) {
+    const minVolume = minVolumeOf(row);
+    const key = volumeBucketKey(minVolume);
+    const group = groups.get(key) ?? { minVolume, rows: [] };
+    group.rows.push(row);
+    groups.set(key, group);
+  }
+  return [...groups.values()]
+    .map((group) => compareCatalystOutcomes(group.rows, group.minVolume))
+    .sort((a, b) => compareVolumeBuckets(a, b) || b.labeled - a.labeled);
 }
 
 export interface EvaluationBucket {
