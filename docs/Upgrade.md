@@ -1,8 +1,36 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-11-19
+## Ngày cập nhật: 2026-11-20
 
 ---
+
+## RADAR-LIVE-MIRROR — đóng gói cách vượt geo-block 451 thành script + runbook (2026-11-20)
+
+Đợt verify live RADAR-HARDEN phải dựng tay một proxy MITM để đi vòng HTTP 451 của Binance
+Futures (`fapi.binance.com`, `api.binance.com`), rồi mất công dò lại từ đầu. Đợt này đóng gói
+lại thành công cụ chạy được, **không sửa source**.
+
+- `scripts/radar-mirror.mjs` (Node thuần, không thêm dependency):
+  - `setup` tạo CA + leaf cert (SAN theo map) trong `.radar-mirror/`; `--force` để tạo lại.
+  - `verify` gọi thử `fapi.binance.com/fapi/v1/time` + `api.binance.com/api/v3/time` qua proxy;
+    đặt `RADAR_BASE` để kiểm thêm `/api/market/movers` và `/api/market/radar/track-record`
+    (cảnh báo nếu `demo: true`).
+  - `run -- <cmd>` tự bật proxy rồi chạy lệnh con với `HTTPS_PROXY` / `NODE_EXTRA_CA_CERTS` /
+    `NODE_USE_ENV_PROXY` / `NO_PROXY`, tắt proxy khi lệnh con thoát; `start` chỉ chạy proxy.
+    `NODE_USE_ENV_PROXY=1` là bắt buộc: axios tự đọc proxy, còn global `fetch` trên Node >= 24
+    thì không (đo thật: `fetch` 451 khi thiếu cờ, 200 khi có) — thiếu cờ thì các nhánh catalyst/RSS
+    vẫn bị chặn dù movers đã chạy.
+  - Map host mặc định `fapi.binance.com=www.binance.com`,
+    `api.binance.com=data-api.binance.vision`, ghi đè bằng `RADAR_MIRROR_MAP`;
+    port bằng `RADAR_MIRROR_PORT` (mặc định 8899).
+- `docs/RADAR-LIVE-MIRROR_RUNBOOK.md`: vì sao 451, cách chạy, checklist verify (movers, bucket
+  làm tròn/vượt trần, track-record tách bucket, UI), giới hạn và troubleshooting.
+- Nguyên tắc giữ nguyên: hostname mirror **chỉ** nằm trong script/runbook, không vào `src/`;
+  production và collector vẫn gọi host chính thức, 451 ở production là sự cố hạ tầng cần báo.
+- `.radar-mirror/` (chứa private key) đã vào `.gitignore`; `README` và §Bước 1 của
+  `docs/RADAR-04_LIVE_VERIFICATION.md` trỏ sang runbook mới thay vì chỉ dựa vào `RADAR_DEMO=1`.
+
+Không đổi API, DB, scoring hay UI radar.
 
 ## RADAR-HARDEN — bucket minVolume, bỏ ghim config runtime, quota LLM atomic, parity env ↔ FastAPI (2026-11-19)
 

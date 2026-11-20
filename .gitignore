@@ -30,3 +30,6 @@ tsconfig.tsbuildinfo
 
 # Smart deploy state (scripts/deploy.sh markers)
 .deploy-state/
+
+# Radar live-mirror certs (private key, local only)
+.radar-mirror/

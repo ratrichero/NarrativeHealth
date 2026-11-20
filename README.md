@@ -373,8 +373,9 @@ Cluster/rotation  →  correlation return 1h ≥ 0.75, label theo narrative
   `symbol + externalId` nên announcement sync 5 phút không spam.
   Spec + runbook: `docs/RADAR-06_CATALYST_LAYER_SPEC.md` (§7.1–7.4).
 - **Catalyst API:** `GET /api/market/movers/[symbol]/catalysts` (facts + summary, cache 30 phút).
-- **Verify live:** `docs/RADAR-04_LIVE_VERIFICATION.md` (sandbox bị Binance geo-block 451 nên
-  preview dùng `RADAR_DEMO=1`; production không bật demo).
+- **Verify live:** `docs/RADAR-04_LIVE_VERIFICATION.md` (cohort, horizon, chi phí đo).
+  Máy bị Binance geo-block 451 dùng mirror đọc-only: `node scripts/radar-mirror.mjs run -- npx next dev -H 0.0.0.0 -p 3000`
+  — runbook ngắn ở `docs/RADAR-LIVE-MIRROR_RUNBOOK.md`; production không bật demo, không dùng mirror.
 - **Env chính:** `RADAR_DEMO`, `RADAR_MIN_VOLUME_USD`, `RADAR_ENRICH_PER_SIDE`,
   `RADAR_UNUSUAL_CANDIDATES`, `RADAR_CLUSTER_EXTRA`, `RADAR_LLM_ENABLED`,
   `RADAR_ALERT_*`, `RADAR_*_PER_IP_*`, `RADAR_BRIEF_DAILY_LIMIT`,
@@ -623,7 +624,7 @@ Phase-specific documents under `docs/Binance_Square_Upgrade/` are authoritative 
 - `src/lib/market` suite: **17 suites / 111 tests PASS** (ledger, scoring, cluster, liquidity, rate limit, alert, cost/window regressions, catalyst trigger sau khi gán cụm, detail gán cụm, so sánh catalyst trong ledger, alert catalyst-driven, clusterId ổn định)
 - Typecheck: clean
 - Signal Ledger 3d/7d: covered by regression test (window + chọn mẫu theo tuổi horizon)
-- Live verification: **pending** — sandbox bị Binance Futures chặn (451); runbook ở `docs/RADAR-04_LIVE_VERIFICATION.md`
+- Live verification: **thủ công, đã chạy** qua mirror đọc-only (`scripts/radar-mirror.mjs`) — runbook `docs/RADAR-LIVE-MIRROR_RUNBOOK.md`; kế hoạch cohort/forward-return ở `docs/RADAR-04_LIVE_VERIFICATION.md`
 - Cluster/rotation: audit xong, **chưa sửa** — `docs/RADAR-05_CLUSTER_ROTATION_AUDIT.md`
 - Catalyst: **9 suite / 56 test** (parser Binance/RSS, matching, validator, TTL, scope sync theo nhịp scheduler, cap LLM/ngày, trạng thái nguồn) — live verify pending
 

@@ -116,7 +116,10 @@ pm2 list                       # nextjs-dashboard phải online
 curl -s -o /dev/null -w "%{http_code}\n" https://fapi.binance.com/fapi/v1/ping   # mong đợi 200
 ```
 
-Nếu 451 → dừng, báo lại: hạ tầng chặn vùng, không phải lỗi code.
+Nếu 451: đây là hạ tầng chặn vùng, không phải lỗi code. Để verify live từ máy bị chặn,
+dùng mirror đọc-only theo `docs/RADAR-LIVE-MIRROR_RUNBOOK.md`
+(`node scripts/radar-mirror.mjs run -- npx next dev -H 0.0.0.0 -p 3000`) rồi quay lại Bước 2.
+Trên production thật thì dừng và báo lại — không lách chặn ở đó.
 
 ### Bước 2 — radar trả dữ liệu thật (không phải demo)
 
