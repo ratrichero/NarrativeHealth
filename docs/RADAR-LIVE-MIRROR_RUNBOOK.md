@@ -28,6 +28,12 @@ Cùng API đó vẫn trả 200 qua host khác:
 |---|---|---|
 | `fapi.binance.com` | `www.binance.com` | `/fapi/v1/...`, `/futures/data/...` |
 | `api.binance.com` | `data-api.binance.vision` | `/api/v3/...` |
+| `data-api.binance.vision` | *(giữ nguyên — passthrough)* | `/api/v3/ticker/24hr` (spot ticker) |
+
+Host **passthrough** (`PASSTHROUGH_HOSTS` trong script) không đổi host đích: nó chỉ được
+proxy chấp nhận `CONNECT` và ký lại TLS, vì `src/lib/market/spot.ts` gọi thẳng
+`data-api.binance.vision` (host này vào được từ VM bị chặn `fapi`). Thiếu passthrough thì
+spot ticker nhận **403 từ proxy** và radar mất cột spot (`[RADAR-SPOT] ... 403 Forbidden`).
 
 Payload giống nhau, chỉ khác hostname. Nên cách rẻ nhất là **đổi host của request đi ra**
 ở tầng mạng, không đụng code.
@@ -55,7 +61,7 @@ source nào**; hostname của mirror chỉ tồn tại trong script/runbook, kh�
 # 1) tạo CA + leaf cert (idempotent; --force để tạo lại)
 node scripts/radar-mirror.mjs setup
 
-# 2) kiểm tra 3 host qua proxy (mong đợi tất cả 200)
+# 2) kiểm tra các host qua proxy (mong đợi tất cả 200)
 node scripts/radar-mirror.mjs verify
 
 # 3) chạy dev server sau proxy
@@ -78,6 +84,27 @@ curl -s "http://127.0.0.1:3000/api/market/movers?side=gainer&limit=3" | head -c 
 
 `data.demo` phải **không** xuất hiện / không `true`. Nếu 503 kèm `451` → proxy không được
 dùng (sai env, hoặc `NO_PROXY` đang phủ cả `binance.com`).
+
+## 3.1. Hồi quy spot 403 (chạy trên port riêng)
+
+Lỗi từng gặp: log dev server có `[RADAR-SPOT] Không lấy được spot ticker: Failed to establish
+tunnel to data-api.binance.vision:443 via http://127.0.0.1:8899: HTTP/1.1 403 Forbidden`, do host
+spot chỉ là **đích** của map nên `CONNECT` từ chính nó bị chặn. Kiểm tra hồi quy dưới đây dựng
+**một proxy mới trên port riêng** (không dùng lại proxy đang giữ 8899 — có thể là code cũ) rồi
+gọi đúng URL mà `src/lib/market/spot.ts` dùng:
+
+```bash
+RADAR_MIRROR_PORT=8898 node scripts/radar-mirror.mjs spot-check
+# [radar-mirror] spot regression: proxy 127.0.0.1:8898 → fapi.binance.com=www.binance.com, api.binance.com=data-api.binance.vision
+#   ✓ https://data-api.binance.vision/api/v3/ticker/24hr → 200
+```
+
+- Exit 0 = `CONNECT` + TLS + upstream spot đều ổn. Port bận thì lệnh **fail kèm thông báo port**
+  thay vì im lặng dùng lại proxy khác, nên kết quả luôn thuộc về code đang có trong repo.
+- `403` → host không được cho qua (map/`PASSTHROUGH_HOSTS`); lỗi SAN → `setup --force` rồi thử lại.
+- Sau đó kiểm end-to-end: `GET /api/market/movers` phải có row `spotLed` kiểu boolean và log dev
+  server **không còn** dòng `[RADAR-SPOT]`. Row `spotLed: null` là coin không có pair spot
+  (futures-only) — đúng thiết kế, không phải lỗi.
 
 ## 4. Checklist verify live (đã dùng cho RADAR-HARDEN)
 
@@ -112,7 +139,8 @@ Muốn có cảnh trộn **bucket số** (vd `$10M` vs `$50M`) phải đổi ng�
 |---|---|---|
 | `Empty reply from server` | socket sau `CONNECT` không được đưa vào TLS server | script đã dùng `tlsServer.emit("connection", socket)`; đừng bọc thêm `tls.TLSSocket` |
 | `Hostname/IP does not match certificate's altnames` | SAN thiếu host | thêm host vào map rồi `setup --force`, restart proxy |
-| `403 Forbidden` từ proxy | host không có trong map | kiểm tra `RADAR_MIRROR_MAP` |
+| `403 Forbidden` từ proxy | host không có trong map **và** không phải passthrough | kiểm tra `RADAR_MIRROR_MAP`; host spot (`data-api.binance.vision`) phải nằm trong `PASSTHROUGH_HOSTS` |
+| Log `[RADAR-SPOT] ... 403 Forbidden` | spot gọi host không được proxy cho qua | `RADAR_MIRROR_PORT=8898 node scripts/radar-mirror.mjs spot-check` (mục §3.1) phải xanh; nếu đỏ, `setup --force` rồi restart proxy |
 | API vẫn 503/451 dù `verify` xanh | nhánh đó dùng `fetch` mà thiếu `NODE_USE_ENV_PROXY=1` | thêm cờ (hoặc dùng `run`) rồi restart dev server |
 | Preview `*.style.dev` trả 404 / chặn origin | chưa mở dev-server preview, hoặc thiếu allowed origin | gọi công cụ preview/dev-server trước; đặt `NEXT_ALLOWED_DEV_ORIGINS=<preview host>` khi chạy `next dev` (chỉ env, không ghi vào file) |
 | Proxy chết sau khi sandbox restart | tiến trình không sống qua checkpoint | chạy lại `run -- ...` (cert vẫn còn) |
