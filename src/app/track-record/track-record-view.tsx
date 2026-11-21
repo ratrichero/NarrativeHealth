@@ -2,10 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
-import {
-  STALE_SETTLEMENT_AFTER_DAYS,
-  trackRecordFreshness,
-} from "@/lib/backtest/track-record";
+import { trackRecordFreshness } from "@/lib/backtest/track-record";
 import {
   Activity,
   BarChart3,
@@ -98,7 +95,8 @@ export interface RecentItem {
 }
 
 export interface TrackRecordData {
-  params: { feeBps: number; slippageBps: number; roundTripBps: number };
+  /** horizonDays = longest horizon the record covers (7 / 14 / 30 / 60). */
+  params: { feeBps: number; slippageBps: number; roundTripBps: number; horizonDays?: number };
   summary: TrackRecordSummary;
   benchmark: Benchmark | null;
   recent: RecentItem[];
@@ -215,18 +213,20 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
     };
   }, []);
   const todayIso = clock > 0 ? new Date(clock).toISOString().slice(0, 10) : null;
-  const freshness = todayIso ? trackRecordFreshness(s, todayIso) : null;
+  const freshness = todayIso ? trackRecordFreshness(s, todayIso, params.horizonDays) : null;
   const stale = freshness?.stale === true;
-  const staleAgeDays = freshness?.settlementAgeDays ?? freshness?.pickAgeDays ?? null;
   const lastUpdateLabel = s.lastEvaluatedAt
     ? new Date(s.lastEvaluatedAt).toLocaleDateString("vi-VN")
     : null;
-  const staleMessage =
-    freshness?.reason === "no-settlement-stamp"
-      ? `Chưa có dấu chốt nào (lastEvaluatedAt trống) dù đã lưu ${s.totals.picks} pick — không xác nhận được job settlement còn chạy. Pick đã chốt mới nhất: ${s.lastDate ?? "—"}${staleAgeDays != null ? ` (${staleAgeDays} ngày trước)` : ""}. Các số bên dưới chỉ là lịch sử đã lưu, không phải hiệu quả hiện tại.`
-      : freshness?.reason === "settlement-old"
-        ? `Lần chốt gần nhất ${lastUpdateLabel ?? "—"} — ${freshness.settlementAgeDays} ngày trước, vượt ngưỡng ${STALE_SETTLEMENT_AFTER_DAYS} ngày. Pick đã chốt mới nhất: ${s.lastDate ?? "—"}. Số liệu bên dưới đã cũ, không nên đọc như hiệu quả hiện tại.`
-        : "";
+
+  let staleMessage = "";
+  if (freshness?.reason === "no-settlement-stamp") {
+    staleMessage = `Đã chốt ${s.totals.picks} pick nhưng chưa từng ghi nhận lần chốt nào — settlement có thể không chạy. Số bên dưới chỉ là lịch sử đã lưu.`;
+  } else if (freshness?.reason === "settlement-old") {
+    staleMessage = `Lần chốt gần nhất ${lastUpdateLabel ?? "—"}, ${freshness.settlementAgeDays} ngày trước — settlement đã ngừng chốt pick mới.`;
+  } else if (freshness?.reason === "pick-pipeline-old") {
+    staleMessage = `Pick mới nhất đã ${freshness.pickAgeDays} ngày, vượt mức hợp lệ ${freshness.pickLimitDays} ngày (horizon + ân hạn) — pipeline sinh pick có thể đã dừng.`;
+  }
 
   return (
     <div className="space-y-6">
@@ -245,11 +245,6 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
           <p className="text-xs text-slate-500 mt-2">
             {s.firstDate && s.lastDate ? `${s.firstDate} → ${s.lastDate}` : "No settled picks yet"}
             {s.lastEvaluatedAt ? ` · last update ${new Date(s.lastEvaluatedAt).toLocaleDateString()}` : ""}
-            {stale ? (
-              <span className="ml-2 font-medium text-amber-300">
-                dữ liệu cũ {staleAgeDays != null ? `${staleAgeDays} ngày` : "chưa rõ"}
-              </span>
-            ) : null}
           </p>
         </div>
         <div className="shrink-0 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3">
@@ -575,9 +570,7 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
       >
         <Target className="h-3.5 w-3.5" />
         {stale
-          ? `Cập nhật hằng ngày đang gián đoạn — ${
-              lastUpdateLabel ? `lần chốt gần nhất ${lastUpdateLabel}` : "chưa ghi nhận lần chốt nào"
-            }.`
+          ? `Cập nhật hằng ngày đang gián đoạn — lần chốt gần nhất ${lastUpdateLabel ?? "chưa ghi nhận"}.`
           : "Dữ liệu cập nhật mỗi khi refresh hằng ngày và backtest chốt lệnh."}
       </div>
     </div>

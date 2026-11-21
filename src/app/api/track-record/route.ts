@@ -13,10 +13,14 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { topRecommendationPicks, coins, marketPriceDaily } from "@/db/schema";
-import { and, asc, eq, gte, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
 import { addDaysIso } from "@/lib/backtest/engine";
 import { readFeeConfig, computeCostR, computeNetR } from "@/lib/backtest/metrics";
-import { buildTrackRecord, type TrackRecordPickRow } from "@/lib/backtest/track-record";
+import {
+  buildTrackRecord,
+  DEFAULT_FRESHNESS_HORIZON_DAYS,
+  type TrackRecordPickRow,
+} from "@/lib/backtest/track-record";
 import { nonCryptoCoinExistsSql } from "@/lib/market/universe";
 
 export const dynamic = "force-dynamic";
@@ -106,6 +110,9 @@ export async function GET() {
           sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
         )
       )
+      // Newest first so the capped read still contains the latest pick and the
+      // latest settlement stamp (freshness reads their max).
+      .orderBy(desc(topRecommendationPicks.dataDate))
       .limit(MAX_ROWS);
 
     const picks: TrackRecordPickRow[] = rows.map((r) => {
@@ -155,6 +162,15 @@ export async function GET() {
         exitRNet: p.exitRNet,
       }));
 
+    // Longest horizon the record covers: the public page compares the newest
+    // pick's age against it, so a 30/60-day deployment is not called stale just
+    // because its newest closed pick is legitimately that old.
+    const horizons = rows
+      .map((r) => r.backtestHorizonDays ?? 0)
+      .filter((h) => h > 0);
+    const horizonDays =
+      horizons.length > 0 ? Math.max(...horizons) : DEFAULT_FRESHNESS_HORIZON_DAYS;
+
     return NextResponse.json({
       success: true,
       data: {
@@ -162,6 +178,7 @@ export async function GET() {
           feeBps: fee.feeBps,
           slippageBps: fee.slippageBps,
           roundTripBps: fee.roundTripBps,
+          horizonDays,
         },
         summary,
         benchmark,

@@ -240,16 +240,25 @@ export function buildTrackRecord(rows: readonly TrackRecordPickRow[]): TrackReco
 // the newest settled pick was weeks old. These thresholds turn that into an
 // explicit warning instead of a silent lie.
 //
-// The authoritative clock is `lastEvaluatedAt`: settlement runs with every
-// refresh, so in a healthy deployment some pick closes almost every day and
-// the stamp stays recent. `lastDate` describes what the numbers COVER — with a
-// 14-day horizon the newest settled pick should be ~14 days old, so it cannot
-// carry a tight threshold on its own; it is reported in the warning text.
+// Two clocks, because they fail differently:
+//   * `lastEvaluatedAt` — settlement stamps a pick the moment its window
+//     closes, so in a healthy deployment some pick closes almost every day and
+//     the stamp stays recent. Horizon-independent: a 60-day window delays
+//     WHICH pick closes, not WHEN the write happens.
+//   * `lastDate` — what the numbers COVER. Its age legitimately trails by the
+//     configured horizon (a fresh 60-day record's newest pick is ~60 days old),
+//     so it is only compared against horizon + grace, never a fixed limit.
 
-/** No settlement stamp for this many days → the job is not running. */
+/** Grace on top of the horizon before a missing new pick is a warning. */
 export const STALE_SETTLEMENT_AFTER_DAYS = 5;
 
-export type TrackRecordStaleness = "no-settlement-stamp" | "settlement-old";
+/** Horizon assumed when the caller does not pass the one the record uses. */
+export const DEFAULT_FRESHNESS_HORIZON_DAYS = 14;
+
+export type TrackRecordStaleness =
+  | "no-settlement-stamp"
+  | "settlement-old"
+  | "pick-pipeline-old";
 
 export interface TrackRecordFreshness {
   stale: boolean;
@@ -258,21 +267,30 @@ export interface TrackRecordFreshness {
   pickAgeDays: number | null;
   /** Age of the most recent settlement stamp, in days (null = never stamped). */
   settlementAgeDays: number | null;
+  /** Newest pick age a healthy record may have: horizon + grace. */
+  pickLimitDays: number;
 }
 
 /**
  * Is the public record still being updated? `today` is the business date
- * (YYYY-MM-DD). An empty record is "accumulating", not stale.
+ * (YYYY-MM-DD) and `horizonDays` the longest horizon the record covers (30/60
+ * on long-window deployments). An empty record is "accumulating", not stale.
  */
 export function trackRecordFreshness(
   summary: Pick<TrackRecordSummary, "totals" | "lastDate" | "lastEvaluatedAt">,
-  today: string
+  today: string,
+  horizonDays: number = DEFAULT_FRESHNESS_HORIZON_DAYS
 ): TrackRecordFreshness {
+  const horizon =
+    Number.isFinite(horizonDays) && horizonDays > 0
+      ? horizonDays
+      : DEFAULT_FRESHNESS_HORIZON_DAYS;
   const pickAgeDays = summary.lastDate ? daysBetween(summary.lastDate, today) : null;
   const settlementAgeDays = summary.lastEvaluatedAt
     ? daysBetween(summary.lastEvaluatedAt.slice(0, 10), today)
     : null;
-  const base = { pickAgeDays, settlementAgeDays };
+  const pickLimitDays = horizon + STALE_SETTLEMENT_AFTER_DAYS;
+  const base = { pickAgeDays, settlementAgeDays, pickLimitDays };
 
   if (summary.totals.picks === 0) return { ...base, stale: false, reason: null };
 
@@ -283,6 +301,11 @@ export function trackRecordFreshness(
   }
   if (settlementAgeDays > STALE_SETTLEMENT_AFTER_DAYS) {
     return { ...base, stale: true, reason: "settlement-old" };
+  }
+  // Settlement keeps stamping (some other horizon still closes) while no new
+  // pick arrives: the numbers are frozen even though the job looks alive.
+  if (pickAgeDays != null && pickAgeDays > pickLimitDays) {
+    return { ...base, stale: true, reason: "pick-pipeline-old" };
   }
   return { ...base, stale: false, reason: null };
 }

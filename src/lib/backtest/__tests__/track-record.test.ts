@@ -170,4 +170,42 @@ describe("FRESH-01 trackRecordFreshness", () => {
     );
     expect(f).toMatchObject({ stale: false, reason: null, pickAgeDays: null, settlementAgeDays: null });
   });
+
+  // Horizon 30/60: the newest closed pick is legitimately as old as the
+  // horizon, so pick age is only judged against horizon + grace.
+  test("horizon 60: pick mới nhất 60 ngày tuổi vẫn bình thường", () => {
+    const f = trackRecordFreshness(
+      summary({ lastDate: "2026-09-22", lastEvaluatedAt: "2026-11-20T02:00:00.000Z" }),
+      "2026-11-21",
+      60
+    );
+    expect(f).toMatchObject({ stale: false, reason: null, pickAgeDays: 60, pickLimitDays: 65 });
+  });
+
+  test("horizon 30: pick mới nhất 34 ngày tuổi vẫn bình thường", () => {
+    const f = trackRecordFreshness(
+      summary({ lastDate: "2026-10-18", lastEvaluatedAt: "2026-11-20T02:00:00.000Z" }),
+      "2026-11-21",
+      30
+    );
+    expect(f).toMatchObject({ stale: false, reason: null, pickAgeDays: 34, pickLimitDays: 35 });
+  });
+
+  test("horizon 60: vượt 65 ngày dù settlement còn chốt → pipeline pick đã đứng", () => {
+    const f = trackRecordFreshness(
+      summary({ lastDate: "2026-09-16", lastEvaluatedAt: "2026-11-20T02:00:00.000Z" }),
+      "2026-11-21",
+      60
+    );
+    expect(f).toMatchObject({ stale: true, reason: "pick-pipeline-old", pickAgeDays: 66 });
+  });
+
+  test("horizon 30: vượt 35 ngày → pipeline pick đã đứng", () => {
+    const f = trackRecordFreshness(
+      summary({ lastDate: "2026-10-16", lastEvaluatedAt: "2026-11-20T02:00:00.000Z" }),
+      "2026-11-21",
+      30
+    );
+    expect(f).toMatchObject({ stale: true, reason: "pick-pipeline-old", pickAgeDays: 36 });
+  });
 });
