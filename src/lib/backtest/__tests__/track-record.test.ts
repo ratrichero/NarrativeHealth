@@ -2,8 +2,11 @@
 
 import {
   buildTrackRecord,
+  trackRecordFreshness,
+  STALE_SETTLEMENT_AFTER_DAYS,
   TRACK_RECORD_METRICS_VERSION,
   type TrackRecordPickRow,
+  type TrackRecordSummary,
 } from "../track-record";
 
 function row(over: Partial<TrackRecordPickRow>): TrackRecordPickRow {
@@ -120,5 +123,51 @@ describe("TRACK-01 buildTrackRecord", () => {
     expect(s.firstDate).toBe("2026-09-01");
     expect(s.lastDate).toBe("2026-09-10");
     expect(s.lastEvaluatedAt).toBe("2026-09-30T00:00:00.000Z");
+  });
+});
+
+// FRESH-01 — cảnh báo dữ liệu cũ trên trang công khai.
+describe("FRESH-01 trackRecordFreshness", () => {
+  const summary = (over: Partial<TrackRecordSummary>): TrackRecordSummary =>
+    ({
+      ...buildTrackRecord([]),
+      totals: { picks: 90, trades: 80, wins: 43, losses: 37, noHit: 10, skipped: 0 },
+      firstDate: "2026-09-30",
+      lastDate: "2026-11-06",
+      lastEvaluatedAt: "2026-11-07T02:00:00.000Z",
+      ...over,
+    }) as TrackRecordSummary;
+
+  test("record đang chạy bình thường thì không cảnh báo", () => {
+    const f = trackRecordFreshness(summary({}), "2026-11-09");
+    expect(f).toMatchObject({ stale: false, reason: null, settlementAgeDays: 2, pickAgeDays: 3 });
+  });
+
+  test("có pick nhưng chưa từng có dấu chốt → cảnh báo, không im lặng", () => {
+    const f = trackRecordFreshness(summary({ lastEvaluatedAt: null }), "2026-11-21");
+    expect(f).toMatchObject({ stale: true, reason: "no-settlement-stamp", settlementAgeDays: null });
+    expect(f.pickAgeDays).toBe(15);
+  });
+
+  test("lần chốt gần nhất quá ngưỡng → cảnh báo (job settlement đứng)", () => {
+    const f = trackRecordFreshness(summary({}), "2026-11-21");
+    expect(f.stale).toBe(true);
+    expect(f.reason).toBe("settlement-old");
+    expect(f.settlementAgeDays).toBe(14);
+    expect(f.settlementAgeDays!).toBeGreaterThan(STALE_SETTLEMENT_AFTER_DAYS);
+  });
+
+  test("đúng ngưỡng thì chưa cảnh báo", () => {
+    const f = trackRecordFreshness(summary({}), "2026-11-12");
+    expect(f.settlementAgeDays).toBe(STALE_SETTLEMENT_AFTER_DAYS);
+    expect(f.stale).toBe(false);
+  });
+
+  test("track record rỗng là đang tích luỹ, không phải dữ liệu cũ", () => {
+    const f = trackRecordFreshness(
+      { totals: { picks: 0, trades: 0, wins: 0, losses: 0, noHit: 0, skipped: 0 }, lastDate: null, lastEvaluatedAt: null },
+      "2026-11-21"
+    );
+    expect(f).toMatchObject({ stale: false, reason: null, pickAgeDays: null, settlementAgeDays: null });
   });
 });

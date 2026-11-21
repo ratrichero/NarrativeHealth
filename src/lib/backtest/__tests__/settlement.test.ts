@@ -33,6 +33,8 @@ jest.mock("@/db", () => ({
   },
 }));
 
+import { getTableColumns } from "drizzle-orm";
+import { topRecommendationPicks } from "@/db/schema";
 import {
   runBacktestSettlement,
   getBacktestStatus,
@@ -153,17 +155,40 @@ describe("BT-06 runBacktestSettlement", () => {
     expect(mockUpdatePayloads[0]).toMatchObject({
       backtestStatus: "SKIPPED",
       backtestOutcome: "NO_SETUP",
-      horizonDays: 14,
+      backtestHorizonDays: 14,
     });
     expect(mockUpdatePayloads[1]).toMatchObject({
       backtestStatus: "EVALUATED",
       backtestOutcome: "TP1_WIN",
       backtestExitR: 1,
       backtestHitDay: 1,
-      horizonDays: 14,
+      backtestHorizonDays: 14,
     });
-    expect(mockUpdatePayloads[1].evaluatedAt).toBeInstanceOf(Date);
-    expect(typeof mockUpdatePayloads[1].runId).toBe("string");
+    expect(mockUpdatePayloads[1].backtestEvaluatedAt).toBeInstanceOf(Date);
+    expect(typeof mockUpdatePayloads[1].backtestRunId).toBe("string");
+  });
+
+  test("every update payload key is a real column of top_recommendation_picks", async () => {
+    // Regression: the settlement stamp once used `evaluatedAt` / `runId` /
+    // `horizonDays`, which are not table columns — Drizzle rendered SQL with
+    // unknown identifiers, every settlement write failed, and picks stayed
+    // PENDING forever with last_evaluated_at = null. The mock above accepts
+    // any key, so assert the payload against the actual schema here.
+    mockSelectResults.push([
+      pendingRow({ pickId: 1, hasSetup: 0, entryMid: null, tp1: null, stopLoss: null }),
+      pendingRow({ pickId: 2, dataDate: "2026-01-05" }),
+    ]);
+    mockSelectResults.push(candles(1, "2026-01-05", 14, 101, 99));
+
+    await runBacktestSettlement();
+
+    expect(mockUpdatePayloads).toHaveLength(2);
+    const columns = getTableColumns(topRecommendationPicks);
+    for (const payload of mockUpdatePayloads) {
+      for (const key of Object.keys(payload)) {
+        expect(Object.prototype.hasOwnProperty.call(columns, key)).toBe(true);
+      }
+    }
   });
 
   test("closed window without TP/SL hit → EXPIRED (NO_HIT)", async () => {

@@ -229,10 +229,15 @@ export async function runBacktestSettlement(
   let errors = 0;
   const outcomes: SettlementOutcome[] = [];
 
+  // Column keys must be the Drizzle property names (backtestHorizonDays /
+  // backtestRunId / backtestEvaluatedAt). Drizzle resolves update keys through
+  // the table's columns, so a bare `evaluatedAt: new Date()` (an earlier bug)
+  // makes every settlement write throw "column does not exist" — picks stayed
+  // PENDING forever and last_evaluated_at was never stamped.
   const stamp = {
-    horizonDays: horizon,
-    runId,
-    evaluatedAt: new Date(),
+    backtestHorizonDays: horizon,
+    backtestRunId: runId,
+    backtestEvaluatedAt: new Date(),
   };
 
   // SKIPPED — no usable setup, mark once, never touched again.

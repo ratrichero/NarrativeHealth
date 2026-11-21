@@ -52,3 +52,48 @@ export function isEligibleTicker(
   if (age !== null && age < MIN_LISTING_AGE_DAYS) return false;
   return true;
 }
+
+// ─── UNIVERSE-01: crypto-only picks ──────────────────────────────────────
+//
+// `coins` also contains tokenized equity tickers (AAPL, AMZN, ASML, MSTR,
+// NVDA, SPCX) under the "STOCKs" narrative. They carry Binance-style perp
+// pairs and health scores like every coin, so the top-pick pipeline used to
+// select them and the public track record reported them as crypto trades — a
+// performance claim mixing asset classes.
+//
+// The exclusion lives here, next to the rest of the universe rules, and is
+// applied by BOTH pick generation and the public track record. It is defined
+// by narrative (the business classification) because a coin is non-crypto if
+// ANY of its narratives is a reserved non-crypto one, regardless of which
+// narrative is "primary".
+
+import { sql, type SQL } from "drizzle-orm";
+import type { AnyColumn } from "drizzle-orm";
+
+/** Narrative names reserved for non-crypto (tokenized equity) instruments. */
+export const NON_CRYPTO_NARRATIVES = ["STOCKs"] as const;
+
+/** True when a narrative name marks an instrument outside the crypto universe. */
+export function isNonCryptoNarrative(name: string | null | undefined): boolean {
+  if (name == null) return false;
+  const normalized = name.trim().toLowerCase();
+  if (normalized === "") return false;
+  return NON_CRYPTO_NARRATIVES.some((n) => n.toLowerCase() === normalized);
+}
+
+/**
+ * `EXISTS (...)` fragment matching coins that belong to a non-crypto
+ * narrative. Use it negated in a WHERE clause:
+ *   sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
+ */
+export function nonCryptoCoinExistsSql(coinId: AnyColumn | SQL): SQL {
+  const names = sql.join(
+    NON_CRYPTO_NARRATIVES.map((n) => sql`${n}`),
+    sql`, `
+  );
+  return sql`EXISTS (
+    SELECT 1 FROM coin_narratives cn
+    JOIN narratives n ON n.id = cn.narrative_id
+    WHERE cn.coin_id = ${coinId} AND n.name IN (${names})
+  )`;
+}

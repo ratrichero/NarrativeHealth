@@ -1,6 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/Card";
+import {
+  STALE_SETTLEMENT_AFTER_DAYS,
+  trackRecordFreshness,
+} from "@/lib/backtest/track-record";
 import {
   Activity,
   BarChart3,
@@ -196,6 +201,33 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
   const strategyPct = +(s.totalRNet * RISK_PCT_PER_TRADE).toFixed(2);
   const beatsBtc = benchmark != null && strategyPct > benchmark.returnPct;
 
+  // FRESH-01: cùng pattern với cảnh báo snapshot cũ ở /radar — đồng hồ nằm
+  // trong state để render không gọi Date.now() trực tiếp. Ngưỡng tính theo
+  // ngày nên tick mỗi giờ là đủ.
+  const [clock, setClock] = useState(0);
+  useEffect(() => {
+    const tick = () => setClock(Date.now());
+    const first = setTimeout(tick, 0);
+    const id = setInterval(tick, 60 * 60_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(id);
+    };
+  }, []);
+  const todayIso = clock > 0 ? new Date(clock).toISOString().slice(0, 10) : null;
+  const freshness = todayIso ? trackRecordFreshness(s, todayIso) : null;
+  const stale = freshness?.stale === true;
+  const staleAgeDays = freshness?.settlementAgeDays ?? freshness?.pickAgeDays ?? null;
+  const lastUpdateLabel = s.lastEvaluatedAt
+    ? new Date(s.lastEvaluatedAt).toLocaleDateString("vi-VN")
+    : null;
+  const staleMessage =
+    freshness?.reason === "no-settlement-stamp"
+      ? `Chưa có dấu chốt nào (lastEvaluatedAt trống) dù đã lưu ${s.totals.picks} pick — không xác nhận được job settlement còn chạy. Pick đã chốt mới nhất: ${s.lastDate ?? "—"}${staleAgeDays != null ? ` (${staleAgeDays} ngày trước)` : ""}. Các số bên dưới chỉ là lịch sử đã lưu, không phải hiệu quả hiện tại.`
+      : freshness?.reason === "settlement-old"
+        ? `Lần chốt gần nhất ${lastUpdateLabel ?? "—"} — ${freshness.settlementAgeDays} ngày trước, vượt ngưỡng ${STALE_SETTLEMENT_AFTER_DAYS} ngày. Pick đã chốt mới nhất: ${s.lastDate ?? "—"}. Số liệu bên dưới đã cũ, không nên đọc như hiệu quả hiện tại.`
+        : "";
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -213,6 +245,11 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
           <p className="text-xs text-slate-500 mt-2">
             {s.firstDate && s.lastDate ? `${s.firstDate} → ${s.lastDate}` : "No settled picks yet"}
             {s.lastEvaluatedAt ? ` · last update ${new Date(s.lastEvaluatedAt).toLocaleDateString()}` : ""}
+            {stale ? (
+              <span className="ml-2 font-medium text-amber-300">
+                dữ liệu cũ {staleAgeDays != null ? `${staleAgeDays} ngày` : "chưa rõ"}
+              </span>
+            ) : null}
           </p>
         </div>
         <div className="shrink-0 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3">
@@ -224,6 +261,12 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
           </div>
         </div>
       </div>
+
+      {stale ? (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+          <strong>Dữ liệu cũ.</strong> {staleMessage}
+        </div>
+      ) : null}
 
       {noTrades ? (
         <Card>
@@ -525,9 +568,17 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
         </div>
       </SectionCard>
 
-      <div className="flex items-center gap-2 text-xs text-slate-600">
+      <div
+        className={`flex items-center gap-2 text-xs ${
+          stale ? "font-medium text-amber-300/80" : "text-slate-600"
+        }`}
+      >
         <Target className="h-3.5 w-3.5" />
-        Dữ liệu cập nhật mỗi khi refresh hằng ngày và backtest chốt lệnh.
+        {stale
+          ? `Cập nhật hằng ngày đang gián đoạn — ${
+              lastUpdateLabel ? `lần chốt gần nhất ${lastUpdateLabel}` : "chưa ghi nhận lần chốt nào"
+            }.`
+          : "Dữ liệu cập nhật mỗi khi refresh hằng ngày và backtest chốt lệnh."}
       </div>
     </div>
   );

@@ -23,6 +23,7 @@ import {
 import { eq, and, desc, sql } from "drizzle-orm";
 import { getBusinessDate, getHealthStatus } from "@/lib/utils";
 import { persistTopPicks } from "@/lib/p6/refresh/persist-top-picks";
+import { nonCryptoCoinExistsSql } from "@/lib/market/universe";
 
 export const dynamic = "force-dynamic";
 
@@ -297,7 +298,16 @@ export async function GET() {
           eq(features.date, dataDate)
         )
       )
-      .where(and(eq(healthScores.date, dataDate), eq(coins.isActive, true)));
+      .where(
+        and(
+          eq(healthScores.date, dataDate),
+          eq(coins.isActive, true),
+          // UNIVERSE-01: tokenized equity tickers (STOCKs narrative) are not
+          // crypto picks — never select them, so they never reach
+          // top_recommendation_picks or the public track record.
+          sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
+        )
+      );
 
     // ── Classify + score each coin ──
     interface Scored {

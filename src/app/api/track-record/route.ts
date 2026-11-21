@@ -13,10 +13,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { topRecommendationPicks, coins, marketPriceDaily } from "@/db/schema";
-import { and, asc, eq, gte, lte, ne } from "drizzle-orm";
+import { and, asc, eq, gte, lte, ne, sql } from "drizzle-orm";
 import { addDaysIso } from "@/lib/backtest/engine";
 import { readFeeConfig, computeCostR, computeNetR } from "@/lib/backtest/metrics";
 import { buildTrackRecord, type TrackRecordPickRow } from "@/lib/backtest/track-record";
+import { nonCryptoCoinExistsSql } from "@/lib/market/universe";
 
 export const dynamic = "force-dynamic";
 
@@ -92,11 +93,17 @@ export async function GET() {
         backtestEvaluatedAt: topRecommendationPicks.backtestEvaluatedAt,
       })
       .from(topRecommendationPicks)
+      .innerJoin(coins, eq(coins.id, topRecommendationPicks.coinId))
       .where(
         and(
           eq(topRecommendationPicks.pickKind, "GENUINE"),
           eq(topRecommendationPicks.hasSetup, true),
-          ne(topRecommendationPicks.backtestStatus, "PENDING")
+          ne(topRecommendationPicks.backtestStatus, "PENDING"),
+          // UNIVERSE-01: hidden in the DB are tokenized equity picks (NVDA,
+          // AMZN, ...) from before the universe filter existed. A public
+          // crypto record must not count them, so read-time filtering keeps
+          // already-settled stock picks out of the numbers.
+          sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
         )
       )
       .limit(MAX_ROWS);
