@@ -1,8 +1,38 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-11-20
+## Ngày cập nhật: 2026-11-22
 
 ---
+
+## TRACK-01 FORWARD-01 — tách bằng chứng forward khỏi lịch sử backfill (2026-11-22)
+
+Track record công khai trước đây trộn lẫn pick do hệ thống tạo đúng ngày với pick cũ
+được nạp lại (backfill) sau khi giá đã chạy — một lần backfill quá khứ có thể làm đẹp
+win rate mà người đọc không biết. `track-record-v7` tách hai phần bằng `picked_at`:
+
+- **Phân loại thuần** (`src/lib/backtest/track-record.ts`): `pickProvenance` +
+  `partitionByProvenance`. Pick phải được ghi **từ mốc live trở đi** — mốc lấy từ env
+  `LIVE_SINCE` (`YYYY-MM-DD`, parse bằng `parseLiveSince`; sai định dạng thì bỏ qua,
+  không đoán), thiếu env thì suy từ `data_date` sớm nhất của pick forward. Mốc so trên
+  `picked_at` nên pick seed trước ngày live bị loại dù lag bằng 0. Thêm điều kiện lag:
+  `picked_at` lệch `data_date` ≤ `FORWARD_PICK_LAG_DAYS` (1 ngày, đủ cho job chạy sát
+  nửa đêm UTC) → `forward`; lệch nhiều hơn → `backfill` (kể cả backfill chạy sau mốc
+  live); thiếu `picked_at` → `unknown` (không chứng minh được là live nên không vào forward).
+- **API** (`/api/track-record`, export): thêm `data.split = { liveSince, liveSinceSource,
+  forwardPicks, backfilledPicks, unknownPicks, lagGraceDays, summary, benchmark, btc }`;
+  `liveSinceSource` = `env` (LIVE_SINCE cấu hình) hoặc `derived` (suy từ picked_at). `summary`
+  hiện tại giữ nguyên nghĩa = **toàn bộ lịch sử** (gồm backfill); `split.summary` chỉ
+  tính pick forward, và `split.benchmark`/`split.btc` đo trên đúng cửa sổ các lệnh
+  forward (không dùng cửa sổ lịch sử), nên alpha forward là so sánh cùng kỳ thật.
+- **UI** `/track-record`: khối “Forward record — kể từ mốc live” đứng trên cùng, nêu mốc
+  live kèm nguồn (`LIVE_SINCE` cấu hình hay suy từ `picked_at`), số pick forward/backfill
+  bị loại, và hiện riêng **số lệnh / win rate (Wilson CI) / net R** kể từ live, cộng
+  drawdown và alpha kèm CI; dưới ngưỡng 30 lệnh / 5 episode thì ghi rõ *“Đang tích lũy,
+  chưa đủ mẫu”*. Các KPI cũ nằm dưới tiêu đề “Toàn bộ lịch sử (gồm pick backfill)”.
+  Phần Phương pháp giải thích quy tắc phân loại.
+- **Không đổi dữ liệu**: không cần migration — `picked_at` đã có từ 0031; hàng cũ được
+  migration gán `picked_at = now()` nên tự nhiên rơi vào backfill thay vì được tính là
+  forward.
 
 ## RADAR-LIVE-MIRROR — đóng gói cách vượt geo-block 451 thành script + runbook (2026-11-20)
 
