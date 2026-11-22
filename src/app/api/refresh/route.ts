@@ -754,17 +754,21 @@ export async function POST(request: NextRequest) {
     // Chốt pick PENDING đã đóng cửa sổ horizon (mặc định 14d) NGAY sau khi
     // data mới về — tab Backtest không còn phụ thuộc bấm nút tay. Idempotent:
     // chỉ đụng pick PENDING, kết quả đã chốt bất biến. Lỗi không phá refresh.
+    let settleErrors = 0;
     try {
       const { runBacktestSettlement, DEFAULT_HORIZON } = await import(
         "@/lib/backtest/settlement"
       );
       const bt = await runBacktestSettlement({ horizon: DEFAULT_HORIZON });
+      if (!bt.dryRun) settleErrors = bt.errors;
       console.log(
         bt.dryRun
           ? "[BT-AUTO] unexpected dry-run result"
           : `[BT-AUTO] horizon=${bt.horizon} evaluated=${bt.evaluated} expired=${bt.expired} skipped=${bt.skipped} stillOpen=${bt.stillOpen} noData=${bt.noData} errors=${bt.errors}`
       );
     } catch (btError) {
+      // Lần chốt ném lỗi = một lần chạy hỏng — báo như run có errors.
+      settleErrors = 1;
       console.error("Backtest auto-settle error (non-blocking):", btError);
     }
 
@@ -782,6 +786,25 @@ export async function POST(request: NextRequest) {
       }
     } catch (digestError) {
       console.error("Backtest digest error (non-blocking):", digestError);
+    }
+
+    // -----------------------------------------------------------------------
+    // BT-HEALTH: cảnh báo chủ động khi settlement chết âm thầm (non-blocking)
+    // -----------------------------------------------------------------------
+    // Banner /track-record chỉ thấy khi mở web. Kiểm tra ngay sau khi chốt:
+    // chốt cuối quá ngưỡng, run vừa rồi có lỗi, hoặc pick sẵn sàng chốt treo
+    // nhiều ngày — gửi qua kênh alert sẵn có (Telegram/webhook/email), dedupe
+    // theo loại issue + cooldown. Lỗi ở đây không phá refresh.
+    try {
+      const { runBacktestHealthCheck } = await import("@/lib/backtest/health");
+      const health = await runBacktestHealthCheck({ errors: settleErrors });
+      if (health.issues.length > 0) {
+        console.log(
+          `[BT-HEALTH] issues=${health.issues.map((issue) => issue.kind).join(",")} alerted=${health.alerted}`
+        );
+      }
+    } catch (healthError) {
+      console.error("Backtest health check error (non-blocking):", healthError);
     }
 
     return NextResponse.json({
