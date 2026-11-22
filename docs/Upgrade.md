@@ -10,8 +10,9 @@ Track record công khai trước đây trộn lẫn pick do hệ thống tạo �
 được nạp lại (backfill) sau khi giá đã chạy — một lần backfill quá khứ có thể làm đẹp
 win rate mà người đọc không biết. `track-record-v7` tách hai phần bằng `picked_at`:
 
-- **Phân loại thuần** (`src/lib/backtest/track-record.ts`): `pickProvenance` +
-  `partitionByProvenance`. Pick phải được ghi **từ mốc live trở đi** — mốc lấy từ env
+- **Phân loại thuần** (`src/lib/backtest/track-record.ts`): một quy tắc duy nhất
+  `pickProvenance`, được `readTrackRecord` gọi một lần và gắn nhãn lên từng pick
+  (trang và file export dùng chung nhãn đó). Pick phải được ghi **từ mốc live trở đi** — mốc lấy từ env
   `LIVE_SINCE` (`YYYY-MM-DD`, parse bằng `parseLiveSince`; sai định dạng thì bỏ qua,
   không đoán), thiếu env thì suy từ `data_date` sớm nhất của pick forward. Mốc so trên
   `picked_at` nên pick seed trước ngày live bị loại dù lag bằng 0. Thêm điều kiện lag:
@@ -20,7 +21,8 @@ win rate mà người đọc không biết. `track-record-v7` tách hai phần b
   live); thiếu `picked_at` → `unknown` (không chứng minh được là live nên không vào forward).
 - **API** (`/api/track-record`, export): thêm `data.split = { liveSince, liveSinceSource,
   forwardPicks, backfilledPicks, unknownPicks, lagGraceDays, summary, benchmark, btc }`;
-  `liveSinceSource` = `env` (LIVE_SINCE cấu hình) hoặc `derived` (suy từ picked_at). `summary`
+  `liveSinceSource` = `env` (LIVE_SINCE cấu hình), `invalid-env` (env có nhưng sai định dạng,
+  đã bị bỏ qua) hoặc `derived` (suy từ picked_at). `summary`
   hiện tại giữ nguyên nghĩa = **toàn bộ lịch sử** (gồm backfill); `split.summary` chỉ
   tính pick forward, và `split.benchmark`/`split.btc` đo trên đúng cửa sổ các lệnh
   forward (không dùng cửa sổ lịch sử), nên alpha forward là so sánh cùng kỳ thật.
@@ -30,9 +32,20 @@ win rate mà người đọc không biết. `track-record-v7` tách hai phần b
   drawdown và alpha kèm CI; dưới ngưỡng 30 lệnh / 5 episode thì ghi rõ *“Đang tích lũy,
   chưa đủ mẫu”*. Các KPI cũ nằm dưới tiêu đề “Toàn bộ lịch sử (gồm pick backfill)”.
   Phần Phương pháp giải thích quy tắc phân loại.
-- **Không đổi dữ liệu**: không cần migration — `picked_at` đã có từ 0031; hàng cũ được
-  migration gán `picked_at = now()` nên tự nhiên rơi vào backfill thay vì được tính là
-  forward.
+- **ORIGIN-01 — nguồn gốc ghi lúc insert (`track-record-v8`)**: heuristic
+  `picked_at − data_date ≤ 1 ngày` không phân biệt được pick live thật với lượt chạy bù cho
+  ngày hôm trước (cả hai đều được ghi sáng hôm sau). `top_recommendation_picks` có thêm cột
+  `picked_origin` (`live` / `backfill`, migration `0039`) do `persistTopPicks` ghi **bắt buộc**;
+  route dashboard đánh dấu `live` chỉ khi `data_date` đúng ngày chạy, còn lại `backfill`.
+  Quy tắc: `backfill` **hạ** nhãn ngay (kể cả lag 0, kể cả thiếu `picked_at`); `live` vẫn phải
+  qua `LIVE_SINCE` + quy tắc lag — origin không bao giờ nâng một pick lên forward. CSV thêm
+  cột `picked_origin`, JSON có `pickedOrigin` từng trade.
+- **Triển khai**: chạy `drizzle/migrations/0039_pick_origin.sql` **trước** khi deploy code mới —
+  insert pick sẽ lỗi nếu cột chưa tồn tại. Migration idempotent (`ADD COLUMN IF NOT EXISTS`),
+  không DEFAULT nên không rewrite bảng.
+- **Không đổi lịch sử**: `picked_at` đã có từ 0031; hàng cũ `picked_origin = NULL` giữ nguyên
+  heuristic cũ nên không bị đổi nhãn hồi tố, và hàng cũ được migration gán
+  `picked_at = now()` vẫn tự nhiên rơi vào backfill.
 
 ## RADAR-LIVE-MIRROR — đóng gói cách vượt geo-block 451 thành script + runbook (2026-11-20)
 
