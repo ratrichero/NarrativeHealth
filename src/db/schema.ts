@@ -1719,6 +1719,38 @@ export const topRecommendationPicks = pgTable(
 export type TopRecommendationPick = typeof topRecommendationPicks.$inferSelect;
 export type NewTopRecommendationPick = typeof topRecommendationPicks.$inferInsert;
 
+/**
+ * BT-10 — Kết quả settlement cho TỪNG horizon, append-only.
+ *
+ * `top_recommendation_picks` chỉ giữ kết quả của horizon đã chốt (auto-settle
+ * 14d), nên câu hỏi "setup này thắng ở 7d hay chỉ thắng ở 60d?" không trả lời
+ * được và không thể tính lại sau khi đổi horizon. Mỗi lần chốt ghi thêm một
+ * dòng cho từng horizon đã đóng window; giữ nguyên lịch sử, không UPDATE.
+ */
+export const backtestHorizonResults = pgTable(
+  "backtest_horizon_results",
+  {
+    id: serial("id").primaryKey(),
+    pickId: integer("pick_id")
+      .notNull()
+      .references(() => topRecommendationPicks.id, { onDelete: "cascade" }),
+    horizonDays: integer("horizon_days").notNull(),
+    outcome: varchar("outcome", { length: 20 }).notNull(),
+    exitR: real("exit_r"),
+    hitDay: integer("hit_day"),
+    entryFilled: boolean("entry_filled"),
+    runId: varchar("run_id", { length: 40 }),
+    evaluatedAt: timestamp("evaluated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("bt_horizon_results_unique").on(table.pickId, table.horizonDays),
+    index("bt_horizon_results_horizon_idx").on(table.horizonDays),
+  ]
+);
+
+export type BacktestHorizonResult = typeof backtestHorizonResults.$inferSelect;
+export type NewBacktestHorizonResult = typeof backtestHorizonResults.$inferInsert;
+
 // ==================== RADAR_BIAS_LOG (RADAR-BIAS-LOG) ====================
 // Append-only: mỗi lượt cohort ghi MỌI row của 3 snapshot (không chỉ cohort 12).
 // Giữ cả feature đầu vào (ATR multiple, funding, OI, RSI, EMA, volume, range,

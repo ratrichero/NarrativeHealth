@@ -11,25 +11,51 @@
 
 const mockSelectResults: unknown[][] = [];
 const mockUpdatePayloads: Array<Record<string, unknown>> = [];
+/** BT-13: câu SQL chạy trong transaction (khoá advisory phải là câu đầu tiên). */
+const mockExecutedSql: string[] = [];
+
+/** Nối text của một drizzle SQL object để assert được câu lệnh. */
+const sqlText = (query: unknown): string => {
+  const chunks = (query as { queryChunks?: unknown[] })?.queryChunks;
+  if (!Array.isArray(chunks)) return String(query);
+  return chunks
+    .map((c) =>
+      typeof c === "string"
+        ? c
+        : String((c as { value?: unknown })?.value ?? "")
+    )
+    .join("");
+};
+
+const mockExecutor = {
+  select: jest.fn(() => {
+    const rows = mockSelectResults.shift() ?? [];
+    const chain: Record<string, unknown> = {};
+    const self = () => chain;
+    chain.from = self;
+    chain.where = self;
+    chain.orderBy = self;
+    chain.limit = jest.fn(() => Promise.resolve(rows));
+    return chain;
+  }),
+  update: jest.fn(() => ({
+    set: jest.fn((payload: Record<string, unknown>) => {
+      mockUpdatePayloads.push(payload);
+      return { where: jest.fn(() => Promise.resolve(undefined)) };
+    }),
+  })),
+  insert: jest.fn(() => ({ values: jest.fn(() => ({ onConflictDoNothing: jest.fn(() => Promise.resolve(undefined)) })) })),
+  execute: jest.fn((query: unknown) => {
+    mockExecutedSql.push(sqlText(query));
+    return Promise.resolve([]);
+  }),
+};
 
 jest.mock("@/db", () => ({
   db: {
-    select: jest.fn(() => {
-      const rows = mockSelectResults.shift() ?? [];
-      const chain: Record<string, unknown> = {};
-      const self = () => chain;
-      chain.from = self;
-      chain.where = self;
-      chain.orderBy = self;
-      chain.limit = jest.fn(() => Promise.resolve(rows));
-      return chain;
-    }),
-    update: jest.fn(() => ({
-      set: jest.fn((payload: Record<string, unknown>) => {
-        mockUpdatePayloads.push(payload);
-        return { where: jest.fn(() => Promise.resolve(undefined)) };
-      }),
-    })),
+    ...mockExecutor,
+    // Run thật chạy trong transaction (BT-13) — mock chuyển thẳng executor.
+    transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(mockExecutor)),
   },
 }));
 
@@ -67,6 +93,7 @@ const pendingRow = (over: Partial<Record<string, unknown>> = {}) => ({
 beforeEach(() => {
   mockSelectResults.length = 0;
   mockUpdatePayloads.length = 0;
+  mockExecutedSql.length = 0;
 });
 
 /** n ngày liên tiếp SAU dataDate (UTC calendar). */
@@ -230,6 +257,29 @@ describe("BT-06 runBacktestSettlement", () => {
     expect(res.expired).toBe(0);
     expect(res.outcomes).toHaveLength(0);
     expect(mockUpdatePayloads).toHaveLength(0);
+  });
+});
+
+describe("BT-13 settlement transaction + advisory lock", () => {
+  test("run thật lấy pg_advisory_xact_lock TRƯỚC khi đọc/ghi pick", async () => {
+    mockSelectResults.push([
+      pendingRow({ pickId: 1, hasSetup: 0, entryMid: null, tp1: null, stopLoss: null }),
+    ]);
+
+    await runBacktestSettlement({ horizon: 14 });
+
+    // Khoá là statement đầu tiên trong transaction: đọc PENDING phải nằm SAU
+    // khoá, nếu không run song song vẫn thấy pick trước khi run kia chốt.
+    expect(mockExecutedSql.length).toBeGreaterThan(0);
+    expect(mockExecutedSql[0]).toContain("pg_advisory_xact_lock");
+    expect(mockUpdatePayloads).toHaveLength(1);
+  });
+
+  test("dry-run không mở transaction, không lấy khoá", async () => {
+    mockSelectResults.push([]);
+    const res = await runBacktestSettlement({ horizon: 14, dryRun: true });
+    expect(res.dryRun).toBe(true);
+    expect(mockExecutedSql).toHaveLength(0);
   });
 });
 

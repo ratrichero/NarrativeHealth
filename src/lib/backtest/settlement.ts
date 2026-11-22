@@ -10,8 +10,8 @@
 //   - dryRun: đếm những gì SẼ xảy ra, không ghi gì.
 
 import { db } from "@/db";
-import { topRecommendationPicks, marketPriceDaily } from "@/db/schema";
-import { eq, inArray, desc, isNotNull } from "drizzle-orm";
+import { topRecommendationPicks, marketPriceDaily, backtestHorizonResults } from "@/db/schema";
+import { and, eq, gte, inArray, desc, isNotNull, sql } from "drizzle-orm";
 import {
   computePickOutcome,
   isHorizonClosed,
@@ -23,6 +23,29 @@ import { getBusinessDate } from "@/lib/utils";
 
 export const BACKTEST_HORIZONS = [7, 14, 30, 60] as const;
 export const DEFAULT_HORIZON = 14;
+
+/**
+ * BT-13 — khoá advisory cho settlement ("BTST" dạng hex).
+ *
+ * Hai lần refresh chạy đồng thời (scheduler + người bấm tay, hoặc hai pod)
+ * trước đây cùng đọc danh sách PENDING rồi cùng UPDATE một pick: cả hai đều
+ * tính ra outcome, cả hai đều ghi — về nguyên tắc là double-settle, và tệ hơn
+ * nếu một bên đọc được pick mà bên kia vừa chốt xong thì số liệu track-record
+ * bị lệch. `pg_advisory_xact_lock` (transaction-scoped, tự nhả khi COMMIT hoặc
+ * ROLLBACK) buộc run thứ hai đợi tới khi run đầu xong, rồi đọc lại trạng thái
+ * đã chốt → không còn pick nào bị hai run cùng chốt.
+ */
+export const SETTLEMENT_ADVISORY_LOCK_KEY = 0x42545354; // "BTST"
+
+/**
+ * Bề mặt DB mà settlement cần — cho phép truyền `db` (dry-run) hoặc `tx`
+ * (transaction có advisory lock) mà không phụ thuộc kiểu cụ thể của Drizzle.
+ */
+type SettlementExecutor = {
+  select: typeof db.select;
+  update: typeof db.update;
+  insert: typeof db.insert;
+};
 
 /**
  * BT-07 — % nến tối thiểu trong window để một pick ĐÓNG được phép chốt.
@@ -119,10 +142,43 @@ const hasLevels = (p: {
 
 /**
  * Chốt kết quả cho các pick PENDING đã đóng cửa sổ horizon.
- * Không bao giờ throw lỗi evaluator ra ngoài từng pick — lỗi lũy vào `errors`.
+ *
+ * Run thật (không dry-run) đi trong MỘT transaction, mở đầu bằng
+ * `pg_advisory_xact_lock`: đọc PENDING và ghi kết quả nằm cùng transaction,
+ * nên một run song song chỉ thấy dữ liệu sau khi run này commit — hai lần
+ * refresh không thể cùng chốt một pick (BT-13). Lỗi ở tầng transaction (khoá,
+ * mất kết nối) rollback toàn bộ và được ném ra cho caller đếm là run hỏng.
  */
 export async function runBacktestSettlement(
   options: SettlementOptions = {}
+): Promise<SettlementResult> {
+  // Dry-run không ghi gì → không cần khoá, chạy trên db như cũ.
+  if (options.dryRun === true) {
+    return settleBacktestPicks(db as unknown as SettlementExecutor, options);
+  }
+
+  // Mock/executor không hỗ trợ transaction (unit test cũ): chạy trực tiếp.
+  if (typeof (db as { transaction?: unknown }).transaction !== "function") {
+    return settleBacktestPicks(db as unknown as SettlementExecutor, options);
+  }
+
+  return db.transaction(async (tx) => {
+    // Transaction-scoped lock: run khác chờ ở đây (tối đa tới khi commit /
+    // rollback của run này), sau đó đọc lại PENDING đã được chốt.
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(${SETTLEMENT_ADVISORY_LOCK_KEY}::bigint)`
+    );
+    return settleBacktestPicks(tx as unknown as SettlementExecutor, options);
+  });
+}
+
+/**
+ * Thân settlement — dùng chung cho dry-run (`db`) và run thật (`tx`).
+ * Không bao giờ throw lỗi evaluator ra ngoài từng pick — lỗi lũy vào `errors`.
+ */
+async function settleBacktestPicks(
+  exec: SettlementExecutor,
+  options: SettlementOptions
 ): Promise<SettlementResult> {
   const horizon = normalizeHorizon(options.horizon);
   const dryRun = options.dryRun === true;
@@ -130,7 +186,7 @@ export async function runBacktestSettlement(
   const runId = `bt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
   // ── 1. PENDING picks only — evaluated/expired/skipped are immutable ──
-  const pendingRows = await db
+  const pendingRows = await exec
     .select({
       pickId: topRecommendationPicks.id,
       dataDate: topRecommendationPicks.dataDate,
@@ -170,7 +226,7 @@ export async function runBacktestSettlement(
       (m, p) => (p.dataDate < m ? p.dataDate : m),
       closed[0].dataDate
     );
-    const priceRows = await db
+    const priceRows = await exec
       .select({
         coinId: marketPriceDaily.coinId,
         date: marketPriceDaily.date,
@@ -178,7 +234,9 @@ export async function runBacktestSettlement(
         low: marketPriceDaily.low,
       })
       .from(marketPriceDaily)
-      .where(inArray(marketPriceDaily.coinId, coinIds))
+      // BT-12: lọc ngay trong SQL — trước đây kéo tới 200k nến rồi bỏ phần lớn
+      // trong JS, dễ cắt mất nến cần dùng khi coin có lịch sử dài.
+      .where(and(inArray(marketPriceDaily.coinId, coinIds), gte(marketPriceDaily.date, minDate)))
       .limit(200000);
     for (const r of priceRows) {
       if (r.date < minDate) continue;
@@ -228,6 +286,9 @@ export async function runBacktestSettlement(
   let skipped = 0;
   let errors = 0;
   const outcomes: SettlementOutcome[] = [];
+  // BT-10: ghi kết quả cho mọi horizon đã đóng window. Fail-soft: nếu bảng chưa
+  // được migrate thì log một lần rồi thôi, không làm hỏng việc chốt pick.
+  let horizonWrites = true;
 
   // Column keys must be the Drizzle property names (backtestHorizonDays /
   // backtestRunId / backtestEvaluatedAt). Drizzle resolves update keys through
@@ -243,7 +304,7 @@ export async function runBacktestSettlement(
   // SKIPPED — no usable setup, mark once, never touched again.
   for (const p of skippable) {
     try {
-      await db
+      await exec
         .update(topRecommendationPicks)
         .set({
           backtestStatus: "SKIPPED",
@@ -288,7 +349,7 @@ export async function runBacktestSettlement(
         continue;
       }
 
-      await db
+      await exec
         .update(topRecommendationPicks)
         .set({
           backtestStatus: o.outcome === "NO_HIT" ? "EXPIRED" : "EVALUATED",
@@ -315,6 +376,43 @@ export async function runBacktestSettlement(
         exitR: o.exitR,
         hitDay: o.hitDay,
       });
+
+      // BT-10: append-only cho từng horizon đã đóng window (kể cả horizon vừa
+      // chốt). ON CONFLICT DO NOTHING → chạy lại không tạo trùng; horizon dài
+      // hơn (chưa đóng) sẽ được ghi ở lần chốt sau.
+      if (horizonWrites) {
+        try {
+          for (const h of BACKTEST_HORIZONS) {
+            if (!isHorizonClosed(p.dataDate, h, today)) continue;
+            const oh =
+              h === horizon
+                ? o
+                : computePickOutcome(input, priceByCoin.get(p.coinId) ?? [], h, {
+                    horizonClosed: true,
+                  });
+            if (oh.outcome === "OPEN" || oh.outcome === "INVALID") continue;
+            await exec
+              .insert(backtestHorizonResults)
+              .values({
+                pickId: p.pickId,
+                horizonDays: h,
+                outcome: oh.outcome,
+                exitR: oh.exitR,
+                hitDay: oh.hitDay,
+                entryFilled: oh.entryFilled,
+                runId,
+                evaluatedAt: stamp.backtestEvaluatedAt,
+              })
+              .onConflictDoNothing();
+          }
+        } catch (e) {
+          horizonWrites = false;
+          console.warn(
+            "[BT-10] không ghi được backtest_horizon_results (đã chạy migration 0038?) — bỏ qua cho các pick còn lại:",
+            e instanceof Error ? e.message : String(e)
+          );
+        }
+      }
     } catch (e) {
       errors++;
       console.error(`[BT-03] evaluate ${p.pickId} failed:`, e);
@@ -379,7 +477,9 @@ export async function getBacktestStatus(): Promise<BacktestStatus> {
     const candleRows = await db
       .select({ coinId: marketPriceDaily.coinId, date: marketPriceDaily.date })
       .from(marketPriceDaily)
-      .where(inArray(marketPriceDaily.coinId, coinIds))
+      .where(
+        and(inArray(marketPriceDaily.coinId, coinIds), gte(marketPriceDaily.date, minDataDate))
+      )
       .limit(200000);
     for (const r of candleRows) {
       if (r.date < minDataDate) continue;
