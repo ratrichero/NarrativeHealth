@@ -1,7 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { schedulerLogs } from "@/db/schema";
 import { lt, eq } from "drizzle-orm";
+import { runtimeGuardResponse } from "@/lib/env/route-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +10,11 @@ export const dynamic = "force-dynamic";
 const STALE_TIMEOUT = 15 * 60 * 1000;
 
 // POST - Clean up stale STARTED jobs
-export async function POST() {
+export async function POST(request: NextRequest) {
+  // ENV-GUARD-01: sửa scheduler_logs production — local mặc định read-only.
+  const blocked = runtimeGuardResponse(request, "write");
+  if (blocked) return blocked;
+
   try {
     const now = new Date();
     const staleTime = new Date(now.getTime() - STALE_TIMEOUT);

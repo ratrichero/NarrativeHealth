@@ -7,6 +7,7 @@ import {
   runP3ExecutionLoop,
   type P3ExecutionLoopOptions,
 } from "@/lib/p3/execution-loop";
+import { runtimeGuardResponse } from "@/lib/env/route-guard";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -64,6 +65,10 @@ async function checkP3Lock(): Promise<{ isLocked: boolean; lockInfo?: unknown }>
  *                  (or FAILED), and runs the execution loop.
  */
 export async function POST(request: NextRequest) {
+  // ENV-GUARD-01: P3 loop ghi DB production — local mặc định read-only.
+  const blocked = runtimeGuardResponse(request, "scheduler");
+  if (blocked) return blocked;
+
   const startTime = Date.now();
   const body = await request.json().catch(() => ({}));
   const dryRun = body.dryRun === true;

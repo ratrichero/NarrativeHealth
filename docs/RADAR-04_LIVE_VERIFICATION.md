@@ -223,3 +223,60 @@ Kết quả hit rate **chưa** kết luận được scoring tốt/xấu cho t�
 - Không đụng P3/P4/P5/P6, không thêm ngữ nghĩa BUY/SELL.
 - Không đổi công thức scoring, cohort selection hay rate limit.
 - Không bật `RADAR_DEMO` ở production.
+
+---
+
+## 8. Live verify 2026-11-21 — đủ mẫu ≥30/bias, kết luận scoring có giới hạn
+
+Nguồn: production DB (`radar_bias_log` + `radar_bias_outcome`), engine **v2**, cửa sổ
+`2026-11-19T09:23Z` → `2026-11-21T09:53Z` (2 ngày + 2 cửa sổ lẻ; 30 / 48 / 20 lượt ghi theo ngày
+UTC — ngày đầu và ngày cuối là một phần ngày, ~21 row/lượt). Không phải demo: 2 149 tín hiệu,
+5 074 outcome đã tính. Mọi bias đều vượt 30 tín hiệu đã đủ tuổi ở **1h, 4h, 24h**; **3d/7d chưa
+có dòng nào** vì dữ liệu mới ~2,5 ngày tuổi.
+
+### 8.1 Mẫu theo bias
+
+| Bias | Tín hiệu | Symbol | Ngày | 1h n | 4h n | 24h n |
+|---|---|---|---|---|---|---|
+| continuation | 743 | 39 | 3 | 730 | 690 | 396 |
+| neutral | 715 | 69 | 3 | 691 | 630 | 334 |
+| breakdown | 528 | 40 | 3 | 513 | 467 | 229 |
+| accumulation | 110 | 10 | 3 | 108 | 100 | 32 |
+| flush-bounce | 53 | 9 | 3 | 53 | 53 | 48 |
+
+### 8.2 Kết quả theo horizon (avg / median close %, relative so BTC, win %)
+
+| Bias | 1h | 4h | 24h |
+|---|---|---|---|
+| breakdown (short) | −0.10 / −0.35 · rel +0.08 · **56.7%** | −0.81 / −1.28 · rel +0.04 · **65.3%** | −5.69 / −6.57 · rel +0.05 · **85.6%** |
+| continuation (long) | −0.39 / −0.35 · rel −0.24 · 43.3% | −1.03 / −1.44 · rel −0.13 · 40.7% | −3.09 / −4.63 · rel +2.32 · 30.6% |
+| accumulation (long) | +0.17 / 0.00 · rel +0.32 · 47.2% | +0.02 / −0.60 · rel +0.96 · 37.0% | −3.38 / −2.18 · rel +1.81 · 34.4% |
+| flush-bounce | +0.03 / +0.04 · rel +0.18 · 52.8% | **+0.76 / +0.58 · rel +1.30 · 58.5%** | −6.85 / −8.05 · rel −1.92 · 8.3% |
+| neutral | +0.20 / 0.00 · rel +0.46 · — | +0.50 / −0.02 · rel +1.40 · — | −1.33 / −2.41 · rel **+4.18** · — |
+
+(`win` = close đúng chiều bias; neutral không có chiều nên win luôn 0 — không dùng cột này cho neutral.)
+
+### 8.3 Kết luận scoring (chỉ trong phạm vi mẫu này)
+
+- **breakdown là bias duy nhất có edge nhất quán theo cả 3 horizon** (win 56.7% → 65.3% → 85.6%,
+  median close âm dần). Relative so BTC ≈ 0 → nhãn bắt đúng **chiều thị trường**, không tạo alpha
+  so BTC; giá trị nằm ở việc short đúng nhịp giảm.
+- **continuation và accumulation (long) thua ở 24h** (win 30.6% / 34.4%, median −4.63% / −2.18%).
+  Relative của continuation +2.32 cho thấy nó *ít tệ hơn* BTC trong nhịp giảm, nhưng tuyệt đối vẫn lỗ
+  → trong regime này scoring long chưa chứng minh được lợi thế.
+- **flush-bounce chỉ đúng trong 4h** (win 58.5%, +0.76%, rel +1.30) rồi đảo mạnh ở 24h (8.3%,
+  −6.85%, rel −1.92) → tín hiệu mean-reversion, không giữ qua ngày.
+- **neutral** (không trade) vẫn relative +4.18 so BTC ở 24h — phù hợp với việc bỏ qua coin yếu
+  trong nhịp giảm; đây là bằng chứng cho **filter**, không phải cho direction scoring.
+
+**Chưa thể kết luận scoring tốt/xấu toàn cục:** 24h chỉ có 2 ngày dữ liệu, cùng một regime giảm,
+window chồng lấn và mỗi symbol lặp nhiều lần (39–69 symbol cho hàng trăm tín hiệu) → `n` lớn hơn
+nhiều so với mẫu độc lập thực tế. 3d/7d chưa đủ tuổi. Không đổi công thức scoring trong lượt này.
+
+### 8.4 Còn thiếu so với §5
+
+- 3d/7d `n > 0`: chờ 2026-11-22 (3d) và 2026-11-26 (7d).
+- 7 ngày cohort liên tục: mới 3 ngày.
+- Đối chiếu tay 3 row với klines: chưa làm trong lượt này.
+- V3 `KEEP_DAYS = 8`: khuyến nghị nâng lên 10 để đọc được kết quả 7d trước khi purge — chờ owner
+  quyết (đổi constant là thay đổi hành vi retention).

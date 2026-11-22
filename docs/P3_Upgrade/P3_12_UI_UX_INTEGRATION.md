@@ -304,13 +304,45 @@ Project tooling in this environment is a headless preview; browser screenshots a
 
 ## PART N — Future P3 UI Backlog
 
-1. **P3 on Dashboard cards** — surface regime/rotation as compact chips on `NarrativeCard` for at-a-glance scanning.
-2. **Full provenance explorer** — stage input manifests, correction ledger entries, member-level inclusion reasons, availability reasons.
-3. **Historical window selector** — choose among persisted windowEnds (and windows) to compare P3 states over time.
-4. **P3 history chart** — regime/rotation/score over successive windows.
-5. **Leadership detail surface** — top-N leaders with scores and per-member health drill-down (`/coin/[id]` already exists as a destination).
-6. **Constituent membership visualization** — snapshot diff views for membership changes across windows.
-7. **P3 admin console section** — browse artifacts/versions/validity states (extends the existing `/admin` console).
+Chốt 2026-11-21 (W11): **cả 7 mục đều DEFERRED**, không mục nào làm trong đợt này. Lý do chung:
+P3-12 đã PASS với panel trên `/narrative/[id]`; 7 mục dưới đây là mở rộng bề mặt hiển thị, không
+phải thiếu sót của baseline, và mỗi mục cần dữ liệu/layout mới nên phải có tiêu chí riêng trước
+khi làm. Giữ nguyên nội dung gốc, thêm điều kiện mở lại:
+
+| # | Mục | Trạng thái | Trigger mở lại |
+|---|---|---|---|
+| 1 | P3 trên card Dashboard (chip regime/rotation) | DEFERRED | Khi Dashboard được sửa cho mục đích khác (tránh sửa card 2 lần) |
+| 2 | Provenance explorer đầy đủ (manifests, correction ledger, inclusion reasons) | DEFERRED | Khi có yêu cầu audit nội bộ hoặc tranh chấp số liệu |
+| 3 | Window selector (chọn `windowEnd` đã lưu) | DEFERRED | Khi có ≥3 window P3 liên tiếp trong DB để so sánh thật |
+| 4 | P3 history chart (regime/rotation/score theo window) | DEFERRED | Cùng điều kiện với mục 3 |
+| 5 | Leadership detail (top-N + drill-down per-member) | DEFERRED | Khi `/coin/[id]` có dữ liệu P3 theo member |
+| 6 | Membership diff view giữa các window | DEFERRED | Khi mục 3 có window selector |
+| 7 | P3 admin console (artifacts/versions/validity) | DEFERRED | Khi admin console được mở rộng cho P6 |
+
+Không mục nào được coi là bug hay “P3 chưa xong”.
+
+### N.1 Nợ test P3 — số đo thật (2026-11-21)
+
+Chạy `npx jest src/lib/p3` trên HEAD hiện tại:
+
+| Chỉ số | Số |
+|---|---|
+| Test suite | 28 (22 PASS · 6 FAIL) |
+| Test | 393 (378 pass · **15 fail**) |
+
+6 suite đỏ: `membership`, `oi-source-filter`, `p3-10e-29-remediation`, `persistence`,
+`preparation`, `rotation`. Đây là **nợ test có sẵn**, không phải hồi quy của P3-12:
+
+- `rotation.test.ts` — test fixture còn dùng thang phần trăm (`normalizeRelativeStrength(-0.10)`
+  kỳ vọng `0`), trong khi hàm đã nhận tỉ lệ và trả `49.5`.
+- `persistence.test.ts` — mock `tx.insert().values()` thiếu `onConflictDoUpdate`, nên
+  `persistP3Calculation` reject với `TypeError`.
+- Các suite còn lại lệch cùng kiểu: double/fixture chưa theo contract hiện tại.
+
+**Quyết định:** không sửa trong đợt này. Sửa 15 test này là đổi fixture/semantics của kernel P3 đã
+freeze (PART K cấm “fix” test để PASS), và không có hành vi production nào phụ thuộc vào chúng.
+Con số **15 fail / 393 test / 28 suite** thay thế hai con số cũ không khớp nhau (**12 test / 6
+suite** ở `P3_13` và **16 failures** ở `P4_MASTER_SPECIFICATION:511`).
 
 ---
 

@@ -30,6 +30,7 @@ import {
   calculateHealthScore,
 } from "@/lib/features/engine";
 import { getHealthStatus, getBusinessDate } from "@/lib/utils";
+import { resolveMarketCap } from "@/lib/market/market-cap";
 import { ruleVersionService } from "@/lib/services/rule-version.service";
 import { indicatorService } from "@/lib/services/indicator.service";
 import { ruleEngineService } from "@/lib/services/rule-engine.service";
@@ -54,7 +55,14 @@ export interface CoinProcessorContext {
   /** P6 feature algorithm version for version tagging */
   p6FeatureVersion: { id: number };
   /** Pre-fetched CoinGecko market data (read-only, safe for parallel access) */
-  coingeckoData: Map<string, { marketCap: number | null; fullyDilutedValuation: number | null }>;
+  coingeckoData: Map<
+    string,
+    {
+      marketCap: number | null;
+      fullyDilutedValuation: number | null;
+      circulatingSupply: number | null;
+    }
+  >;
 }
 
 export interface CoinProcessorResult {
@@ -102,10 +110,13 @@ export async function processSingleCoin(
     let klines4h: Awaited<ReturnType<typeof fetchBinanceSpotKlines>> = [];
     let volume24h: number | null = null;
     let marketCapFromCoingecko: number | null = null;
+    let circulatingSupply: number | null = null;
 
     // ── CoinGecko market cap ──
     if (coin.coingeckoId && ctx.coingeckoData.has(coin.coingeckoId)) {
       const cgData = ctx.coingeckoData.get(coin.coingeckoId);
+      // MARKET-CAP-01: giữ supply kể cả khi thiếu market cap.
+      circulatingSupply = cgData?.circulatingSupply ?? null;
       if (cgData && cgData.marketCap) {
         marketCapFromCoingecko = cgData.marketCap;
         coinCoingeckoOk = true;
@@ -131,7 +142,13 @@ export async function processSingleCoin(
           const futuresTicker = await fetchBinanceFuturesTicker(coin.binanceFuturesSymbol);
           if (futuresTicker) {
             volume24h = parseFloat(futuresTicker.quoteVolume);
-            const marketCapToSave = marketCapFromCoingecko || (volume24h * parseFloat(futuresTicker.lastPrice));
+            // MARKET-CAP-01: không có supply → null; volume 24h không phải vốn hoá.
+            const marketCapToSave =
+              resolveMarketCap({
+                coingeckoMarketCap: marketCapFromCoingecko,
+                circulatingSupply,
+                price: parseFloat(futuresTicker.lastPrice),
+              })?.value ?? null;
             if (marketCapToSave !== null && marketCapToSave > 0) {
               await db
                 .insert(coinMetrics)
@@ -145,7 +162,13 @@ export async function processSingleCoin(
                 });
             }
           } else {
-            const marketCapToSave = marketCapFromCoingecko || (klines.length > 0 ? parseFloat(klines[klines.length - 1].close) * parseFloat(klines[klines.length - 1].quoteVolume) : null);
+            const lastKline = klines.length > 0 ? klines[klines.length - 1] : null;
+            const marketCapToSave =
+              resolveMarketCap({
+                coingeckoMarketCap: marketCapFromCoingecko,
+                circulatingSupply,
+                price: lastKline ? parseFloat(lastKline.close) : null,
+              })?.value ?? null;
             if (marketCapToSave !== null && marketCapToSave > 0) {
               await db
                 .insert(coinMetrics)
@@ -182,7 +205,12 @@ export async function processSingleCoin(
               const spotTicker = await fetchBinanceSpotTicker(coin.binanceSpotSymbol);
               if (spotTicker) {
                 volume24h = parseFloat(spotTicker.quoteVolume);
-                const marketCapToSave = marketCapFromCoingecko || (volume24h * parseFloat(spotTicker.lastPrice));
+                const marketCapToSave =
+                  resolveMarketCap({
+                    coingeckoMarketCap: marketCapFromCoingecko,
+                    circulatingSupply,
+                    price: parseFloat(spotTicker.lastPrice),
+                  })?.value ?? null;
                 if (marketCapToSave !== null && marketCapToSave > 0) {
                   await db
                     .insert(coinMetrics)

@@ -7,6 +7,7 @@ import { peekRadarRuntimeConfig } from "@/lib/settings/radar-config";
 import {
   catalystLlmDailyLimit,
   consumeCatalystLlmQuota,
+  recordCatalystLlmTokens,
   releaseCatalystLlmQuota,
 } from "./llm-quota";
 import type { CatalystFact, CatalystSyncInfo } from "./types";
@@ -165,6 +166,8 @@ export async function summarizeCatalysts(
     "catalyst"
   );
   if (llm) {
+    // W6: đo chi phí thật (token/lần tóm tắt) — best-effort, không chặn output.
+    await recordCatalystLlmTokens(llm.tokens);
     return { text: llm.text, mode: "llm", provider: llm.provider, note: "AI tóm tắt từ facts của nguồn." };
   }
   // `limit <= 0` = không giới hạn và KHÔNG ghi usage, nên không có lượt nào để

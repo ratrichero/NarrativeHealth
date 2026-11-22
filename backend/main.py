@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+from backend.config import settings
 from backend.database import init_db
 from backend.api import (
     dashboard_router,
@@ -39,9 +40,25 @@ async def lifespan(app: FastAPI):
     await init_db()
     print("Database initialized")
 
-    # Start APScheduler for scheduled jobs
-    from backend.scheduler import start_scheduler
-    await start_scheduler()
+    # ENV-GUARD-01 (khớp src/lib/env/runtime-guard.ts): scheduler chỉ chạy ở
+    # production thật. `.env` máy dev có thể là APP_ENV=production trỏ DB thật;
+    # thiếu PRODUCTION_ALLOWED_HOSTS cũng nghĩa là chưa cấu hình production nên
+    # không được tự động gọi /api/refresh, movers hay job radar vào DB đó.
+    app_env = (settings.app_env or "").strip().lower()
+    allowed_hosts = os.getenv("PRODUCTION_ALLOWED_HOSTS", "").strip()
+    if app_env != "production":
+        print(
+            "[ENV-GUARD] Scheduler disabled — APP_ENV must be 'production' "
+            f"(got '{settings.app_env or 'unset'}'); refusing to run scheduled jobs."
+        )
+    elif not allowed_hosts:
+        print(
+            "[ENV-GUARD] Scheduler disabled — PRODUCTION_ALLOWED_HOSTS is empty; "
+            "refusing to run scheduled jobs from an unconfigured runtime."
+        )
+    else:
+        from backend.scheduler import start_scheduler
+        await start_scheduler()
 
     yield
 

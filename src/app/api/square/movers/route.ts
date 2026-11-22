@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { triggerMoversPipeline } from "@/lib/square/movers/trigger";
+import { runtimeGuardResponse } from "@/lib/env/route-guard";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 800; // 6 bài × stagger 90s cần runtime dài
@@ -29,6 +30,11 @@ function tokenMatches(expected: string, got: string | null): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  // ENV-GUARD-01: endpoint này đăng bài thật lên Binance Square. Chặn trước
+  // cả token check để dev/preview không bao giờ publish dù .env ghi production.
+  const blocked = runtimeGuardResponse(request, "publish");
+  if (blocked) return blocked;
+
   const searchParams = request.nextUrl.searchParams;
 
   // Lớp 1 — manual/dry-run không đi qua endpoint scheduler.

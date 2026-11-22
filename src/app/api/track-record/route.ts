@@ -171,6 +171,33 @@ export async function GET() {
     const horizonDays =
       horizons.length > 0 ? Math.max(...horizons) : DEFAULT_FRESHNESS_HORIZON_DAYS;
 
+    // W1: "chưa có stamp" KHÔNG luôn nghĩa là settlement chết — có thể mọi pick
+    // công khai vẫn đang trong cửa sổ horizon. Trả mốc đáo hạn kế tiếp để banner
+    // nói đúng sự thật thay vì đoán, và để người đọc biết khi nào có kết quả.
+    let pendingPicks = 0;
+    let nextSettlementAt: string | null = null;
+    try {
+      const [pending] = await db
+        .select({
+          count: sql<number>`count(*)::int`,
+          oldest: sql<string | null>`min(${topRecommendationPicks.dataDate})`,
+        })
+        .from(topRecommendationPicks)
+        .innerJoin(coins, eq(coins.id, topRecommendationPicks.coinId))
+        .where(
+          and(
+            eq(topRecommendationPicks.pickKind, "GENUINE"),
+            eq(topRecommendationPicks.hasSetup, true),
+            eq(topRecommendationPicks.backtestStatus, "PENDING"),
+            sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
+          )
+        );
+      pendingPicks = Number(pending?.count ?? 0);
+      if (pending?.oldest) nextSettlementAt = addDaysIso(pending.oldest, horizonDays);
+    } catch (error) {
+      console.error("[TRACK-01] Pending settlement lookup failed (non-blocking):", error);
+    }
+
     return NextResponse.json({
       success: true,
       data: {
@@ -183,6 +210,7 @@ export async function GET() {
         summary,
         benchmark,
         recent,
+        settlement: { pendingPicks, nextSettlementAt },
       },
     });
   } catch (error) {

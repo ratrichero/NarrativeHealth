@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runSquarePipeline, getLastPipelineSummary } from "@/lib/square/production";
 import { getQuotaStatus } from "@/lib/square/publisher";
+import { runtimeGuardResponse } from "@/lib/env/route-guard";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -20,6 +21,10 @@ export const maxDuration = 120;
  * ⚠️ This creates REAL posts on Binance Square when not in dry-run mode
  */
 export async function POST(request: NextRequest) {
+  // ENV-GUARD-01: pipeline này đăng bài thật khi dryRun=false.
+  const blocked = runtimeGuardResponse(request, "publish");
+  if (blocked) return blocked;
+
   try {
     const body = await request.json().catch(() => ({}));
     const dryRun = body.dryRun === true;

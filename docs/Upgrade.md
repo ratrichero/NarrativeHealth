@@ -1,8 +1,313 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-11-20
+## Ngày cập nhật: 2026-11-22
+
+## Sửa trộn mốc cluster base của radar (W7 follow-up, 2026-11-22)
+
+`clusterBaseCache` (W7) khoá `base|<minVolume>` với TTL 5 phút, nhưng `changePct`, composite và
+leader của cụm được tính từ ticker cache **45s**. Hệ quả: sau khi ticker đổi, snapshot mới vẫn
+ghép row mới với cụm/leader tính từ universe cũ tới 5 phút.
+
+- Thêm `futuresTickerEpoch()` (`tickerCache.loadedAt`) vào cache key:
+  `base|<minVolume>|<tickerEpoch>`. Mốc ticker đổi ⇒ base tính lại; 3 tab trong cùng một mốc
+  ticker vẫn dùng chung base + inflight dedupe như W7.
+- TTL base hạ về `CLUSTER_BASE_TTL_MS` = 60s (bằng snapshot); key đã đảm bảo đúng dữ liệu nên
+  TTL chỉ còn để dọn entry cũ. `CLUSTER_CACHE_MS` (5 phút) vẫn giữ cho cache klines 1h.
+- Test hồi quy trong `radar-cluster-snapshot.test.ts`: sau 46s ticker đổi, C15 từ +1% thành +25%
+  và phải thành leader thay vì leader cũ C39. Đã kiểm ngược bằng cách tạm bỏ epoch khỏi key —
+  test fail đúng như mô tả lỗi — rồi khôi phục.
 
 ---
+
+## Đồng bộ số nợ test P3 trong tài liệu cũ (2026-11-22)
+
+`P3_13_INTELLIGENCE_UX_VALIDATION_AND_PRODUCTION_READINESS.md` (§I.3 và PART L) vẫn ghi
+“12 failed / 31 suites”, còn `P4_MASTER_SPECIFICATION.md` dòng 511 ghi “16 pre-existing P3
+kernel failures”. Hai số đó là snapshot cũ. Thêm ghi chú (không viết lại số lịch sử) trỏ về
+nguồn chuẩn **PART N.1** của `P3_12_UI_UX_INTEGRATION.md`: **28 suite (22 pass / 6 fail) ·
+393 test (378 pass / 15 fail)**, kèm ngày 2026-11-22 và danh sách 6 suite đỏ vẫn khớp §I.3.
+
+---
+
+## Test cho đếm token catalyst (W6 follow-up, 2026-11-22)
+
+`catalystLlmTokensQuery`/`recordCatalystLlmTokens` (W6) chỉ có code, không có test — trong khi
+SQL `jsonb` upsert cộng dồn theo ngày là chỗ dễ sai. Thêm vào harness PGlite sẵn có của
+`src/lib/catalyst/__tests__/llm-quota.test.ts`:
+
+- Cộng dồn `tokens`/`calls` trong cùng ngày UTC; sang ngày mới thì reset.
+- Ghi token **không đụng** `catalyst.llm.usage` — `used` của quota giữ nguyên sau 2 lượt consume.
+- State lưu hỏng (`tokens:"x"`, `calls:-3`) đếm lại từ 0; token âm/NaN ghi 0 nhưng vẫn tăng
+  `calls` (regex guard giống quota, không để cast `::bigint` ném lỗi).
+- Wrapper `recordCatalystLlmTokens` no-op trong `NODE_ENV=test` và với token ≤ 0.
+- Kiểm ngược: đổi `'calls', storedCalls + 1` thành `'calls', 1` → test cộng dồn fail, rồi khôi phục.
+
+---
+
+## Tách môi trường dev khỏi production (ENV-GUARD-01 mở rộng, 2026-11-22)
+
+Máy dev đang ở tình trạng xấu nhất của cả hai phía: `.env` trỏ `DATABASE_URL` vào DB
+production, nên mọi thao tác đọc/ghi đều chạm dữ liệu thật; trong khi guard lại chặn
+`write`/`scheduler` vì `APP_ENV` không phải `production` → dev vừa **read-only** vừa
+**trỏ DB thật**. Đợt này tách hẳn hai thứ.
+
+### `.env` máy dev
+
+- `APP_ENV=development` (giữ nguyên semantics cho FastAPI scheduler).
+- `DATABASE_URL` → `postgresql://…@localhost:5432/narrative_health_dev`; URL production cũ
+  được comment lại làm tham chiếu, không dùng cho dev.
+- Thêm `TEST_DATABASE_URL` → `…@localhost:5432/narrative_health_test` (DB riêng cho
+  `npm run test:integration`, khác cả dev và production).
+
+### Guard: development được ghi, nhưng chỉ vào DB dev cục bộ
+
+Theo `P6-OPS-ENV-01` §12.2 (DEVELOPMENT: mutation ALLOWED, Binance BLOCKED):
+
+- `isLocalDevDatabaseUrl()` chỉ trả `true` khi `DATABASE_URL` trỏ **loopback**
+  (`localhost`/`127.x`/`::1`) **và** tên DB chứa `dev`/`test`/`local`. Thiếu URL, host từ xa
+  hay tên DB mơ hồ → `false` (fail-closed).
+- `write`/`scheduler` + `APP_ENV=development` + DB dev cục bộ → `read-write`, refresh dev
+  chạy bình thường.
+- `APP_ENV=development` + DB từ xa (kể cả DB production) → vẫn `403 ENV_NOT_PRODUCTION`,
+  thông điệp nêu rõ cần DB dev/test loopback trong `DATABASE_URL`.
+- `publish` không bao giờ được mở ở development, kể cả với DB dev; `evaluatePublishGate`
+  vẫn chặn Binance Square ở cổng cuối.
+
+Test: `src/lib/env/__tests__/runtime-guard.test.ts` thêm 3 case development writes
+(write/scheduler được phép, DB từ xa bị chặn, publish bị chặn) + 2 case
+`isLocalDevDatabaseUrl`. `README.md` và `.env.example` ghi rõ biến nào trỏ DB nào.
+
+---
+
+## Ngày cập nhật: 2026-11-21
+
+---
+
+## Đóng đợt P0–P3 theo OPEN-WORK-REGISTER (2026-11-21, đợt 2)
+
+`docs/OPEN-WORK-REGISTER.md` còn 9 việc mở sau đợt trước. Đợt này đóng **7**, chuyển **2** sang
+WAITING có ngày mở lại (không có việc nào bị đóng bằng cách bỏ qua điều kiện).
+
+### Radar — cluster base dùng chung giữa các tab (W7)
+
+- `selectClusterUniverse` đã bỏ `side` từ trước, nhưng mỗi `buildSnapshot(side, minVolume)` vẫn tự
+  gọi `loadClusterBase` → mở 3 tab quét lại universe cụm 3 lần cho cùng một kết quả.
+- Thêm `src/lib/market/promise-cache.ts`: `PromiseCache<T>` = TTL + **single-flight**; promise
+  reject thì xoá entry (không cache lỗi). Dùng cho `clusterBaseCache` khoá `base|<minVolume>`
+  (TTL 5 phút) và cho `snapshotCache` (60 s). Tab 2/3 dùng chung base cụm **và** promise đang bay.
+- Hệ quả: 3 tab cùng `minVolume` trả cùng `clusterId/label/leader`, weight Binance cho phần cụm
+  không nhân theo số tab. `invalidateRadarSnapshotCache()` xoá cả hai cache khi đổi config.
+
+### Token/lần tóm tắt catalyst (W6)
+
+- `callOpenAICompatible` trả thêm `tokens` (từ `usage.total_tokens`), `generateMoversWithLLM`
+  chuyển tiếp, `summarizeCatalysts` ghi `app_settings["catalyst.llm.tokens"] = {date, tokens,
+  calls}` bằng một câu upsert atomic theo ngày UTC.
+- Tách **khỏi** key quota `catalyst.llm.usage` để không đổi semantics `used/limit` đã có test.
+  Token/lần tóm tắt = `tokens / calls`. Lỗi ghi token là best-effort, không làm hỏng summary.
+
+### Track-record — nói đúng “chưa chốt” vs “settlement chết” (W1)
+
+- `/api/track-record` trả thêm `settlement: { pendingPicks, nextSettlementAt }`
+  (`nextSettlementAt` = `data_date` cũ nhất + horizon đang dùng).
+- Banner `/track-record` khi chưa có stamp giờ nói “chưa có pick công khai nào đáo hạn cửa sổ 14
+  ngày, N pick đang chờ, sớm nhất <ngày>” thay vì luôn buộc tội settlement. Trạng thái vẫn là
+  WAITING vì điều kiện đóng là **có stamp công khai thật** — cửa sổ 14 ngày của pick `2026-11-10`
+  đóng `2026-11-24`. Không backfill stamp (là bịa thời điểm chốt).
+
+### P5 — O4/O5/O6 (W13)
+
+- `P5P4SnapshotRef` thêm `direction?`/`confidence?` (optional, không đổi contract freeze);
+  `buildP4SnapshotRef` điền từ P4 ViewModel (chỉ LIVE context có).
+- Presentation model: `P5ConfidenceGuidance` thêm `source` (`P4`/`DERIVED`/`NONE`) + `direction`;
+  dùng đúng confidence P4 khi có, fallback suy diễn như cũ khi record freeze không mang.
+  Fact “Direction” xuất hiện trong WHY; `monitorGuidance(direction)` khác nhau cho
+  POSITIVE/NEGATIVE/MIXED/NEUTRAL.
+- Không đổi outcome/actionType/score/display-state.
+
+### Tài liệu (W10, W11, W14)
+
+- `docs/P6_Upgrade/P6-01-FINAL_PHASE_AUDIT.md` **đã có từ 2026-08-26** (kết luận READY WITH
+  NON-BLOCKING RISKS) — tiền đề “P6-01-FINAL DEFERRED” trong assessment là lệch tài liệu. Đợt này
+  thêm **§22 Amendment** với số đo production: 7 lượt SCHEDULED `evaluated 113` chạy 384 568 →
+  1 010 401 ms (trung vị ~9,5 phút ≈ 5 s/pick), MOVERS_CRON 533 199 ms. Ghi rõ đây là
+  **end-to-end pipeline**, không phải latency SQL → NB-1 đóng ở mức pipeline, còn mở ở mức truy vấn;
+  freeze vẫn là quyết định của Planner (`READY TO FREEZE`).
+- `P3_12_UI_UX_INTEGRATION.md` PART N: 7 mục backlog chốt **DEFERRED** kèm trigger; thêm N.1 với
+  số nợ test thật — **28 suite / 393 test, 15 fail ở 6 suite** (thay hai số cũ 12 và 16 không khớp).
+  Không sửa 15 test đó: lệch fixture/mock của kernel P3 đã freeze.
+- `P4-P5_OPEN_ITEMS.md`: O3 hạ từ “ENVIRONMENT BLOCKER” xuống “VERIFIED (sandbox) · CI PENDING”
+  (sandbox đã đọc/ghi DB production); O4–O6 đánh dấu CLOSED.
+
+### Kiểm
+
+`npx tsc --noEmit` pass; `jest promise-cache + cluster-coverage + p5/read + track-record` =
+5 suite / 52 test pass. Không có bằng chứng live mới cho Binance/Square (sandbox bị 451 và admin
+route 401) — phần đó dựa trên dữ liệu production đọc ngày 2026-11-21, không phải chạy lại.
+
+---
+
+## ENV-GUARD-01 — publish/scheduler chỉ chạy ở production, local read-only (2026-11-21)
+
+`.env` máy dev đang là `APP_ENV=production` trỏ DB thật, nên trước đây một POST
+`/api/refresh` (hoặc bấm “đăng thật” trên admin card) có thể ghi DB production và đăng
+bài Binance Square thật.
+
+- **Guard mới** `src/lib/env/runtime-guard.ts` + wrapper `src/lib/env/route-guard.ts`:
+một request chỉ được ghi/publish khi (1) `APP_ENV=production`, (2) `Host` nằm trong
+`PRODUCTION_ALLOWED_HOSTS` (hỗ trợ `*.domain.tld`), fail-closed khi danh sách rỗng.
+Ngoại lệ duy nhất: loopback (`localhost`, `127.x`, `::1`) — FastAPI scheduler gọi thẳng
+`http://localhost:3000/...` — chỉ được chấp nhận khi `NODE_ENV=production`; `next dev`
+đặt `NODE_ENV=development` nên dev server vẫn bị chặn dù `.env` ghi production.
+- **Áp dụng** (403 kèm `code`: `ENV_NOT_PRODUCTION` / `HOST_ALLOWLIST_MISSING` /
+`HOST_NOT_ALLOWED` / `HOST_UNKNOWN`, `data.mode = "read-only"`): `/api/refresh`,
+`/api/refresh/cleanup`, `/api/refresh/coin/[id]`, `/api/refresh/narrative/[id]` (write);
+`/api/square/movers`, `/api/admin/square/movers`, `/api/admin/square-test` (publish);
+`/api/catalyst/sync`, `/api/market/radar/cohort`, `/api/market/radar/bias-outcomes`,
+`/api/admin/config/scheduler`, `/api/admin/p3/execute` (scheduler).
+- **Cổng cuối trong publisher**: `evaluatePublishGate()` chặn ở `publishContent` và
+`postTextDirect`, nên mọi code path (refresh → Square pipeline, movers cron, retry tay)
+đều không gọi Binance khi process không phải production build.
+- **FastAPI scheduler**: `backend/main.py` chỉ gọi `start_scheduler()` khi
+`APP_ENV=production` **và** `PRODUCTION_ALLOWED_HOSTS` không rỗng; ngược lại log
+`[ENV-GUARD] Scheduler disabled` — máy dev không tự chạy refresh/movers/radar job.
+- **Cần làm trên VPS**: thêm `PRODUCTION_ALLOWED_HOSTS=<domain công khai>` vào `.env`
+rồi restart. Chưa set → publish qua domain công khai trả 403; cron loopback vẫn chạy
+(`next start` có `NODE_ENV=production`).
+- Test: `src/lib/env/__tests__/runtime-guard.test.ts` (dev/preview/localhost, wildcard,
+allowlist rỗng, publish gate).
+
+## RADAR-04 — live verify đủ mẫu ≥30/bias, kết luận scoring có giới hạn (2026-11-21)
+
+Đọc production DB thay vì chạy lại radar: `radar_bias_log` có **2 149 tín hiệu** engine v2 từ
+19–21/11 (30/48/20 lượt ghi theo ngày UTC, ~21 row/lượt, 39–69 symbol mỗi bias),
+`radar_bias_outcome` có **5 074** dòng cho 1h/4h/24h.
+
+- Mọi bias vượt 30 tín hiệu đủ tuổi ở 1h/4h/24h; 24h: breakdown 229, continuation 396,
+  neutral 334, accumulation 32, flush-bounce 48. **3d/7d chưa có dòng** (dữ liệu mới 3 ngày).
+- **breakdown** là bias duy nhất nhất quán cả 3 horizon (win 56.7 / 65.3 / 85.6%, median close
+  −0.35 / −1.28 / −6.57%); relative so BTC ≈ 0 → bắt đúng chiều thị trường, không tạo alpha.
+- **continuation / accumulation** thua ở 24h (win 30.6% / 34.4%); continuation relative +2.32
+  nhưng tuyệt đối vẫn lỗ. **flush-bounce** đúng ở 4h (+0.76%, rel +1.30, win 58.5%) rồi đảo ở
+  24h (8.3%). **neutral** relative +4.18 ở 24h — bằng chứng cho filter, không phải direction.
+- Không kết luận scoring toàn cục: 24h chỉ 2 ngày, cùng regime giảm, window chồng lấn và symbol
+  lặp (39–69 symbol cho hàng trăm tín hiệu). Không đổi công thức scoring.
+
+Ghi vào `docs/RADAR-04_LIVE_VERIFICATION.md` §8; W9 chuyển PARTIAL (còn 3d/7d, 7 ngày cohort,
+đối chiếu tay, quyết định `KEEP_DAYS` 8 → 10).
+
+## RADAR-05 bước 1–3 — universe chung, leader cùng chiều, history + alert theo cụm (2026-11-21)
+
+Bước 1 và 3 đã có trong code nhưng chưa được ghi nhận; bước 2 còn đúng một lỗi ngữ nghĩa:
+leader vẫn chọn theo composite (percentile `|change|`) bất kể chiều, nên coin −18% có thể làm
+leader của cụm đang tăng và coin +6% bị gắn laggard.
+
+- **Bước 1:** `selectClusterUniverse` (không nhận `side`, không loại coin enrich) + `buildClusterBase`
+  tự tính composite bằng percentile `|change 24h|` của universe, row enrich chỉ merge metadata sau;
+  `clusterInfoCache` khoá `minVolume`. Ba tab cùng danh sách cụm cho cùng thời điểm.
+- **Bước 2:** 48 return + residual beta BTC (`residualReturns`), threshold 0.6, union-find
+  complete-linkage + `maxSize 8` (chuỗi A~B, B~C không gộp khi A≁C), extra chuẩn hoá percentile.
+  **Sửa mới:** leader chỉ chọn trong nhóm cùng chiều cụm (`Math.sign(changePct) === direction`),
+  tie-break theo symbol để không phụ thuộc thứ tự ticker; laggard chỉ gắn cho coin cùng chiều.
+- **Bước 3:** `app_settings["radar.cluster.history"]` (7 ngày / 1 008 batch, ghi 3 side một lần),
+  event `new | leader-change | strengthening | weakening`, alert dedupe
+  `side|clusterId|type|ngày` + link `?cluster=`, ledger lưu `clusterId/label/size/leader/laggard`
+  và track-record tổng hợp hiệu quả theo cụm.
+- Test mới `cluster-direction.test.ts` (3 case); toàn bộ `src/lib/market/__tests__`: 24 suite /
+  175 test pass; `npm run typecheck` pass. Không verify live vì Binance Futures trả 451 trong sandbox.
+
+## SQ-DEPLOY-06 / SQ-MOVERS — verify trên dữ liệu production (2026-11-21)
+
+Không có deploy mới: VPS `168.138.179.192:3000` không truy cập được từ cloud workspace và repo
+không có deploy script/SSH; nhưng dữ liệu production chứng minh cả hai luồng đã live từ
+**2026-10-02/03** — tức doc cũ (“pending deploy `git up`”, “waiting for natural eligible window”)
+đã lỗi thời.
+
+- **SQ-MOVERS:** `square_pipeline_executions` có 50 dòng `MOVERS_CRON`, chạy đúng 07:15 VN hằng
+  ngày từ `2026-10-03T00:15Z` đến `2026-11-21T00:15Z`; mỗi lượt `evaluated 6 · qualified 6 ·
+  published 6 · failed 0` (~8 phút, LLM 6/6). `MOVERS_SETUP`: 300 opportunity — 300 PUBLISHED,
+  0 FAILED (50 × 6).
+- **Square Analytics:** đối soát `ALL` khớp tuyệt đối khi trừ nhóm movers (by design,
+  `notMoversExecution`): 413 execution = 463 − 50; 2 209 published = 2 509 − 300; failed 400 khớp;
+  type breakdown 2 039 NARRATIVE_SETUP + 458 COIN_SETUP + 300 MOVERS_SETUP = 2 797 PUBLISHED.
+  Cửa sổ eligible tự nhiên đã có (2026-11-21: setup 27 post/3 lượt; movers 6/6).
+- **Caveat chưa sửa:** `getDateStr()` cắt dải theo ngày UTC trong khi phần còn lại của hệ thống
+  dùng `Asia/Ho_Chi_Minh`. Nhãn “Today” vì thế bỏ 2 lượt sáng VN (3 lượt/27 post thay vì
+  5/41). Đổi boundary là quyết định semantics (mọi range dịch 7h) — cần owner chốt.
+
+Ghi vào `SQ-DEPLOY-06_FINAL_AUDIT.md` §10; đóng W2, W3 trong `OPEN-WORK-REGISTER.md`; README
+chuyển Square Analytics sang **VERIFIED**. Không đổi code.
+
+## MARKET-CAP-01 — bỏ fallback `volume24h × price`, thay bằng `price × circulating supply` (2026-11-21)
+
+Khi CoinGecko không trả market cap, refresh cũ ghi `volume24h × price` vào `coin_metrics.market_cap`.
+Đó là giá trị giao dịch 24h, không phải vốn hoá; ở route refresh coin nó còn được đọc lại và đưa vào
+`marketCap` của feature engine → health score.
+
+- Thêm resolver thuần `src/lib/market/market-cap.ts`: `resolveMarketCap({ coingeckoMarketCap,
+  circulatingSupply, price })` trả market cap CoinGecko (không estimated), hoặc
+  `price × circulatingSupply` (estimated), hoặc `null`. Giá trị 0/âm/NaN/Infinity bị bỏ qua.
+- Thay 9 chỗ gọi fallback sai: `src/app/api/refresh/coin/[id]/route.ts` (3),
+  `src/app/api/refresh/narrative/[id]/route.ts` (3), `src/lib/p6/refresh/coin-processor.ts` (3 —
+  gồm nhánh `close × quoteVolume` khi thiếu futures ticker). Circulating supply lấy từ CoinGecko
+  markets, giữ lại kể cả khi market cap thiếu.
+- Không đổi schema: `coin_metrics.market_cap` vẫn là decimal và `null` khi không suy ra được; không
+  có cột “estimated” nên nhánh ước tính chỉ khác ở cách tính, không ở `source`.
+- Test: `src/lib/market/__tests__/market-cap.test.ts` — CoinGecko thắng, price × supply khi thiếu
+  market cap, `null` khi thiếu supply (đúng hình dạng bug cũ), và lọc giá trị không hợp lệ.
+
+Kiểm: `npm run typecheck` pass; `jest` cho `market-cap` + `src/lib/features/__tests__` — 3 suite,
+43 test pass.
+
+## DOC-SYNC — sửa các tài liệu bị lệch trạng thái so với code (2026-11-21)
+
+Bốn điểm lệch đã ghi ở `docs/OPEN-WORK-REGISTER.md` §6 được sửa tại doc gốc:
+
+- `README.md` (status dòng 5, mục P6 và roadmap): bỏ “P6-02 NOT STARTED”. Baseline P6-01 → P6-09
+  đã FROZEN và `P6-FINAL` hand off (2026-08-27); pipeline chạy trong refresh/ingestion, API
+  `/api/p6/*` và `P6IntelligencePanel` đã mount ở Coin/Narrative detail. Ghi chú rằng
+  `P6_CURRENT_STATE_ASSESSMENT.md` (2026-08-26) chỉ còn giá trị lịch sử.
+- `docs/plan_chatbot.md`: “đang implement” → **DONE, shipped 2026-09-19**, kèm đường dẫn
+  `ChatWidget` (mount trong layout), `src/app/api/chat/route.ts`, `/api/admin/chat/analytics`.
+- `docs/P5_Upgrade/P4-P5_OPEN_ITEMS.md`: “Future / P6 candidate” **5 → 6** (O7–O12).
+- `docs/RADAR-LIVE-MIRROR_RUNBOOK.md` §6: thêm case đúng chuỗi log
+  `Failed to establish tunnel to data-api.binance.vision:443 … HTTP/1.1 403 Forbidden` — nguyên
+  nhân là host spot không nằm trong `PASSTHROUGH_HOSTS` hoặc proxy còn chạy bản script cũ; xử lý
+  bằng `RADAR_MIRROR_PORT=8898 node scripts/radar-mirror.mjs spot-check` rồi restart proxy.
+
+Register cập nhật theo: D1–D3 đánh dấu đã sửa, thêm D6 cho case runbook, và **đóng W12** — P6-08
+không còn deferred, `P6-08-FINAL_HISTORICAL_INTELLIGENCE_FREEZE_DECLARATION.md` (2026-08-27) đã
+freeze (ghi chú “Class D — DEFERRED” ở P6-07F chỉ đúng ở mốc P6-07).
+
+Không đổi code, API hay DB.
+
+## OPEN-WORK-REGISTER — gom việc đang treo vào một chỗ, tách khỏi out-of-scope (2026-11-21)
+
+Rà soát README + Upgrade + các register P3/P4-P5/P6 + RADAR/Square cho thấy danh sách “đang treo”
+nằm rải rác, dễ bị báo nhầm thành bug (hoặc ngược lại, coi limitation là xong). Thêm
+`docs/OPEN-WORK-REGISTER.md`: **14 việc** chia P0–P3, mỗi việc có trạng thái
+(OPEN / WAITING / DEFERRED / BLOCKED), bằng chứng `file:dòng`, điều kiện đóng và thứ tự ưu tiên;
+tách riêng **6 nhóm out-of-scope có chủ đích** (contentHash, permission artifact, O7–O12,
+OI-01…OI-08, OI/FR/MC/FDV wiring, execution/RBAC, on-chain/whale) để không bị báo nhầm.
+
+- P0: track-record chưa có stamp chốt cho pick công khai (banner “Dữ liệu cũ” vẫn đúng),
+  SQ-MOVERS chờ deploy, Square Analytics SQ-DEPLOY-06 chờ cửa sổ eligible.
+- P1: RADAR-05 bước 2 (leader/laggard sai ngữ nghĩa), market cap fallback `volume24h × price`
+  còn ở 3 chỗ trong `src/app/api/refresh/coin/[id]/route.ts`, catalyst V1 chưa live verify.
+- P2: RADAR-05 bước 1 và 3 (+ test cache), checklist RADAR-04 V1–V7, P6-01-FINAL/NB-1.
+- P3: P3 UI backlog + nợ test kernel, quyết định P6-08, P5 enhancement O4–O6, dọn lệch tài liệu.
+
+Ghi nhận thực tế cùng ngày: settlement chạy `horizon 14` chỉ stamp 2 pick `FILL_LONG` bị SKIPPED
+(không thuộc record công khai), 0 pick công khai được chốt; pick công khai sớm nhất
+(`data_date 2026-11-10`) đóng cửa sổ 14 ngày vào `2026-11-24` — nên banner vẫn đúng, không phải
+lỗi UI. Không backfill stamp cho 80 row cũ (sẽ là bịa thời điểm chốt).
+
+Phát hiện lệch tài liệu, ghi trong register §6: README còn “P6-02 NOT STARTED” trong khi code đã có
+module P6; `P4-P5_OPEN_ITEMS` đếm 5 nhưng liệt kê 6 item; `plan_chatbot.md` còn “đang implement”
+dù widget + API đã ship; O3 “environment blocker” không còn đúng vì sandbox đã truy cập DB
+production.
+
+Không đổi code/API/DB ngoài lần chạy settlement đã nêu.
 
 ## RADAR-LIVE-MIRROR — đóng gói cách vượt geo-block 451 thành script + runbook (2026-11-20)
 

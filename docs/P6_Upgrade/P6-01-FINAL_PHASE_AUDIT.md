@@ -316,3 +316,54 @@ The Planner should:
 1. Accept this audit as the P6-01-FINAL phase gate.
 2. Formally declare P6-01 = FROZEN (phase level).
 3. Issue P6-02A (Metric Contract Recon) and P6-03A (Membership Recon) as parallel first tasks.
+
+---
+
+## 22. Amendment — NB-1 production measurement (2026-11-21)
+
+**Chỉ là addendum.** §1–§21 giữ nguyên (audit 2026-08-26, kết luận
+`READY WITH NON-BLOCKING RISKS`). Mục này đóng phần duy nhất còn thiếu: **số đo NB-1 trên
+production**, thứ mà audit gốc ghi là “unavailable in sandbox”. Không đổi code, không đổi
+contract, không chạy lại regression.
+
+### 22.1 Nguồn số
+
+`square_pipeline_executions` trên DB production, đọc ngày 2026-11-21 (chỉ SELECT): các lượt
+`SCHEDULED` do scheduler thật kích hoạt và một lượt `MOVERS_CRON`.
+
+| Trigger | `evaluated` | `duration_ms` | Quy đổi |
+|---|---|---|---|
+| SCHEDULED | 113 | 384 568 | 6 m 25 s |
+| SCHEDULED | 113 | 390 261 | 6 m 30 s |
+| SCHEDULED | 113 | 587 975 | 9 m 48 s |
+| SCHEDULED | 113 | 583 277 | 9 m 43 s |
+| SCHEDULED | 113 | 1 010 401 | 16 m 50 s |
+| SCHEDULED | 113 | 874 849 | 14 m 35 s |
+| SCHEDULED | 113 | 570 437 | 9 m 30 s |
+| MOVERS_CRON | 6 | 533 199 | 8 m 53 s |
+
+### 22.2 Đọc số đúng cách
+
+Đây là thời gian **end-to-end của cả lượt pipeline** (quét dữ liệu + quality wiring P6-01E +
+LLM + publish), **không** phải latency của một câu SQL hay một lần ghi observation:
+
+- Trung vị ~9,5 phút cho 113 pick → **~5 s/pick** cho toàn chuỗi; biên trên ~9 s/pick.
+- Không tách được phần DB của quality wiring khỏi LLM/publish từ số này.
+- Không có baseline trước P6 ⇒ **không** suy ra “P6 làm refresh chậm X%”.
+
+### 22.3 Trạng thái NB-1
+
+| Mức | Trạng thái | Ghi chú |
+|---|---|---|
+| Pipeline (end-to-end, có quality wiring) | **ĐÓNG** | §22.1 — 7 lượt SCHEDULED + 1 MOVERS, số thật |
+| Truy vấn DB đơn lẻ trong hook | **MỞ** | Cần measurement point riêng trong hook |
+
+Mở lại mức truy vấn chỉ khi cần tối ưu kiến trúc ingestion (batch write, đổi `ON CONFLICT`
+strategy); khi đó thêm timing trong hook rồi đo lại, không suy từ §22.1.
+
+### 22.4 Freeze
+
+Audit gốc đã đề nghị Planner “accept this audit as the P6-01-FINAL phase gate” rồi “formally
+declare P6-01 = FROZEN”. Amendment này không thay đổi kết luận đó; trạng thái hiện tại là
+**P6-01 READY TO FREEZE**, và việc tuyên bố freeze vẫn thuộc Planner/owner — audit agent không
+tự tuyên bố (đúng vai trò ghi ở §0 của audit gốc).

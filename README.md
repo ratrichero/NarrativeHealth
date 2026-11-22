@@ -2,7 +2,7 @@
 
 > **NarrativeHealth** — hệ thống đo lường sức khoẻ của Crypto Narratives + Coins, phát hiện tín hiệu/xu hướng sớm và chuyển dữ liệu tổng hợp thành intelligence, decision support và nội dung phân tích có giá trị.
 >
-> **Current status:** P4-P5 Product Baseline **CLOSED / FROZEN** · Binance Square Monetization **LIVE / OPERATIONAL** · Square Analytics **UI SHIPPED / VERIFICATION PENDING** · Market Radar **ACTIVE (RADAR-01 → RADAR-05)** · P6 **P6-01 FROZEN / P6-02 NOT STARTED**.
+> **Current status:** P4-P5 Product Baseline **CLOSED / FROZEN** · Binance Square Monetization **LIVE / OPERATIONAL** · Square Analytics **UI SHIPPED / SQ-DEPLOY-06 VERIFIED** · Market Radar **ACTIVE (RADAR-01 → RADAR-05)** · P6 **P6-01 → P6-09 BASELINE FROZEN (P6-FINAL)**.
 
 ![Next.js](https://img.shields.io/badge/Next.js-16-black)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
@@ -303,7 +303,7 @@ Reference: `docs/Binance_Square_Upgrade/SQ-LIVE-04_FINAL_AUDIT.md`.
 # 📊 Square Analytics — Shipped UI (verification pending)
 
 A dedicated **Square Analytics / Monetization UI** is shipped as a peer-level menu item
-(analytics verification SQ-DEPLOY-06 is still waiting for a natural eligible window):
+(analytics verified against production records on 2026-11-21 — SQ-DEPLOY-06 §10):
 
 ```text
 Dashboard | WatchList | Binance Square | Square Analytics | Admin
@@ -408,10 +408,12 @@ Planned capabilities include:
 - Aggregated intelligence
 - User-facing warnings and explanations
 
-Trạng thái thực tế: **P6-01 (observation contract, source registry, freshness, quality,
-production ingestion wiring) đã FROZEN** và lớp hiển thị P6 đã mount ở Coin/Narrative detail;
-**P6-02 Narrative Health Engine chưa bắt đầu**. Xem `docs/P6_Upgrade/P6_CURRENT_STATE_ASSESSMENT.md`
-và `P6_NEXT_EXECUTION_PLAN.md` (hai tài liệu này có mốc 2026-08-26, trước các mục P6-UI-*/SEMANTIC-*).
+Trạng thái thực tế: **baseline P6 đã FROZEN và hand off** — P6-01 → P6-09 có freeze declaration
+riêng và `P6-FINAL_BASELINE_FREEZE_AND_HANDOFF.md` (2026-08-27); pipeline P6 chạy trong
+refresh/ingestion, API `/api/p6/*` và panel `P6IntelligencePanel` đã mount ở Coin/Narrative
+detail. Sau baseline là các đợt hardening `P6-PROD-*`, `P6-SEMANTIC-*`, `P6-VALIDATION-*`.
+`docs/P6_Upgrade/P6_CURRENT_STATE_ASSESSMENT.md` có mốc 2026-08-26 (trước P6-02) nên chỉ dùng
+làm lịch sử; trạng thái việc còn treo đọc ở `docs/OPEN-WORK-REGISTER.md`.
 
 P4-P5 invariants are protected through the P4-P5 handoff contract.
 
@@ -546,7 +548,10 @@ pip install -r requirements.txt
 ## Environment
 
 ```env
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/narrative_health
+# DB dev riêng trên máy — KHÔNG dùng DB production (xem mục ENV-GUARD bên dưới)
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/narrative_health_dev
+# DB test riêng cho integration test
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/narrative_health_test
 NEXT_PUBLIC_API_URL=http://localhost:8000
 APP_ENV=development
 LOG_LEVEL=INFO
@@ -560,6 +565,46 @@ GOOGLE_API_KEY=...
 ```
 
 Never commit real secrets.
+
+### Production-only writes & publish (ENV-GUARD-01)
+
+Các đường ghi DB, publish Binance Square và job scheduler chỉ chạy khi runtime là
+**production thật**:
+
+```env
+APP_ENV=production
+PRODUCTION_ALLOWED_HOSTS=narrativehealth.example,www.narrativehealth.example
+```
+
+- `Host` của request phải khớp `PRODUCTION_ALLOWED_HOSTS` (hỗ trợ `*.domain.tld`).
+  Danh sách rỗng = read-only, fail-closed (403 kèm `code` lý do).
+- Ngoại lệ loopback: FastAPI scheduler gọi thẳng `http://localhost:3000/...` trên cùng
+  VPS, nên `localhost`/`127.x`/`::1` được chấp nhận **chỉ khi** `NODE_ENV=production`
+  (`npm start`). `npm run dev` đặt `NODE_ENV=development` nên dev server luôn bị chặn,
+  kể cả khi `.env` ghi `APP_ENV=production`.
+- `publishContent`/`postTextDirect` còn một cổng cuối (`evaluatePublishGate`) trước khi
+  gọi Binance Square, nên không code path nào đăng bài từ máy dev.
+- FastAPI (`backend/main.py`) chỉ start APScheduler khi `APP_ENV=production` và
+  `PRODUCTION_ALLOWED_HOSTS` không rỗng; máy dev log `[ENV-GUARD] Scheduler disabled`.
+- Phạm vi: `/api/refresh*`, `/api/square/movers`, `/api/admin/square*`,
+  `/api/catalyst/sync`, `/api/market/radar/{cohort,bias-outcomes}`,
+  `/api/admin/config/scheduler`, `/api/admin/p3/execute`.
+
+### Máy dev — ghi được nhưng không chạm DB thật
+
+Máy dev đặt `APP_ENV=development` và `DATABASE_URL` trỏ DB dev trên loopback
+(`localhost`/`127.x`/`::1`, tên DB chứa `dev`/`test`/`local`, ví dụ
+`narrative_health_dev`). Khi đó `write`/`scheduler` được phép — refresh dev chạy bình
+thường, không còn 403 read-only — nhưng chỉ ghi vào DB dev đó.
+
+- `DATABASE_URL` trỏ host từ xa (kể cả DB production) → vẫn read-only (403
+  `ENV_NOT_PRODUCTION`), nên dev không thể ghi vào DB thật.
+- `publish` (Binance Square) bị chặn tuyệt đối ngoài production thật; `evaluatePublishGate`
+  vẫn là cổng cuối trước khi gọi Binance.
+- `TEST_DATABASE_URL` là DB test riêng cho `npm run test:integration`, khác cả dev và
+  production. Hai DB local cần được tạo trước (`createdb narrative_health_dev
+  narrative_health_test`) và chạy migration (`npm run db:push` /
+  `npm run test:db:push`).
 
 ## Run
 
@@ -677,11 +722,11 @@ Market Radar docs: `docs/RADAR-04_LIVE_VERIFICATION.md` (runbook verify live + c
 | P4 Decision Support | **CLOSED / FROZEN** |
 | P5 Advisory Decision Layer | **CLOSED / FROZEN** |
 | Binance Square Monetization | **LIVE / OPERATIONAL** |
-| Square Analytics UI | **UI SHIPPED — SQ-DEPLOY-06 VERIFICATION PENDING** |
+| Square Analytics UI | **UI SHIPPED — SQ-DEPLOY-06 VERIFIED (2026-11-21)** |
 | Market Radar (movers + signal ledger) | **ACTIVE — DEMO-VERIFIED, LIVE VERIFY PENDING** |
 | Market Radar cluster/rotation | **PARTIAL — AUDITED (RADAR-05)** |
 | Radar Catalyst layer (why abnormal volume) | **V1 IMPLEMENTED — LIVE VERIFY PENDING** |
-| P6 Narrative Early Warning | **P6-01 FROZEN · P6-02 NOT STARTED** |
+| P6 Narrative Early Warning | **P6-01 → P6-09 FROZEN · P6-FINAL HANDED OFF** |
 | Auto Trading / Bot Trading | **OUT OF SCOPE** |
 
 ---

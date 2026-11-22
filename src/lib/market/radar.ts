@@ -20,6 +20,7 @@ import {
 import { computeMarketMetrics, emaLast, type MarketMetrics } from "@/lib/market/metrics";
 import { computeSpotLeadership, fetchSpotTickers, type SpotLeadership } from "@/lib/market/spot";
 import { computeClusters, type ClusterInfo } from "@/lib/market/cluster";
+import { PromiseCache } from "@/lib/market/promise-cache";
 import { computeLiquidity, netRiskReward, type LiquidityMetrics } from "@/lib/market/liquidity";
 import {
   compositeScore,
@@ -86,6 +87,8 @@ export class MinVolumeOutOfRangeError extends Error {
 }
 const UNUSUAL_POOL_VOLUME_USD = 20_000_000;
 const CLUSTER_CACHE_MS = 5 * 60_000;
+/** Cluster base gắn với một mốc ticker, nên chỉ cần sống bằng snapshot. */
+const CLUSTER_BASE_TTL_MS = 60_000;
 
 /**
  * Tham số tuning lấy từ config runtime (DB > env). Hàm thay cho các hằng
@@ -253,8 +256,21 @@ export interface RadarDetail {
   asOf: string;
 }
 
-const tickerCache: { value: FuturesTicker[]; expires: number } = { value: [], expires: 0 };
+const tickerCache: { value: FuturesTicker[]; expires: number; loadedAt: number } = {
+  value: [],
+  expires: 0,
+  loadedAt: 0,
+};
 let tickerInflight: Promise<FuturesTicker[]> | null = null;
+
+/**
+ * Mốc của bộ ticker đang dùng (ms lúc fetch). Cluster base được tính từ chính
+ * bộ ticker này, nên mốc phải nằm trong cache key: hai snapshot khác mốc ticker
+ * không được ghép chung một base, dù base còn hạn.
+ */
+export function futuresTickerEpoch(): number {
+  return tickerCache.loadedAt;
+}
 
 export async function fetchFuturesTickers(): Promise<FuturesTicker[]> {
   if (tickerCache.expires > Date.now() && tickerCache.value.length > 0) return tickerCache.value;
@@ -267,7 +283,8 @@ export async function fetchFuturesTickers(): Promise<FuturesTicker[]> {
       if (!Array.isArray(response.data)) throw new Error("Unexpected ticker payload");
       const tickers = response.data as FuturesTicker[];
       tickerCache.value = tickers;
-      tickerCache.expires = Date.now() + 45_000;
+      tickerCache.loadedAt = Date.now();
+      tickerCache.expires = tickerCache.loadedAt + 45_000;
       return tickers;
     } finally {
       tickerInflight = null;
@@ -541,11 +558,28 @@ async function enrichTicker(
 
 // ─── Snapshot ───────────────────────────────────────────
 
-const snapshotCache = new Map<string, { expires: number; promise: Promise<RadarSnapshot> }>();
+const snapshotCache = new PromiseCache<RadarSnapshot>({ ttlMs: 60_000 });
+
+/**
+ * RADAR-05-W7: cluster base dùng chung cho cả 3 tab, khoá theo `minVolume` **và
+ * mốc ticker** (`futuresTickerEpoch`).
+ *
+ * Universe quét cluster (`selectClusterUniverse`), `absChangeRanks` và changePct/
+ * leader của cụm đều tính từ ticker cache 45s. Nếu key chỉ có `minVolume`, một
+ * snapshot mới (ticker mới) có thể nhận base cũ tới 5 phút → row mới ghép với
+ * leader/changePct của universe cũ. Đưa mốc ticker vào key giữ nguyên lợi ích
+ * của W7 (3 tab trong cùng một mốc ticker dùng chung base + inflight dedupe)
+ * nhưng triệt tiêu trộn mốc: mốc ticker đổi thì base được tính lại.
+ *
+ * TTL hạ về cùng mức snapshot (60s) — key đã đảm bảo đúng dữ liệu, TTL chỉ còn
+ * tác dụng dọn entry cũ khỏi bộ nhớ.
+ */
+const clusterBaseCache = new PromiseCache<ClusterBase>({ ttlMs: CLUSTER_BASE_TTL_MS });
 
 /** Xoá cache snapshot/detail để đổi cấu hình radar áp dụng ngay, không chờ TTL. */
 export function invalidateRadarSnapshotCache(): void {
   snapshotCache.clear();
+  clusterBaseCache.clear();
   detailCache.clear();
   clusterInfoCache.clear();
 }
@@ -971,6 +1005,10 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
     readLatestBiasBySymbolSide().catch(() => new Map<string, string>()),
   ]);
 
+  // Chụp mốc ticker ngay sau khi fetch, trước bước enrich (có thể kéo dài vài
+  // giây): base phải được khoá theo đúng bộ ticker đã dùng để tính universe.
+  const tickerEpoch = futuresTickerEpoch();
+
   const eligible = tickers.filter((t) => isEligibleTicker(t, info.get(t.symbol), minVolume));
 
   if (eligible.length < 10) {
@@ -1043,7 +1081,11 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
 
   // Cluster được tính trên universe cố định trước; row enrich chỉ merge vào sau.
   const enrichedCloses = new Map(clean.map((entry) => [entry.row.symbol, entry.closes]));
-  const clusterBase = await loadClusterBase(clusterUniverse, system, absChangeRanks, enrichedCloses);
+  // W7: chia sẻ cluster base theo minVolume + mốc ticker giữa các tab
+  // (xem clusterBaseCache).
+  const clusterBase = await clusterBaseCache.lookup(`base|${minVolume}|${tickerEpoch}`, () =>
+    loadClusterBase(clusterUniverse, system, absChangeRanks, enrichedCloses)
+  ).promise;
   clusterInfoCache.set(minVolume, {
     value: clusterBase.clusters,
     expires: Date.now() + 60_000,
@@ -1139,27 +1181,18 @@ export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSna
   await readRadarRuntimeConfig();
 
   const key = `${side}|${minVolume}`;
-  const cached = snapshotCache.get(key);
-  let entry = cached;
-  if (!entry || entry.expires <= Date.now()) {
-    // Chỉ build "nguội" mới gọi Binance — đây là phần cần đo tải.
-    recordSnapshotCache(false);
-    const promise = withSnapshotBuild(
+  const { promise, cached } = snapshotCache.lookup(key, () =>
+    withSnapshotBuild(
       { side, minVolume },
       () => buildSnapshot(side, minVolume),
       (snapshot) => ({ rows: snapshot.rows.length, clusters: snapshot.clusters?.length ?? 0 })
-    );
-    entry = { expires: Date.now() + 60_000, promise };
-    snapshotCache.set(key, entry);
-    promise.catch(() => {
-      if (snapshotCache.get(key) === entry) snapshotCache.delete(key);
-    });
-  } else {
-    // Request dùng chung snapshot/in-flight build của người khác.
-    recordSnapshotCache(true);
-  }
+    )
+  );
+  // `cached` gồm cả inflight: request dùng chung snapshot/build của người khác
+  // thì không phải lần gọi Binance "nguội" — đây là phần cần đo tải.
+  recordSnapshotCache(cached);
 
-  return shapeRadarSnapshot(await entry.promise, query);
+  return shapeRadarSnapshot(await promise, query);
 }
 
 function cachedClusterInfo(symbol: string): ClusterInfo | null | undefined {

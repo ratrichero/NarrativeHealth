@@ -74,6 +74,9 @@ export function buildP4SnapshotRef(vm: P4DecisionSupportViewModel): P5P4Snapshot
     status: vm.status,
     // PROVISIONAL (P5-02 AD-014) — not computed in v1; never invented here.
     contentHash: null,
+    // P5-06C-ENH (O4/O5): pass-through từ P4, không suy diễn thêm.
+    direction: vm.direction,
+    confidence: vm.confidence,
   };
 }
 
