@@ -1690,6 +1690,12 @@ export const topRecommendationPicks = pgTable(
     metrics: jsonb("metrics"), // trend/volume/momentum/RSI/funding/priceVsEma20
     setupUnavailableReason: text("setup_unavailable_reason"),
     pickedAt: timestamp("picked_at").notNull().defaultNow(),
+    /**
+     * TRACK-01 ORIGIN-01 — ý định của lượt ghi: `live` (chạy đúng ngày dữ
+     * liệu) hay `backfill` (chạy bù cho ngày trước). NULL = hàng cũ trước
+     * migration 0039, phân loại bằng heuristic picked_at.
+     */
+    pickedOrigin: varchar("picked_origin", { length: 10 }),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
     // ─── BT-03: backtest lifecycle + stored results (written once) ───
     // PENDING → EVALUATED (TP1_WIN/TP2_WIN/SL_LOSS) | EXPIRED (NO_HIT) | SKIPPED (NO_SETUP)

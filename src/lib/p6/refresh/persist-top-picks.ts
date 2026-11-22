@@ -46,7 +46,13 @@ const round6 = (n: number) => +n.toFixed(6);
 
 export async function persistTopPicks(
   dataDate: string,
-  picks: PersistPickInput[]
+  picks: PersistPickInput[],
+  /**
+   * ORIGIN-01 — bắt buộc khai báo: `live` chỉ dành cho lượt chạy đúng ngày dữ
+   * liệu. Lượt chạy bù cho ngày trước phải ghi `backfill` dù `picked_at` chỉ
+   * trễ một ngày, vì heuristic thời gian không phân biệt được hai trường hợp.
+   */
+  options: { origin: "live" | "backfill" }
 ): Promise<void> {
   try {
     for (const p of picks) {
@@ -102,6 +108,7 @@ export async function persistTopPicks(
 
       const row: NewTopRecommendationPick = {
         dataDate,
+        pickedOrigin: options.origin,
         coinId: p.coinId,
         symbol: p.symbol,
         slot: p.slot,
@@ -158,6 +165,8 @@ export async function persistTopPicks(
             narrativeName: row.narrativeName,
             metrics: row.metrics,
             setupUnavailableReason: row.setupUnavailableReason,
+            // Hàng đã tồn tại thì giữ nguyên origin: lần ghi đầu là lần quyết
+            // định pick có phải bằng chứng live hay không.
             updatedAt: new Date(),
           },
           // Idempotent no-op khi dữ liệu không đổi (không đốt updated_at).

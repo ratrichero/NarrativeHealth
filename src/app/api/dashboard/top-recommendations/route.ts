@@ -524,7 +524,12 @@ export async function GET() {
             metrics: t.metrics as unknown as Record<string, unknown>,
             setupUnavailableReason: t.setupUnavailableReason,
           };
-        })
+        }),
+        // ORIGIN-01: chỉ lượt chạy đúng ngày dữ liệu mới là bằng chứng live.
+        // Chạy bù cho ngày trước (dataDate < hôm nay) bị đánh dấu backfill kể
+        // cả khi picked_at chỉ trễ một ngày — heuristic thời gian không phân
+        // biệt được hai trường hợp.
+        { origin: dataDate === today ? "live" : "backfill" }
       );
     } catch (e) {
       console.error("[BT-01] route persist failed:", e);
