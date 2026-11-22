@@ -531,7 +531,19 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
 
   // Public record = real setups only (GENUINE + hasSetup). Fill-in picks
   // (FILL_LONG/FILL_SHORT) exist to keep the daily list at 3/3 and were never
-  // meant to be traded, so they must not inflate a public win rate.
+  // meant to be traded, so they must not inflate a public win rate. Một định
+  // nghĩa dùng chung cho cả lịch sử đã chốt lẫn pick đang chờ, để `settlement`
+  // không đếm một tập khác với số liệu công bố.
+  const publicPickFilter = and(
+    eq(topRecommendationPicks.pickKind, "GENUINE"),
+    eq(topRecommendationPicks.hasSetup, true),
+    // UNIVERSE-01: hidden in the DB are tokenized equity picks (NVDA, AMZN, ...)
+    // from before the universe filter existed. A public crypto record must not
+    // count them, so read-time filtering keeps already-settled stock picks out
+    // of the numbers.
+    sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
+  );
+
   const rows = await db
     .select({
       dataDate: topRecommendationPicks.dataDate,
@@ -554,18 +566,7 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
     })
     .from(topRecommendationPicks)
     .innerJoin(coins, eq(coins.id, topRecommendationPicks.coinId))
-    .where(
-      and(
-        eq(topRecommendationPicks.pickKind, "GENUINE"),
-        eq(topRecommendationPicks.hasSetup, true),
-        ne(topRecommendationPicks.backtestStatus, "PENDING"),
-        // UNIVERSE-01: hidden in the DB are tokenized equity picks (NVDA,
-        // AMZN, ...) from before the universe filter existed. A public crypto
-        // record must not count them, so read-time filtering keeps
-        // already-settled stock picks out of the numbers.
-        sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
-      )
-    )
+    .where(and(publicPickFilter, ne(topRecommendationPicks.backtestStatus, "PENDING")))
     // Newest first so the capped read still contains the latest pick and the
     // latest settlement stamp (freshness reads their max).
     .orderBy(desc(topRecommendationPicks.dataDate))
@@ -690,14 +691,7 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
       })
       .from(topRecommendationPicks)
       .innerJoin(coins, eq(coins.id, topRecommendationPicks.coinId))
-      .where(
-        and(
-          eq(topRecommendationPicks.pickKind, "GENUINE"),
-          eq(topRecommendationPicks.hasSetup, true),
-          eq(topRecommendationPicks.backtestStatus, "PENDING"),
-          sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
-        )
-      );
+      .where(and(publicPickFilter, eq(topRecommendationPicks.backtestStatus, "PENDING")));
     settlement = {
       pendingPicks: Number(pending?.count ?? 0),
       nextSettlementAt: pending?.oldest ? addDaysIso(pending.oldest, horizonDays) : null,
