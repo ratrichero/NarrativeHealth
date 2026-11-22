@@ -3,7 +3,6 @@
 import {
   buildTrackRecord,
   parseLiveSince,
-  partitionByProvenance,
   pickProvenance,
   summarizeDrawdown,
   summarizeHorizons,
@@ -384,19 +383,64 @@ describe("FORWARD-01 forward vs backfill theo picked_at", () => {
       exitRNet: 3,
     });
 
-    const partition = partitionByProvenance([seeded, live, lateBackfill], {
-      liveSince: "2026-09-05",
-    });
-    expect(partition.forward).toHaveLength(1);
-    expect(partition.forward[0].symbol).toBe("ETH");
-    expect(partition.backfilled).toHaveLength(2);
-    // Mốc live trả về đúng mốc cấu hình, kể cả khi forward rỗng.
-    expect(partition.liveSince).toBe("2026-09-05");
-    expect(partitionByProvenance([], { liveSince: "2026-09-05" }).liveSince).toBe("2026-09-05");
+    const all = [seeded, live, lateBackfill];
+    const options = { liveSince: "2026-09-05" };
+    const forwardRows = all.filter((r) => pickProvenance(r, options) === "forward");
+    expect(forwardRows.map((r) => r.symbol)).toEqual(["ETH"]);
+    expect(all.filter((r) => pickProvenance(r, options) === "backfill")).toHaveLength(2);
 
-    const forward = buildTrackRecord(partition.forward);
+    const forward = buildTrackRecord(forwardRows);
     expect(forward.totals.trades).toBe(1);
     expect(forward.totalRNet).toBe(-1);
+  });
+
+  test("pick chạy bù 1 ngày (origin=backfill) không bị tính là forward", () => {
+    // Timestamp y hệt một pick live bình thường (chạy sáng hôm sau cho ngày
+    // hôm trước) — đây đúng là lỗ hổng của heuristic lag ≤ 1 ngày.
+    const catchUp = {
+      dataDate: "2026-09-10",
+      pickedAt: "2026-09-11T02:00:00.000Z",
+    };
+    // Heuristic cũ: không phân biệt được → forward (lý do phải ghi origin).
+    expect(pickProvenance(catchUp)).toBe("forward");
+    // Origin ghi lúc insert quyết định: lượt chạy bù là backfill.
+    expect(pickProvenance({ ...catchUp, pickedOrigin: "backfill" })).toBe("backfill");
+    expect(pickProvenance({ ...catchUp, pickedOrigin: "live" })).toBe("forward");
+    // Origin "live" không nâng được một pick trễ nhiều ngày lên forward.
+    expect(
+      pickProvenance({
+        dataDate: "2026-09-01",
+        pickedAt: "2026-09-10T02:00:00.000Z",
+        pickedOrigin: "live",
+      })
+    ).toBe("backfill");
+    // Backfill thắng cả khi không có picked_at.
+    expect(pickProvenance({ dataDate: "2026-09-10", pickedAt: null, pickedOrigin: "backfill" })).toBe(
+      "backfill"
+    );
+  });
+
+  test("partition loại pick chạy bù khỏi khối forward dù lag chỉ 1 ngày", () => {
+    const live = row({
+      symbol: "BTC",
+      dataDate: "2026-09-10",
+      pickedAt: "2026-09-10T08:00:00.000Z",
+      pickedOrigin: "live",
+      exitRNet: 1,
+    });
+    const catchUp = row({
+      symbol: "ETH",
+      dataDate: "2026-09-10",
+      pickedAt: "2026-09-11T02:00:00.000Z",
+      pickedOrigin: "backfill",
+      exitRNet: 4,
+    });
+
+    const all = [live, catchUp];
+    const forward = all.filter((r) => pickProvenance(r, { liveSince: "2026-09-01" }) === "forward");
+    expect(forward.map((r) => r.symbol)).toEqual(["BTC"]);
+    // Cú backfill +4R không được xuất hiện trong con số forward.
+    expect(buildTrackRecord(forward).totalRNet).toBe(1);
   });
 
   test("mốc live = data_date sớm nhất của pick forward; backfill bị tách khỏi forward", () => {
@@ -424,14 +468,14 @@ describe("FORWARD-01 forward vs backfill theo picked_at", () => {
     });
     const noStamp = row({ symbol: "ADA", dataDate: "2026-09-11", pickedAt: null, exitRNet: -1 });
 
-    const partition = partitionByProvenance([liveWin, liveLoss, backfilledWin, noStamp]);
-    expect(partition.forward).toHaveLength(2);
-    expect(partition.backfilled).toHaveLength(1);
-    expect(partition.unknown).toHaveLength(1);
-    expect(partition.liveSince).toBe("2026-09-10");
+    const all = [liveWin, liveLoss, backfilledWin, noStamp];
+    const forwardRows = all.filter((r) => pickProvenance(r) === "forward");
+    expect(forwardRows).toHaveLength(2);
+    expect(all.filter((r) => pickProvenance(r) === "backfill")).toHaveLength(1);
+    expect(all.filter((r) => pickProvenance(r) === "unknown")).toHaveLength(1);
 
-    const history = buildTrackRecord([liveWin, liveLoss, backfilledWin, noStamp]);
-    const forward = buildTrackRecord(partition.forward);
+    const history = buildTrackRecord(all);
+    const forward = buildTrackRecord(forwardRows);
     // Lịch sử: 4 lệnh, tổng +2.5R nhờ cú backfill +3R.
     expect(history.totals.trades).toBe(4);
     expect(history.totalRNet).toBe(2.5);
@@ -439,9 +483,6 @@ describe("FORWARD-01 forward vs backfill theo picked_at", () => {
     expect(forward.totals.trades).toBe(2);
     expect(forward.totalRNet).toBe(0.5);
     expect(forward.winRate).toBe(50);
-
-    // Rỗng → không có mốc live, không bịa ngày.
-    expect(partitionByProvenance([]).liveSince).toBeNull();
   });
 });
 

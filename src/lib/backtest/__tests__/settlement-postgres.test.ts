@@ -105,6 +105,7 @@ const DDL = `
     metrics jsonb,
     setup_unavailable_reason text,
     picked_at timestamp NOT NULL DEFAULT now(),
+    picked_origin varchar(10),
     updated_at timestamp NOT NULL DEFAULT now(),
     backtest_status varchar(20) NOT NULL DEFAULT 'PENDING',
     backtest_outcome varchar(20),
@@ -543,7 +544,7 @@ describe("BT-E2E settlement trên Postgres thật", () => {
         };
         split: {
           liveSince: string | null;
-          liveSinceSource: "env" | "derived" | null;
+          liveSinceSource: "env" | "derived" | "invalid-env" | null;
           forwardPicks: number;
           backfilledPicks: number;
           unknownPicks: number;
@@ -647,6 +648,45 @@ describe("BT-E2E settlement trên Postgres thật", () => {
     } finally {
       delete process.env.LIVE_SINCE;
     }
+
+    // LIVE_SINCE sai định dạng: bị bỏ qua nhưng phải lộ ra (`invalid-env`) và
+    // quay về mốc suy từ picked_at, không im lặng coi như không cấu hình gì.
+    process.env.LIVE_SINCE = "05/09/2026";
+    try {
+      const invalid = (await (await trackRecordGET()).json()) as {
+        data: {
+          split: { liveSince: string | null; liveSinceSource: string | null; forwardPicks: number };
+        };
+      };
+      expect(invalid.data.split).toMatchObject({
+        liveSince: today,
+        liveSinceSource: "invalid-env",
+        forwardPicks: 1,
+      });
+    } finally {
+      delete process.env.LIVE_SINCE;
+    }
+
+    // ORIGIN-01: cùng timestamp (lag 0) nhưng đây là lượt chạy bù → origin ghi
+    // lúc insert hạ nhãn xuống backfill. Heuristic 1 ngày không làm được điều này.
+    await client.query(
+      `UPDATE top_recommendation_picks SET picked_origin = 'backfill' WHERE data_date = $1 AND symbol = 'ETH'`,
+      [today]
+    );
+    const demoted = (await (await trackRecordGET()).json()) as {
+      data: {
+        split: {
+          forwardPicks: number;
+          backfilledPicks: number;
+          summary: unknown | null;
+        };
+      };
+    };
+    expect(demoted.data.split).toMatchObject({
+      forwardPicks: 0,
+      backfilledPicks: 2,
+      summary: null,
+    });
 
     // FRESH-01 exposed cho uptime-check: record vừa được chốt hôm nay → không stale.
     expect(body.data.freshness).toMatchObject({

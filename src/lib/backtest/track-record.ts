@@ -27,7 +27,7 @@ import {
 } from "./bootstrap";
 
 /** Bumped when the aggregation semantics change (shown on the public page). */
-export const TRACK_RECORD_METRICS_VERSION = "track-record-v7";
+export const TRACK_RECORD_METRICS_VERSION = "track-record-v8";
 
 /** 1R = 1% vốn (rủi ro cố định mỗi lệnh) — cùng đơn vị với % return của benchmark. */
 export const RISK_PCT_PER_TRADE = 1;
@@ -41,6 +41,10 @@ export const MIN_EPISODES_FOR_VERDICT = 5;
  * thay vì im lặng đổi số. Mới nhất trước.
  */
 export const TRACK_RECORD_CHANGELOG: readonly { version: string; note: string }[] = [
+  {
+    version: "track-record-v8",
+    note: "ORIGIN-01: ghi picked_origin (live/backfill) lúc insert — một lượt chạy bù cho ngày trước không còn được tính là bằng chứng forward chỉ vì picked_at trễ 1 ngày. Origin chỉ có thể hạ nhãn, không bao giờ nâng; hàng cũ (NULL) giữ heuristic cũ. LIVE_SINCE sai định dạng giờ được báo là invalid-env thay vì im lặng. Cần chạy migration 0039 trước khi deploy.",
+  },
   {
     version: "track-record-v7",
     note: "Khối forward record neo vào mốc live tường minh (env LIVE_SINCE, so bằng picked_at): chỉ pick được ghi từ mốc live trở đi mới là bằng chứng forward; thiếu LIVE_SINCE thì mốc live suy từ pick forward sớm nhất.",
@@ -96,6 +100,12 @@ export interface TrackRecordPickRow {
    * much later was backfilled into history.
    */
   pickedAt?: string | null;
+  /**
+   * ORIGIN-01 — ý định của lượt ghi (`live` / `backfill`), do đường insert
+   * khai báo. Null = hàng cũ trước migration 0039 → dùng heuristic picked_at.
+   * Tín hiệu này chỉ có thể HẠ một pick xuống backfill, không bao giờ nâng lên.
+   */
+  pickedOrigin?: "live" | "backfill" | null;
 }
 
 export interface TrackRecordDirectionStats {
@@ -200,9 +210,14 @@ export function parseLiveSince(raw: string | null | undefined): string | null {
  * mốc live vẫn bị loại bởi quy tắc lag bên dưới.
  */
 export function pickProvenance(
-  row: { dataDate: string; pickedAt?: string | null },
+  row: { dataDate: string; pickedAt?: string | null; pickedOrigin?: "live" | "backfill" | null },
   options: { liveSince?: string | null } = {}
 ): TrackRecordProvenance {
+  // ORIGIN-01: origin ghi lúc insert là tín hiệu mạnh nhất và đứng trước mọi
+  // heuristic. Một lượt chạy bù cho ngày hôm trước có picked_at/data_date y
+  // hệt pick live, nên chỉ origin phân biệt được. Origin chỉ hạ nhãn, không
+  // nâng: `live` vẫn phải qua mốc LIVE_SINCE và quy tắc lag bên dưới.
+  if (row.pickedOrigin === "backfill") return "backfill";
   const pickedDate = row.pickedAt?.slice(0, 10);
   if (!pickedDate || !/^\d{4}-\d{2}-\d{2}$/.test(pickedDate)) return "unknown";
   const liveSince = options.liveSince ?? null;
@@ -211,35 +226,6 @@ export function pickProvenance(
   if (!Number.isFinite(lagDays)) return "unknown";
   // lag âm (picked_at trước data_date) = ghi đúng thời điểm, vẫn là live.
   return lagDays <= FORWARD_PICK_LAG_DAYS ? "forward" : "backfill";
-}
-
-export interface TrackRecordPartition<T> {
-  forward: T[];
-  backfilled: T[];
-  unknown: T[];
-  /** data_date sớm nhất của một pick forward = mốc live; null khi chưa có. */
-  liveSince: string | null;
-}
-
-/** Chia rows theo nguồn gốc, giữ nguyên thứ tự đầu vào trong từng nhóm. */
-export function partitionByProvenance<
-  T extends { dataDate: string; pickedAt?: string | null },
->(rows: readonly T[], options: { liveSince?: string | null } = {}): TrackRecordPartition<T> {
-  const forward: T[] = [];
-  const backfilled: T[] = [];
-  const unknown: T[] = [];
-  for (const row of rows) {
-    const provenance = pickProvenance(row, options);
-    if (provenance === "forward") forward.push(row);
-    else if (provenance === "backfill") backfilled.push(row);
-    else unknown.push(row);
-  }
-  const liveSince =
-    options.liveSince ??
-    (forward.length > 0
-      ? forward.reduce((min, row) => (row.dataDate < min ? row.dataDate : min), forward[0].dataDate)
-      : null);
-  return { forward, backfilled, unknown, liveSince };
 }
 
 /**

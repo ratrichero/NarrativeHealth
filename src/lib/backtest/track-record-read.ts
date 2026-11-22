@@ -27,7 +27,7 @@ import {
 import {
   buildTrackRecord,
   parseLiveSince,
-  partitionByProvenance,
+  pickProvenance,
   summarizeHorizons,
   trackRecordFreshness,
   DEFAULT_FRESHNESS_HORIZON_DAYS,
@@ -39,6 +39,7 @@ import {
   type TrackRecordFreshness,
   type TrackRecordHorizonStat,
   type TrackRecordPickRow,
+  type TrackRecordProvenance,
   type TrackRecordSummary,
 } from "./track-record";
 
@@ -104,8 +105,12 @@ export interface TrackRecordMeta {
 export interface TrackRecordForwardSplit {
   /** Mốc bắt đầu bằng chứng forward: env LIVE_SINCE nếu có, không thì suy ra. */
   liveSince: string | null;
-  /** `env` = LIVE_SINCE được cấu hình; `derived` = pick forward sớm nhất; null = chưa có. */
-  liveSinceSource: "env" | "derived" | null;
+  /**
+   * `env` = LIVE_SINCE hợp lệ đang được dùng; `invalid-env` = env có nhưng sai
+   * định dạng nên đã bị bỏ qua (để lộ lỗi cấu hình thay vì im lặng); `derived`
+   * = suy từ pick forward sớm nhất; null = chưa có mốc nào.
+   */
+  liveSinceSource: "env" | "derived" | "invalid-env" | null;
   /** Số pick được ghi đúng ngày dữ liệu (nguồn forward). */
   forwardPicks: number;
   /** Số pick bị ghi trễ hơn ngày dữ liệu — lịch sử nạp lại. */
@@ -291,10 +296,13 @@ async function buildRealisticScenario(
   return summarizeRealistic(netRs, baseNetRs, fundingCovered);
 }
 
+/** Pick đã chốt kèm nhãn provenance mà trang dùng — export chỉ việc in ra. */
+export type TrackRecordExportPick = TrackRecordPickRow & { provenance: TrackRecordProvenance };
+
 export interface TrackRecordRead {
   payload: TrackRecordPayload;
   /** Mọi pick đã chốt (đã lọc universe) — dùng cho export. */
-  picks: TrackRecordPickRow[];
+  picks: TrackRecordExportPick[];
 }
 
 /**
@@ -459,9 +467,15 @@ async function benchmarksFor<T extends BenchmarkInputRow>(
   return { basket, btc };
 }
 
+/** Chỉ hai giá trị đã biết mới có nghĩa; giá trị lạ → null → dùng heuristic. */
+function originOf(value: string | null): "live" | "backfill" | null {
+  return value === "live" || value === "backfill" ? value : null;
+}
+
 interface PickSourceRow {
   dataDate: string;
   pickedAt: Date | null;
+  pickedOrigin: string | null;
   symbol: string;
   direction: string;
   entryMid: string | null;
@@ -479,6 +493,7 @@ function pickRow(r: PickSourceRow, fee: FeeConfig): TrackRecordPickRow {
   return {
     dataDate: r.dataDate,
     pickedAt: r.pickedAt ? r.pickedAt.toISOString() : null,
+    pickedOrigin: originOf(r.pickedOrigin),
     symbol: r.symbol,
     direction: r.direction,
     outcome: r.backtestOutcome,
@@ -500,6 +515,7 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
     .select({
       dataDate: topRecommendationPicks.dataDate,
       pickedAt: topRecommendationPicks.pickedAt,
+      pickedOrigin: topRecommendationPicks.pickedOrigin,
       coinId: topRecommendationPicks.coinId,
       symbol: topRecommendationPicks.symbol,
       direction: topRecommendationPicks.direction,
@@ -534,21 +550,37 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
     .orderBy(desc(topRecommendationPicks.dataDate))
     .limit(MAX_ROWS);
 
-  const picks: TrackRecordPickRow[] = rows.map((r) => pickRow(r, fee));
+  // FORWARD-01: phân loại MỘT lần cho cả trang lẫn export. Mốc tường minh lấy
+  // từ env LIVE_SINCE; pick ghi trước mốc là lịch sử seed dù lag nhỏ, và pick
+  // ghi trễ hơn data_date vẫn là backfill dù sau mốc live. Không có env thì
+  // mốc live suy từ pick forward sớm nhất.
+  const liveSinceRaw = process.env.LIVE_SINCE;
+  const liveSinceMarker = parseLiveSince(liveSinceRaw);
+  const provenanceOf = rows.map((row) =>
+    pickProvenance(
+      {
+        dataDate: row.dataDate,
+        pickedAt: row.pickedAt ? row.pickedAt.toISOString() : null,
+        pickedOrigin: originOf(row.pickedOrigin),
+      },
+      { liveSince: liveSinceMarker }
+    )
+  );
 
-  // FORWARD-01: chia pick theo picked_at. Mốc live tường minh lấy từ env
-  // LIVE_SINCE (YYYY-MM-DD); pick ghi trước mốc đó là lịch sử seed, dù lag
-  // nhỏ — và pick ghi trễ hơn data_date vẫn là backfill dù sau mốc live.
-  // Không cấu hình LIVE_SINCE thì mốc live suy từ pick forward sớm nhất.
-  const liveSinceMarker = parseLiveSince(process.env.LIVE_SINCE);
-  const provenanceRows = rows.map((row) => ({
-    row,
-    dataDate: row.dataDate,
-    pickedAt: row.pickedAt ? row.pickedAt.toISOString() : null,
+  const picks: TrackRecordExportPick[] = rows.map((row, index) => ({
+    ...pickRow(row, fee),
+    provenance: provenanceOf[index],
   }));
-  const partition = partitionByProvenance(provenanceRows, { liveSince: liveSinceMarker });
-  const forwardRows = partition.forward.map((entry) => entry.row);
-  const forwardPicks = forwardRows.map((r) => pickRow(r, fee));
+  const forwardRows = rows.filter((_, index) => provenanceOf[index] === "forward");
+  const forwardPicks = picks.filter((pick) => pick.provenance === "forward");
+  const liveSince =
+    liveSinceMarker ??
+    (forwardPicks.length > 0
+      ? forwardPicks.reduce(
+          (min, pick) => (pick.dataDate < min ? pick.dataDate : min),
+          forwardPicks[0].dataDate
+        )
+      : null);
 
   const today = getBusinessDate();
   const [historyBench, forwardBench] = await Promise.all([
@@ -573,15 +605,18 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
   // Bằng chứng forward: cùng phép tính, chỉ trên pick được tạo live, với
   // benchmark đo trên đúng cửa sổ của các lệnh đó.
   const split: TrackRecordForwardSplit = {
-    liveSince: partition.liveSince,
+    liveSince,
+    // Env sai định dạng được báo ra thay vì im lặng rơi về mốc suy ra.
     liveSinceSource: liveSinceMarker
       ? "env"
-      : partition.liveSince
-        ? "derived"
-        : null,
-    forwardPicks: forwardRows.length,
-    backfilledPicks: partition.backfilled.length,
-    unknownPicks: partition.unknown.length,
+      : liveSinceRaw?.trim()
+        ? "invalid-env"
+        : liveSince
+          ? "derived"
+          : null,
+    forwardPicks: forwardPicks.length,
+    backfilledPicks: provenanceOf.filter((p) => p === "backfill").length,
+    unknownPicks: provenanceOf.filter((p) => p === "unknown").length,
     lagGraceDays: FORWARD_PICK_LAG_DAYS,
     summary:
       forwardRows.length > 0
