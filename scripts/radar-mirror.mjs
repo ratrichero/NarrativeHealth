@@ -38,6 +38,13 @@ const KEY_PEM = path.join(CERT_DIR, "key.pem");
 /** Map mặc định: host bị chặn = host mirror cùng API. Ghi đè bằng RADAR_MIRROR_MAP. */
 const DEFAULT_MAP =
   "fapi.binance.com=www.binance.com,api.binance.com=data-api.binance.vision";
+/**
+ * Host đi thẳng qua proxy, giữ nguyên host đích (không đổi sang host mirror).
+ * `src/lib/market/spot.ts` gọi trực tiếp `data-api.binance.vision` để so spot vs perp;
+ * trước đây host này chỉ là *đích* của map nên CONNECT từ chính nó bị proxy trả 403 và
+ * spot ticker luôn rỗng. Vẫn phải nằm trong SAN để TLS MITM khớp cert.
+ */
+const PASSTHROUGH_HOSTS = ["data-api.binance.vision"];
 const PORT = Number(process.env.RADAR_MIRROR_PORT || 8899);
 const HOST = "127.0.0.1";
 
@@ -61,7 +68,7 @@ function parseMap(raw) {
 /* ------------------------------------------------------------------ certs */
 
 function sanNames(map) {
-  const names = new Set(["localhost", "127.0.0.1"]);
+  const names = new Set(["localhost", "127.0.0.1", ...PASSTHROUGH_HOSTS]);
   for (const [from, to] of map) {
     names.add(from);
     names.add(to);
@@ -126,14 +133,17 @@ function ensureCerts(map, { force = false } = {}) {
 /* ------------------------------------------------------------------ proxy */
 
 function startProxy(map) {
+  const passthrough = new Set(PASSTHROUGH_HOSTS);
+  /** Host đích: map đổi host, passthrough giữ nguyên, còn lại bị chặn. */
+  const targetFor = (host) => map.get(host) ?? (passthrough.has(host) ? host : null);
   const tlsServer = https.createServer(
     { key: fs.readFileSync(KEY_PEM), cert: fs.readFileSync(CERT_PEM) },
     (req, res) => {
       const host = String(req.headers.host || "").split(":")[0].toLowerCase();
-      const target = map.get(host);
+      const target = targetFor(host);
       if (!target) {
         res.writeHead(421, { "content-type": "text/plain" });
-        res.end(`radar-mirror: host ${host || "(none)"} không có trong map`);
+        res.end(`radar-mirror: host ${host || "(none)"} không có trong map hoặc passthrough`);
         return;
       }
       const upstream = https.request(
@@ -165,7 +175,7 @@ function startProxy(map) {
 
   proxy.on("connect", (req, clientSocket, head) => {
     const host = String(req.url || "").split(":")[0].toLowerCase();
-    if (!map.has(host)) {
+    if (!targetFor(host)) {
       clientSocket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
       return;
     }
@@ -188,14 +198,25 @@ function listen(server, port) {
   });
 }
 
-async function bootProxy(map) {
+/**
+ * Dựng proxy. `allowReuse: false` dùng cho kiểm tra hồi quy: port bận phải FAIL chứ
+ * không lặng lẽ test proxy đang chạy (có thể là code cũ).
+ */
+async function bootProxy(map, { allowReuse = true, label = "proxy" } = {}) {
   ensureCerts(map);
   const { proxy, tlsServer } = startProxy(map);
   const started = await listen(proxy, PORT);
   if (started) {
-    log(`proxy ${HOST}:${PORT} → ${[...map].map(([a, b]) => `${a}=${b}`).join(", ")}`);
-  } else {
+    log(`${label} ${HOST}:${PORT} → ${[...map].map(([a, b]) => `${a}=${b}`).join(", ")}`);
+  } else if (allowReuse) {
     log(`port ${PORT} đã có listener — dùng lại proxy đang chạy`);
+  } else {
+    proxy.close();
+    tlsServer.close();
+    die(
+      `port ${PORT} đang bận — đặt RADAR_MIRROR_PORT=<port trống> để chạy hồi quy spot ` +
+        "trên một proxy mới (không dùng lại proxy đang chạy)",
+    );
   }
   return { proxy, tlsServer, started };
 }
@@ -227,6 +248,8 @@ async function verify() {
   const required = [
     "https://fapi.binance.com/fapi/v1/time",
     "https://api.binance.com/api/v3/time",
+    // Spot ticker của radar gọi host này trực tiếp (PASSTHROUGH_HOSTS).
+    "https://data-api.binance.vision/api/v3/ticker/24hr",
   ];
   for (const url of required) {
     let code = "000";
@@ -310,6 +333,43 @@ async function run(command) {
   });
 }
 
+/* ------------------------------------------------------- spot regression */
+
+/**
+ * Hồi quy cho lỗi spot 403: `data-api.binance.vision` là host app gọi trực tiếp
+ * (PASSTHROUGH_HOSTS), trước đây không nằm trong map nên CONNECT bị chặn 403.
+ *
+ * Chạy trên port riêng để không phụ thuộc proxy đang phục vụ dev server (có thể
+ * là code cũ đang giữ 8899). Port bận = FAIL, không im lặng dùng lại proxy lạ.
+ */
+async function checkSpot() {
+  const map = parseMap(process.env.RADAR_MIRROR_MAP || DEFAULT_MAP);
+  const { proxy, tlsServer } = await bootProxy(map, {
+    allowReuse: false,
+    label: "spot regression: proxy",
+  });
+
+  const url = "https://data-api.binance.vision/api/v3/ticker/24hr";
+  let code = "000";
+  try {
+    code = await curlThroughProxy(url);
+  } catch (error) {
+    code = `curl: ${error.message.split("\n")[0]}`;
+  }
+  const pass = code === "200";
+  console.log(`  ${pass ? "✓" : "✗"} ${url} → ${code}`);
+  if (!pass) {
+    console.log(
+      "  gợi ý: 403 = CONNECT bị chặn (host không có trong map/passthrough); " +
+        "cert sai SAN thì chạy `setup --force` rồi thử lại",
+    );
+  }
+
+  proxy.close();
+  tlsServer.close();
+  process.exit(pass ? 0 : 1);
+}
+
 /* ------------------------------------------------------------------- main */
 
 const [command, ...rest] = process.argv.slice(2);
@@ -328,6 +388,9 @@ switch (command) {
   case "verify":
     await verify();
     break;
+  case "spot-check":
+    await checkSpot();
+    break;
   case "run":
     await run(rest[0] === "--" ? rest.slice(1) : rest);
     break;
@@ -338,8 +401,11 @@ switch (command) {
         "",
         "  node scripts/radar-mirror.mjs setup [--force]   tạo CA + leaf cert (.radar-mirror/)",
         "  node scripts/radar-mirror.mjs verify            kiểm tra host mirror qua proxy",
+        "  node scripts/radar-mirror.mjs spot-check        hồi quy: spot ticker 200 qua proxy riêng",
         "  node scripts/radar-mirror.mjs run -- <cmd>      chạy lệnh sau proxy (vd: npm run dev)",
         "  node scripts/radar-mirror.mjs start             chỉ chạy proxy ở foreground",
+        "",
+        `  passthrough (giữ nguyên host): ${PASSTHROUGH_HOSTS.join(", ")}`,
         "",
         `  RADAR_MIRROR_PORT=${PORT}  RADAR_MIRROR_MAP="${DEFAULT_MAP}"`,
         "  RADAR_BASE=http://127.0.0.1:3000 (tuỳ chọn, để verify thêm API radar)",

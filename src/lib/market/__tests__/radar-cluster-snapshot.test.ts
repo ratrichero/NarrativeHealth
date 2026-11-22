@@ -49,14 +49,14 @@ function candles(symbol: string) {
   });
 }
 
-function stubMarket() {
+function stubMarket(changes: Record<number, number> = {}) {
   process.env.RADAR_DEMO = "0";
 
   const tickers = Array.from({ length: 40 }, (_, i) => ({
     symbol: `C${i}USDT`,
     lastPrice: "1",
     // C15 +1%: đủ điều kiện unusual nhưng không bao giờ vào top 15 gainer.
-    priceChangePercent: String(i === 15 ? 1 : i - 20),
+    priceChangePercent: String(changes[i] ?? (i === 15 ? 1 : i - 20)),
     quoteVolume: "50000000",
     highPrice: "1.1",
     lowPrice: "0.9",
@@ -126,5 +126,42 @@ describe("radar snapshot cluster universe", () => {
     const member = cluster?.members.find((item) => item.symbol === "C15");
     expect(member?.laggard).toBe(true);
     expect(cluster?.leader).toBe("C39");
+  });
+
+  it("tính lại cluster base khi mốc ticker đổi, không ghép row mới với cụm cũ", async () => {
+    stubMarket();
+
+    const first = await getRadarSnapshot({
+      side: "gainer",
+      limit: 20,
+      minVolume: 10_000_000,
+    });
+    const firstCluster = first.clusters?.find((item) =>
+      item.members.some((member) => member.symbol === "C15")
+    );
+    expect(firstCluster?.leader).toBe("C39");
+
+    // Sau 46s ticker cache đã hết hạn (45s) và dữ liệu đổi: C15 +25% thành
+    // leader của cụm. Trước đây cluster base sống 5 phút nên snapshot mới vẫn
+    // dùng changePct/leader cũ (C15 +1%, leader C39).
+    const spy = jest.spyOn(Date, "now").mockReturnValue(Date.now() + 46_000);
+    try {
+      stubMarket({ 15: 25 });
+      const second = await getRadarSnapshot({
+        side: "unusual",
+        limit: 20,
+        minVolume: 10_000_000,
+      });
+
+      const cluster = second.clusters?.find((item) =>
+        item.members.some((member) => member.symbol === "C15")
+      );
+      expect(cluster).toBeDefined();
+      expect(cluster?.leader).toBe("C15");
+      expect(cluster?.members.find((member) => member.symbol === "C15")?.changePct).toBe(25);
+      expect(cluster?.members.find((member) => member.symbol === "C39")?.changePct).toBe(19);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

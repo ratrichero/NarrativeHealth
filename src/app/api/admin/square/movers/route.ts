@@ -9,6 +9,7 @@ import { and, eq, or, desc } from "drizzle-orm";
 import { getBusinessDate } from "@/lib/utils";
 import { getQuotaStatus } from "@/lib/square/publisher";
 import { triggerMoversPipeline } from "@/lib/square/movers/trigger";
+import { runtimeGuardResponse } from "@/lib/env/route-guard";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 800; // 6 bài × stagger 90s cần runtime dài
@@ -139,6 +140,10 @@ export async function GET() {
 //   trigger=forced SCHEDULED (hiếm) — mặc định MANUAL để ghi MOVERS_MANUAL
 
 export async function POST(request: NextRequest) {
+  // ENV-GUARD-01: publish chỉ chạy ở production + hostname allowlist.
+  const blocked = runtimeGuardResponse(request, "publish");
+  if (blocked) return blocked;
+
   const dryRun = request.nextUrl.searchParams.get("dryRun") === "1";
   const trigger =
     request.nextUrl.searchParams.get("trigger") === "scheduled" ? "SCHEDULED" : "MANUAL";

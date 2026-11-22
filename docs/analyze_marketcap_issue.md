@@ -1,5 +1,9 @@
 # Phân tích vấn đề Market Cap của BlueAI
 
+> **Trạng thái:** đã sửa 2026-11-21 (MARKET-CAP-01). Fallback `volume24h × price` đã bị bỏ ở cả
+> 3 route refresh và `coin-processor`; xem `docs/Upgrade.md` mục MARKET-CAP-01 và
+> `src/lib/market/market-cap.ts`. Phần phân tích dưới đây giữ nguyên làm dấu vết điều tra.
+
 ## Tóm tắt vấn đề
 Coin BlueAI trong hệ thống có market cap là 2.6M, nhưng giá trị này bất thường.
 

@@ -226,6 +226,11 @@ export interface TrackRecordData {
       oldestIncluded: string | null;
     };
   };
+  /**
+   * W1: trạng thái chờ chốt của pick CÔNG KHAI. `nextSettlementAt` = ngày pick
+   * cũ nhất đáo hạn horizon (YYYY-MM-DD), null khi không còn pick chờ.
+   */
+  settlement?: { pendingPicks: number; nextSettlementAt: string | null } | null;
 }
 
 // ─── Formatting helpers ────────────────────────────────
@@ -381,9 +386,20 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
     ? new Date(s.lastEvaluatedAt).toLocaleDateString("vi-VN")
     : null;
 
+  const settlement = data.settlement ?? null;
+  const nextSettlementLabel = settlement?.nextSettlementAt
+    ? new Date(`${settlement.nextSettlementAt}T00:00:00Z`).toLocaleDateString("vi-VN", {
+        timeZone: "UTC",
+      })
+    : null;
+
   let staleMessage = "";
   if (freshness?.reason === "no-settlement-stamp") {
-    staleMessage = `Đã chốt ${s.totals.picks} pick nhưng chưa từng ghi nhận lần chốt nào — settlement có thể không chạy. Số bên dưới chỉ là lịch sử đã lưu.`;
+    // W1: phân biệt "chưa pick nào đáo hạn" với "settlement không chạy".
+    staleMessage =
+      settlement && settlement.pendingPicks > 0 && nextSettlementLabel
+        ? `Chưa có pick công khai nào đáo hạn cửa sổ ${params.horizonDays ?? 14} ngày. ${settlement.pendingPicks} pick đang chờ; pick sớm nhất đáo hạn ${nextSettlementLabel}. Số bên dưới chỉ là lịch sử đã lưu.`
+        : `Đã chốt ${s.totals.picks} pick nhưng chưa từng ghi nhận lần chốt nào — settlement có thể không chạy. Số bên dưới chỉ là lịch sử đã lưu.`;
   } else if (freshness?.reason === "settlement-old") {
     staleMessage = `Lần chốt gần nhất ${lastUpdateLabel ?? "—"}, ${freshness.settlementAgeDays} ngày trước — settlement đã ngừng chốt pick mới.`;
   } else if (freshness?.reason === "pick-pipeline-old") {

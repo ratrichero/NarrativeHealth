@@ -73,6 +73,8 @@ interface LlmCallResult {
   text: string;
   status: number;
   durationMs: number;
+  /** Token provider báo (0 khi provider không trả `usage`) — dùng để đo chi phí. */
+  tokens: number;
 }
 
 async function callOpenAICompatible(
@@ -205,7 +207,7 @@ async function callOpenAICompatible(
     });
     return null;
   }
-  return { text, status: response.status, durationMs: Date.now() - startedAt };
+  return { text, status: response.status, durationMs: Date.now() - startedAt, tokens: usedTokens };
 }
 
 async function generateWithLLM(
@@ -875,7 +877,7 @@ export async function generateMoversWithLLM(
   prompt: string,
   validate: (text: string) => string | null,
   source: LlmSource = "square"
-): Promise<{ text: string; provider: string } | null> {
+): Promise<{ text: string; provider: string; tokens: number } | null> {
   if (String(process.env.SQUARE_LLM_ENABLED).toLowerCase() === "false") {
     return null;
   }
@@ -907,7 +909,7 @@ export async function generateMoversWithLLM(
           durationMs: call.durationMs,
           keyHint: keyHint(provider.apiKey),
         });
-        return { text: validated, provider: provider.name };
+        return { text: validated, provider: provider.name, tokens: call.tokens };
       }
       recordLlmOutcome({
         provider: provider.name,

@@ -22,9 +22,11 @@ import {
   fetchBinanceFuturesTicker,
 } from "@/lib/collectors/binance";
 import { fetchCoinGeckoMarkets } from "@/lib/collectors/coingecko";
+import { resolveMarketCap } from "@/lib/market/market-cap";
 import { runFeatureEngine, calculateHealthScore, getRecommendationSignal, generateRecommendationReason } from "@/lib/features/engine";
 import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
 import { evaluateKlineObservationQuality } from "@/lib/p6/ingestion/kline-quality-hook";
+import { runtimeGuardResponse } from "@/lib/env/route-guard";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -82,6 +84,10 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // ENV-GUARD-01: ghi DB production — local mặc định read-only.
+  const blocked = runtimeGuardResponse(request, "write");
+  if (blocked) return blocked;
+
   const { id } = await params;
   const coinId = parseInt(id);
   const startTime = Date.now();
@@ -206,10 +212,14 @@ export async function POST(
     let klines: Awaited<ReturnType<typeof fetchBinanceSpotKlines>> = [];
     let volume24h: number | null = null;
     let marketCapFromCoingecko: number | null = null;
+    let circulatingSupply: number | null = null;
 
     // Get CoinGecko market cap first (most accurate)
     if (coin.coingeckoId && coingeckoData.has(coin.coingeckoId)) {
       const cgData = coingeckoData.get(coin.coingeckoId);
+      // Supply lấy được thì giữ, kể cả khi CoinGecko không trả market cap — nó là
+      // nguồn duy nhất để ước tính price × circulating supply.
+      circulatingSupply = cgData?.circulatingSupply ?? null;
       if (cgData && cgData.marketCap) {
         marketCapFromCoingecko = cgData.marketCap;
         coinCoingeckoOk = true;
@@ -230,10 +240,14 @@ export async function POST(
           if (futuresTicker) {
             volume24h = parseFloat(futuresTicker.quoteVolume);
 
-            // Use CoinGecko market cap if available, otherwise calculate approximate from Binance
-            const marketCapToSave = marketCapFromCoingecko || (volume24h * parseFloat(futuresTicker.lastPrice));
-
-            // Save market cap - prioritize CoinGecko (accurate) over Binance (approximate)
+            // MARKET-CAP-01: CoinGecko trước, sau đó price × circulating supply; không có
+            // supply thì để null — volume 24h không phải vốn hoá và không được vào health score.
+            const marketCapToSave =
+              resolveMarketCap({
+                coingeckoMarketCap: marketCapFromCoingecko,
+                circulatingSupply,
+                price: parseFloat(futuresTicker.lastPrice),
+              })?.value ?? null;
             await db
               .insert(coinMetrics)
               .values({
@@ -268,10 +282,13 @@ export async function POST(
               if (spotTicker) {
                 volume24h = parseFloat(spotTicker.quoteVolume);
 
-                // Use CoinGecko market cap if available, otherwise calculate approximate from Binance
-                const marketCapToSave = marketCapFromCoingecko || (volume24h * parseFloat(spotTicker.lastPrice));
-
-                // Save market cap - prioritize CoinGecko (accurate) over Binance (approximate)
+                // MARKET-CAP-01: cùng quy tắc — không có supply thì null, không dùng volume.
+                const marketCapToSave =
+                  resolveMarketCap({
+                    coingeckoMarketCap: marketCapFromCoingecko,
+                    circulatingSupply,
+                    price: parseFloat(spotTicker.lastPrice),
+                  })?.value ?? null;
                 await db
                   .insert(coinMetrics)
                   .values({
@@ -306,9 +323,14 @@ export async function POST(
           if (spotTicker) {
             volume24h = parseFloat(spotTicker.quoteVolume);
 
-            // Calculate approximate market cap from price * quote volume
-            const currentPrice = parseFloat(spotTicker.lastPrice);
-            const approxMarketCap = volume24h * currentPrice;
+            // MARKET-CAP-01: ước tính price × circulating supply; thiếu supply → null.
+            // (Trước đây dùng volume24h × price — đó là giá trị giao dịch, không phải vốn hoá.)
+            const approxMarketCap =
+              resolveMarketCap({
+                coingeckoMarketCap: marketCapFromCoingecko,
+                circulatingSupply,
+                price: parseFloat(spotTicker.lastPrice),
+              })?.value ?? null;
 
             // Save market cap from Binance Spot (approximate)
             await db

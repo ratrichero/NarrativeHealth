@@ -571,6 +571,7 @@ describe("BT-E2E settlement trên Postgres thật", () => {
           excluded: number;
         } | null;
         btc: { method: string; returnPct: number } | null;
+        settlement: { pendingPicks: number; nextSettlementAt: string | null };
         meta: {
           window: { capped: boolean; rowsRead: number; limit: number; oldestIncluded: string | null };
         };
@@ -750,5 +751,36 @@ describe("BT-E2E settlement trên Postgres thật", () => {
     // ETH không) — thêm funding chỉ làm chi phí tăng, không làm đẹp số.
     expect(body.data.realistic).toMatchObject({ trades: 2, fundingCovered: 1 });
     expect(body.data.realistic!.deltaVsBase).toBeLessThanOrEqual(0);
+
+    // W1: cả hai pick KẾT QUẢ đã chốt → không còn pick chờ, không có mốc đáo hạn.
+    expect(body.data.settlement).toEqual({ pendingPicks: 0, nextSettlementAt: null });
+  });
+
+  test("W1: settlement trả pick công khai còn PENDING và ngày đáo hạn kế tiếp", async () => {
+    const dataDate = addDaysIso(today, -2);
+    await pg.insert(topRecommendationPicks).values({
+      dataDate,
+      coinId,
+      symbol: "BTC",
+      direction: "BULLISH",
+      signal: "STRONG_WATCH",
+      hasSetup: true,
+      entryLow: "99",
+      entryHigh: "101",
+      entryMid: "100",
+      tp1: "110",
+      tp2: "120",
+      stopLoss: "90",
+    });
+
+    const body = (await (await trackRecordGET()).json()) as {
+      data: { settlement: { pendingPicks: number; nextSettlementAt: string | null } };
+    };
+
+    // Chưa có dòng kết quả nào → horizon mặc định 14 ngày, mốc = data_date + 14.
+    expect(body.data.settlement).toEqual({
+      pendingPicks: 1,
+      nextSettlementAt: addDaysIso(dataDate, 14),
+    });
   });
 });

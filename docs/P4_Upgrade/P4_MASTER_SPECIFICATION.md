@@ -509,6 +509,9 @@ changed by this resolution.
 - Verification: `npx tsc --noEmit` 0 errors; `npx jest src/app/api/narratives`
   12/12 (7 new API tests + 5 existing route-resilience); `npx jest src/lib/p4`
   90/90. The known 16 pre-existing P3 kernel failures remain OUT OF SCOPE.
+  *(Số "16" là đếm cũ; đo lại toàn bộ `src/lib/p3` ngày 2026-11-22: **28 suite — 22 pass / 6
+  fail · 393 test — 378 pass / 15 fail**. Nguồn chuẩn:
+  `docs/P3_Upgrade/P3_12_UI_UX_INTEGRATION.md` PART N.1.)*
 - Boundary: changed only `src/app/api/narratives/[id]/route.ts` +
   `src/app/api/narratives/__tests__/p4-decision-support.test.ts` (new). No
   P3/P2, DB/schema, migration, UI, P4 engine or package-lock changes.

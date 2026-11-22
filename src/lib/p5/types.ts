@@ -97,6 +97,15 @@ export interface P5P4SnapshotRef {
   status: P4ViewModelStatus;
   /** PROVISIONAL (P5-02 AD-014) — not computed in v1; always null until a later task. */
   contentHash: string | null;
+  /**
+   * P5-06C-ENH (O4/O5) — kết luận direction/confidence của P4 đi kèm snapshot.
+   *
+   * CHỈ có trên `LIVE_P4_CONTEXT` (dựng trực tiếp từ P4 ViewModel). Record đã
+   * freeze không mang hai field này, nên presentation model fallback về suy diễn
+   * từ outcome + status như trước. Optional để không đổi contract đã freeze.
+   */
+  direction?: P4DirectionState;
+  confidence?: P4QualitativeValue;
 }
 
 /** P5-03 PD-018 / P5-04 §12 blocker report — self-describing, never opaque `blocked = true`. */

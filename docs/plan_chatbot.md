@@ -1,6 +1,7 @@
 # Kế hoạch: ChatBot Widget với LLM core + Tool Calling
 
-> **Trạng thái:** APPROVED — 4 câu hỏi mở đã chốt (xem mục 7), đang implement
+> **Trạng thái:** ✅ DONE — shipped 2026-09-19 (`src/components/ChatWidget.tsx` mount trong
+> `src/app/layout.tsx`, API `src/app/api/chat/route.ts`, analytics `/api/admin/chat/analytics`)
 > **Ngày lập kế hoạch:** 2026-09-19
 > **Phạm vi:** ChatBot widget nhúng trên trang, lõi LLM bên trong, dùng data hiện có của hệ thống + data realtime từ Binance Futures qua tool calling.
 

@@ -7,8 +7,11 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import {
   catalystLlmDailyLimit,
+  catalystLlmTokensQuery,
   consumeCatalystLlmQuota,
+  recordCatalystLlmTokens,
   releaseCatalystLlmQuota,
+  TOKEN_KEY,
 } from "@/lib/catalyst/llm-quota";
 
 let executeOnDb: (query: unknown) => Promise<{ rows: unknown[] }>;
@@ -52,6 +55,18 @@ async function usage(): Promise<{ date: string; used: number } | null> {
     "SELECT value FROM app_settings WHERE key = 'catalyst.llm.usage'"
   );
   return result.rows[0]?.value ?? null;
+}
+
+async function tokens(): Promise<{ date: string; tokens: number; calls: number } | null> {
+  const result = await client.query<{
+    value: { date: string; tokens: number; calls: number };
+  }>("SELECT value FROM app_settings WHERE key = $1", [TOKEN_KEY]);
+  return result.rows[0]?.value ?? null;
+}
+
+/** Ghi token bằng đúng câu SQL production dùng (wrapper bỏ qua ở NODE_ENV=test). */
+async function writeTokens(date: string, amount: number) {
+  return executeOnDb(catalystLlmTokensQuery(date, amount));
 }
 
 describe("consumeCatalystLlmQuota", () => {
@@ -150,6 +165,58 @@ describe("releaseCatalystLlmQuota", () => {
     expect(await releaseCatalystLlmQuota(DATE)).toBe(true);
     expect(await releaseCatalystLlmQuota(DATE)).toBe(false);
     expect((await usage())?.used).toBe(0);
+  });
+});
+
+describe("catalystLlmTokensQuery", () => {
+  it("cộng dồn tokens và calls trong cùng ngày UTC", async () => {
+    await writeTokens(DATE, 100);
+    await writeTokens(DATE, 250);
+    await writeTokens(DATE, 50);
+
+    expect(await tokens()).toEqual({ date: DATE, tokens: 400, calls: 3 });
+  });
+
+  it("sang ngày UTC mới thì reset tokens/calls", async () => {
+    await writeTokens(DATE, 900);
+    await writeTokens("2026-11-19", 20);
+
+    expect(await tokens()).toEqual({ date: "2026-11-19", tokens: 20, calls: 1 });
+  });
+
+  it("không đụng key quota `used`", async () => {
+    await consumeCatalystLlmQuota(5, AT);
+    await consumeCatalystLlmQuota(5, AT);
+    await writeTokens(DATE, 120);
+
+    expect(await usage()).toEqual({ date: DATE, used: 2 });
+    expect(await tokens()).toEqual({ date: DATE, tokens: 120, calls: 1 });
+  });
+
+  it("state token lưu hỏng (chuỗi/âm) đếm lại từ 0, không ném lỗi", async () => {
+    await client.query(
+      `INSERT INTO app_settings (key, value) VALUES ($1, '{"date":"${DATE}","tokens":"x","calls":-3}'::jsonb)`,
+      [TOKEN_KEY]
+    );
+
+    await writeTokens(DATE, 70);
+
+    expect(await tokens()).toEqual({ date: DATE, tokens: 70, calls: 1 });
+  });
+
+  it("token không hợp lệ hoặc âm ghi 0 nhưng vẫn tăng calls", async () => {
+    await writeTokens(DATE, -50);
+    await writeTokens(DATE, Number.NaN);
+
+    expect(await tokens()).toEqual({ date: DATE, tokens: 0, calls: 2 });
+  });
+});
+
+describe("recordCatalystLlmTokens", () => {
+  it("bỏ qua trong test và với token không dương — không ghi gì", async () => {
+    expect(await recordCatalystLlmTokens(500, AT)).toBe(false);
+    expect(await recordCatalystLlmTokens(0, AT)).toBe(false);
+    expect(await tokens()).toBeNull();
   });
 });
 

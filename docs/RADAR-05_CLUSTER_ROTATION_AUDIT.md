@@ -122,9 +122,9 @@ cho đúng nguyên nhân gốc.
 | Bước | Nội dung | Sửa mục | Vì sao đổi |
 |---|---|---|---|
 | **0** | **Cluster id ổn định** (hash member đã sort / id theo narrative + seed) + test id bất biến khi đổi thứ tự input — **Xong (RADAR-05-E1)** | E1 | #6/#7/#9 đều lấy id làm khoá; làm sau sẽ phải migrate dữ liệu đã lưu |
-| 1 | **Một universe quét chung, độc lập tab**; row enrich merge vào sau; snapshot cụm dùng chung | #2, E6 | Gộp luôn chi phí 3 tab thành 1 lần quét |
-| 2 | **Chuẩn hoá strength + residual correlation + chặn siêu cụm**; leader/laggard theo cùng thang, có chiều | #3, #4, #5, E2, E3 | Tách “nhãn” khỏi “tín hiệu”: chỉ gắn laggard khi cùng chiều cụm và chưa bắt nhịp |
-| 3 | **Lưu cluster snapshot/history + alert/track-record theo cụm** | #6, #9, E1 | Sau khi id và strength đã ổn định mới đáng lưu |
+| 1 | **Một universe quét chung, độc lập tab**; row enrich merge vào sau; snapshot cụm dùng chung — **Xong (RADAR-05-B1)** | #2, E6 | Gộp luôn chi phí 3 tab thành 1 lần quét |
+| 2 | **Chuẩn hoá strength + residual correlation + chặn siêu cụm**; leader/laggard theo cùng thang, có chiều — **Xong (RADAR-05-B2)** | #3, #4, #5, E2, E3 | Tách “nhãn” khỏi “tín hiệu”: chỉ gắn laggard khi cùng chiều cụm và chưa bắt nhịp |
+| 3 | **Lưu cluster snapshot/history + alert/track-record theo cụm** — **Xong (RADAR-05-B3)** | #6, #9, E1 | Sau khi id và strength đã ổn định mới đáng lưu |
 | 4 | **Cluster detail/permalink + test cache/per-tab/weight** — permalink **Xong (RADAR-05-B4)** | #7, #8, E5 | Cần id ổn định + history đã có |
 
 **Tiêu chí nghiệm thu tối thiểu cho từng bước**
@@ -155,3 +155,43 @@ cho đúng nguyên nhân gốc.
 > banner “Cụm trong link không còn trong snapshot hiện tại”. Test `cluster-permalink.test.ts`.
 > Phần “test cache TTL + inflight dedupe” vẫn chưa có test riêng (hành vi cache 60s/inflight có sẵn
 > từ trước, không đổi trong lượt này).
+
+## 7. Cập nhật — bước 1–3 đã xong (2026-11-21)
+
+### Bước 1 — universe quét chung (RADAR-05-B1)
+
+- `selectClusterUniverse(eligible, minVolume)` không nhận `side`, không loại coin đã enrich:
+  top gainer + top loser + unusual + volume, thứ tự add cố định → mọi tab cùng universe.
+- `buildClusterBase` tự tính composite = percentile của `|change 24h|` **trong universe**, bỏ qua
+  composite của row enrich; snapshot từng tab chỉ merge metadata cụm vào sau.
+- `clusterInfoCache` khoá theo `minVolume` (không theo side) để detail/permalink đọc cùng map.
+- Hệ quả còn lại: snapshot vẫn build riêng cho từng side nên phần đọc klines lặp lại (E6 — chi phí,
+  không đổi membership/id/label). Test: `cluster-coverage.test.ts` (“dùng cùng universe cố định” và
+  gainer/loser trả cùng summary).
+
+### Bước 2 — chuẩn hoá strength + residual correlation + chặn siêu cụm (RADAR-05-B2)
+
+- Truncation đồng nhất: mọi coin dùng 48 return gần nhất; `residualReturns` trừ beta BTC →
+  correlation là partial correlation, không còn lệch cỡ mẫu 29 vs 48 (E3).
+- `threshold 0.6`, union-find **complete-linkage** + `maxSize 8`: chuỗi A~B, B~C không kéo A và C
+  vào cùng cụm khi A≁C — test `cluster-liquidity.test.ts` (“chặn bắc cầu A~B, B~C khi A~C yếu”).
+- Coin extra được chuẩn hoá composite về percentile của phân bố enrich
+  (`normalizeExtraComposite`), không còn `abs(change)*6`.
+- **Sửa ngữ nghĩa leader/laggard (E2):** leader chỉ chọn trong nhóm **cùng chiều** với cụm
+  (`Math.sign(changePct) === direction`), tie-break theo symbol để không phụ thuộc thứ tự ticker;
+  laggard vẫn chỉ gắn cho coin cùng chiều và không phải leader. Trước fix, coin −18% có thể làm
+  leader của cụm tăng và coin +6% bị gắn laggard. Test: `cluster-direction.test.ts` (3 case: cụm
+  tăng có outlier giảm, cụm toàn giảm, coin đứng giá 0%).
+
+### Bước 3 — history + alert/track-record theo cụm (RADAR-05-B3)
+
+- History không cần migration: `app_settings["radar.cluster.history"]`, tối đa 7 ngày / 1 008
+  batch, ghi cả 3 side trong một lần đọc-ghi (`recordClusterSnapshots` trong `cluster-history.ts`,
+  gọi từ `track-record.ts`).
+- Event `new | leader-change | strengthening | weakening` (ngưỡng 1.5 điểm %); alert dedupe theo
+  `side|clusterId|type|ngày` (`radar.alerts.clusters.sent`) → mỗi cụm/sự kiện chỉ báo 1 lần/ngày,
+  payload có `clusterId/label` + link `?cluster=`.
+- Ledger/track-record lưu `clusterId`, `clusterLabel`, `clusterSize`, `clusterLeader`,
+  `clusterLaggard` tại thời điểm ghi và tổng hợp hiệu quả theo cụm (`ledger.ts`, `track-record.ts`).
+
+Kiểm: `npm run typecheck` pass; `jest src/lib/market/__tests__` — 24 suite / 175 test pass.

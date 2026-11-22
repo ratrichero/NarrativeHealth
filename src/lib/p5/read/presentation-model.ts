@@ -19,6 +19,7 @@
  */
 
 import type {
+  P4DirectionState,
   P5ActionDecisionReadViewModel,
   P5ActionType,
   P5DecisionOutcome,
@@ -62,6 +63,15 @@ export interface P5ConfidenceGuidance {
   level: string | null;
   /** Plain-language explanation of what this confidence means. */
   meaning: string;
+  /**
+   * P5-06C-ENH (O4): where `level` came from.
+   *  - P4      = pass-through từ P4 ViewModel (chỉ có trên LIVE_P4_CONTEXT)
+   *  - DERIVED = suy ra từ outcome + snapshot status (record đã freeze)
+   *  - NONE    = chưa có decision nên không có confidence
+   */
+  source: "P4" | "DERIVED" | "NONE";
+  /** P5-06C-ENH (O5): direction P4 khi có — null nếu record không mang. */
+  direction: P4DirectionState | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +142,56 @@ const ACTION_TYPE_POSTURE: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Action type → user-facing guidance
 // ---------------------------------------------------------------------------
+
+/** P5-06C-ENH (O5): nhãn direction dùng trong câu văn. */
+const DIRECTION_LABEL: Record<string, string> = {
+  POSITIVE: "positive",
+  NEGATIVE: "negative",
+  NEUTRAL: "neutral",
+  MIXED: "mixed",
+  UNKNOWN: "unknown",
+};
+
+/** P5-06C-ENH (O4): nghĩa của từng mức confidence do P4 công bố. */
+const P4_CONFIDENCE_MEANING: Record<string, string> = {
+  HIGH: "P4 rated the evidence as high confidence: the conclusion is supported by consistent, available evidence.",
+  MEDIUM:
+    "P4 rated the evidence as medium confidence: the conclusion holds, but part of the evidence is partial or conflicting.",
+  LOW: "P4 rated the evidence as low confidence: the conclusion is weakly supported and may change.",
+  UNKNOWN: "P4 could not rate confidence: the evidence is unavailable or insufficient.",
+};
+
+/** P4 direction của view, nếu snapshot mang theo (O5). */
+function p4Direction(view: P5ActionDecisionReadViewModel): P4DirectionState | null {
+  return view.context?.p4SnapshotRef?.direction ?? null;
+}
+
+function directionSentence(direction: P4DirectionState | null): string | null {
+  if (!direction) return null;
+  const label = DIRECTION_LABEL[direction] ?? direction.toLowerCase();
+  if (direction === "UNKNOWN") return "P4 could not determine a direction from the available evidence.";
+  if (direction === "MIXED") return "P4 found the direction mixed: positive and negative evidence conflict.";
+  return `P4 direction: ${label}.`;
+}
+
+/**
+ * P5-06C-ENH (O6): MONITOR trước đây dùng chung một câu cho mọi trường hợp.
+ * Direction đổi việc cần theo dõi, nên guidance đổi theo direction khi có.
+ */
+function monitorGuidance(direction: P4DirectionState | null): string {
+  switch (direction) {
+    case "POSITIVE":
+      return "Continue monitoring with a positive lean: evidence points up, but the system has not selected a stronger action. Check whether the direction survives the next data refresh.";
+    case "NEGATIVE":
+      return "Continue monitoring with a negative lean: evidence points down, so watch for deterioration before considering any exposure. No stronger action is recommended yet.";
+    case "MIXED":
+      return "Continue monitoring: the evidence is split, so neither direction is reliable. Wait for the conflict to resolve before acting.";
+    case "NEUTRAL":
+      return "Continue monitoring: evidence is neutral, so there is nothing directional to act on yet.";
+    default:
+      return ACTION_TYPE_GUIDANCE.MONITOR;
+  }
+}
 
 const ACTION_TYPE_GUIDANCE: Record<string, string> = {
   MONITOR:
@@ -247,6 +307,12 @@ function buildPlainWhy(view: P5ActionDecisionReadViewModel): P5PlainWhy | null {
     facts.push({ label: "Data snapshot", value: statusText });
   }
 
+  // Direction (P5-06C-ENH O5): chỉ hiện khi snapshot mang direction của P4.
+  const direction = p4Direction(view);
+  if (direction) {
+    facts.push({ label: "Direction", value: DIRECTION_LABEL[direction] ?? direction });
+  }
+
   // Outcome
   const outcomeText =
     decision.outcome === "SELECTED"
@@ -315,6 +381,25 @@ function buildPlainWhy(view: P5ActionDecisionReadViewModel): P5PlainWhy | null {
 function buildConfidenceGuidance(view: P5ActionDecisionReadViewModel): P5ConfidenceGuidance {
   const decision = view.decision;
   const p4Status = view.context?.p4SnapshotRef?.status;
+  const p4Confidence = view.context?.p4SnapshotRef?.confidence ?? null;
+  const direction = p4Direction(view);
+  const withDirection = (text: string): string => {
+    const sentence = directionSentence(direction);
+    return sentence ? `${text} ${sentence}` : text;
+  };
+
+  // P5-06C-ENH (O4): P4 đã công bố confidence thì dùng đúng giá trị đó, không
+  // tự suy lại — hai panel không còn lệch nhau. Record freeze không mang
+  // confidence nên vẫn fallback về suy diễn (source = DERIVED).
+  if (decision && p4Confidence) {
+    const meaning = P4_CONFIDENCE_MEANING[p4Confidence] ?? `P4 rated confidence as ${p4Confidence}.`;
+    return {
+      level: p4Confidence,
+      meaning: withDirection(meaning),
+      source: "P4",
+      direction,
+    };
+  }
 
   // Derive confidence from P4 status + decision outcome
   let level: string | null = null;
@@ -350,7 +435,12 @@ function buildConfidenceGuidance(view: P5ActionDecisionReadViewModel): P5Confide
     meaning = "Confidence level cannot be determined from available data.";
   }
 
-  return { level, meaning };
+  return {
+    level,
+    meaning: withDirection(meaning),
+    source: decision ? "DERIVED" : "NONE",
+    direction,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +515,9 @@ export function buildPresentationModel(
       headline: outcomeHeadline(decision.outcome, decision.actionType),
       rationale: outcomeRationale(view),
       guidance: decision.outcome === "SELECTED" && decision.actionType
-        ? ACTION_TYPE_GUIDANCE[decision.actionType] ?? "Review the decision details."
+        ? decision.actionType === "MONITOR"
+          ? monitorGuidance(p4Direction(view))
+          : ACTION_TYPE_GUIDANCE[decision.actionType] ?? "Review the decision details."
         : decision.outcome === "NO_ACTION"
           ? "No action is needed at this time. The system will re-evaluate on the next data refresh."
           : decision.outcome === "NOT_DETERMINED"

@@ -49,6 +49,7 @@ import { KlineData } from "@/lib/technical-analysis/types";
 import { runSnapshotGeneration, type NarrativeMembershipData } from "@/lib/p6/snapshot/service";
 import { SNAPSHOT_V1_VERSION } from "@/lib/p6/snapshot/types";
 import type { CoinSnapshotInput } from "@/lib/p6/snapshot/types";
+import { runtimeGuardResponse } from "@/lib/env/route-guard";
 
 // Business timezone constant (must match utils.ts)
 const BUSINESS_TIMEZONE = "Asia/Ho_Chi_Minh";
@@ -106,6 +107,11 @@ async function checkRefreshLock(jobName: string): Promise<{ isLocked: boolean; l
 
 // POST - Trigger data refresh
 export async function POST(request: NextRequest) {
+  // ENV-GUARD-01: refresh ghi DB production và kích hoạt Square pipeline
+  // (đăng bài thật). Chỉ chạy ở production + hostname được allowlist.
+  const blocked = runtimeGuardResponse(request, "scheduler");
+  if (blocked) return blocked;
+
   const startTime = Date.now();
   const now = new Date();
   const today = getBusinessDate();

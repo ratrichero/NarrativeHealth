@@ -192,6 +192,8 @@ Verified present and test-covered (`renders each availability state as a stage b
 
 These were proven pre-existing in P3-12 by running them in a detached worktree at `HEAD` — **identical failures without any P3-12/13 changes**. Per the P3-13 constraint list they are **not** "fixed" here (that would require changing P3 kernel semantics — explicitly forbidden). They are documented debt.
 
+> **Số liệu cập nhật (2026-11-22):** dòng "393 passed / 12 failed (31 suites)" ở trên là snapshot lịch sử của P3-13, không phải số hiện tại. Đo lại toàn bộ `npx jest src/lib/p3` ngày 2026-11-22: **28 suite (22 pass / 6 fail) · 393 test (378 pass / 15 fail)** — vẫn đúng 6 suite đỏ trong bảng dưới. Nguồn chuẩn: `docs/P3_Upgrade/P3_12_UI_UX_INTEGRATION.md` **PART N.1**.
+
 ### I.4 Production API smoke test
 
 | Endpoint | Result |
@@ -225,7 +227,7 @@ These were proven pre-existing in P3-12 by running them in a detached worktree a
 
 ## PART L — Environment / Known Debt (why PASS WITH KNOWN DEBT)
 
-1. **Pre-existing P3-10 kernel test failures (12 tests / 6 suites)** — carried forward from P3-12; out of scope to fix (would require kernel semantic changes). Tracked as debt.
+1. **Pre-existing P3-10 kernel test failures (12 tests / 6 suites)** — carried forward from P3-12; out of scope to fix (would require kernel semantic changes). Tracked as debt. *Số thật đo lại 2026-11-22: 15 fail / 393 test, 6 suite — xem `P3_12_UI_UX_INTEGRATION.md` PART N.1.*
 2. **No browser screenshot verification** — this environment is headless; rendering is verified via SSR render-to-static-markup tests + live API, not pixels. A visual QA pass on desktop/tablet/mobile is recommended when a browser tool is available.
 3. **Preview stability** — the preview dev server restarted several times during the session (sandbox infra, not app defects); each time it recovered and all endpoints returned healthy.
 

@@ -126,6 +126,17 @@ export interface TrackRecordForwardSplit {
   btc: BtcBenchmark | null;
 }
 
+/**
+ * W1: trạng thái chờ chốt của pick CÔNG KHAI. Trước đây "chưa có stamp" bị báo
+ * là settlement chết, dù thực tế mọi pick vẫn đang trong cửa sổ horizon.
+ */
+export interface TrackRecordSettlement {
+  /** Số pick công khai còn PENDING (chưa đáo hạn horizon). */
+  pendingPicks: number;
+  /** Ngày pick chờ cũ nhất đáo hạn horizon (YYYY-MM-DD), null khi không còn pick chờ. */
+  nextSettlementAt: string | null;
+}
+
 export interface TrackRecordPayload {
   params: { feeBps: number; slippageBps: number; roundTripBps: number; horizonDays: number };
   /** Toàn bộ lịch sử đã chốt (gồm cả pick backfill). */
@@ -138,6 +149,8 @@ export interface TrackRecordPayload {
   /** BTC buy & hold cùng cửa sổ — cột so sánh riêng. */
   btc: BtcBenchmark | null;
   recent: RecentItem[];
+  /** W1: pick công khai còn chờ chốt + ngày đáo hạn kế tiếp. */
+  settlement: TrackRecordSettlement;
   /** BT-10: so sánh win rate / avg gross R theo từng horizon đã chốt. */
   horizons: TrackRecordHorizonStat[];
   /** BT-11: NET R dưới kịch bản chi phí thực tế (ATR slippage, funding, partial TP1). */
@@ -654,6 +667,34 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
   const horizonDays =
     horizonValues.length > 0 ? Math.max(...horizonValues) : DEFAULT_FRESHNESS_HORIZON_DAYS;
 
+  // W1: "chưa có stamp" KHÔNG luôn nghĩa là settlement chết — mọi pick công
+  // khai có thể vẫn đang trong cửa sổ horizon. Trả mốc đáo hạn kế tiếp để
+  // banner nói đúng sự thật thay vì đoán, và để người đọc biết khi nào có kết quả.
+  let settlement: TrackRecordSettlement = { pendingPicks: 0, nextSettlementAt: null };
+  try {
+    const [pending] = await db
+      .select({
+        count: sql<number>`count(*)::int`,
+        oldest: sql<string | null>`min(${topRecommendationPicks.dataDate})`,
+      })
+      .from(topRecommendationPicks)
+      .innerJoin(coins, eq(coins.id, topRecommendationPicks.coinId))
+      .where(
+        and(
+          eq(topRecommendationPicks.pickKind, "GENUINE"),
+          eq(topRecommendationPicks.hasSetup, true),
+          eq(topRecommendationPicks.backtestStatus, "PENDING"),
+          sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
+        )
+      );
+    settlement = {
+      pendingPicks: Number(pending?.count ?? 0),
+      nextSettlementAt: pending?.oldest ? addDaysIso(pending.oldest, horizonDays) : null,
+    };
+  } catch (error) {
+    console.error("[TRACK-01] Pending settlement lookup failed (non-blocking):", error);
+  }
+
   // FRESH-01 (máy đọc): cùng ngưỡng với banner trên trang — uptime-check gọi
   // endpoint này và bắt `freshness.stale`, không phải parse HTML.
   const freshness = { ...trackRecordFreshness(summary, today, horizonDays), today };
@@ -675,6 +716,7 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
       benchmark,
       btc,
       recent,
+      settlement,
       horizons: horizonStats,
       realistic,
       meta: {

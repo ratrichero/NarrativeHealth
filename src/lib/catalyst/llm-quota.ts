@@ -18,6 +18,15 @@ import { peekRadarRuntimeConfig } from "@/lib/settings/radar-config";
 
 const KEY = "catalyst.llm.usage";
 
+/**
+ * RADAR-06 W6: token thực dùng mỗi lần tóm tắt, tách khỏi key quota để không
+ * đụng semantics `used`/`limit` đã có test.
+ *
+ * `used` đếm lượt (để chặn chi phí), còn key này đếm token + số lần gọi, đủ để
+ * trả lời “token/lần tóm tắt” mà trước đây không đo được.
+ */
+export const TOKEN_KEY = "catalyst.llm.tokens";
+
 export interface CatalystLlmQuotaDecision {
   allowed: boolean;
   used: number;
@@ -112,6 +121,49 @@ export async function consumeCatalystLlmQuota(
       error instanceof Error ? error.message : String(error)
     );
     return { allowed: false, used: 0, limit, date, remaining: 0, reason: "storage" };
+  }
+}
+
+/** Một câu atomic: cộng dồn token/số lần gọi của đúng ngày (UTC). */
+export function catalystLlmTokensQuery(date: string, tokens: number): SQL {
+  const safeTokens = Math.max(0, Math.floor(Number.isFinite(tokens) ? tokens : 0));
+  const storedTokens = sql`(CASE WHEN app_settings.value->>'tokens' ~ '^[0-9]{1,12}$' THEN (app_settings.value->>'tokens')::bigint ELSE 0 END)`;
+  const storedCalls = sql`(CASE WHEN app_settings.value->>'calls' ~ '^[0-9]{1,9}$' THEN (app_settings.value->>'calls')::int ELSE 0 END)`;
+  return sql`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (${TOKEN_KEY}, jsonb_build_object('date', ${date}::text, 'tokens', ${safeTokens}::bigint, 'calls', 1), now())
+    ON CONFLICT (key) DO UPDATE SET
+      value = CASE
+        WHEN app_settings.value->>'date' IS DISTINCT FROM ${date}::text
+          THEN jsonb_build_object('date', ${date}::text, 'tokens', ${safeTokens}::bigint, 'calls', 1)
+        ELSE jsonb_build_object(
+          'date', ${date}::text,
+          'tokens', ${storedTokens} + ${safeTokens}::bigint,
+          'calls', ${storedCalls} + 1
+        )
+      END,
+      updated_at = now()
+  `;
+}
+
+/**
+ * Ghi số token provider báo cho lần tóm tắt vừa dùng. Best-effort và bỏ qua
+ * trong test: đo chi phí không được phép làm hỏng summary.
+ */
+export async function recordCatalystLlmTokens(tokens: number, now = new Date()): Promise<boolean> {
+  if (process.env.NODE_ENV === "test") return false;
+  const value = Number(tokens);
+  if (!Number.isFinite(value) || value <= 0) return false;
+  try {
+    const date = now.toISOString().slice(0, 10);
+    await db.execute(catalystLlmTokensQuery(date, value));
+    return true;
+  } catch (error) {
+    console.warn(
+      "[CATALYST] Không ghi được token LLM:",
+      error instanceof Error ? error.message : String(error)
+    );
+    return false;
   }
 }
 

@@ -2,7 +2,8 @@
 
 ## Status
 
-**WAITING FOR NATURAL ELIGIBLE WINDOW**
+**PASS (2026-11-21) — verified on production records; see §10. The original WAITING verdict
+below is kept as history.**
 
 ## 1. Executive Decision
 
@@ -178,5 +179,50 @@ However, the existing production pipeline cannot create a real Binance Square po
 4. Creating such a mechanism requires modifying production source code
 
 **The live publication verification is waiting for a natural eligible window.**
+*(Superseded 2026-11-21 — natural windows arrived; see §10 for the PASS evidence.)*
+
+---
+
+## 10. UPDATE 2026-11-21 — verified on production data (natural windows arrived)
+
+Status changed to **PASS** based on production records (same `DATABASE_URL` as the VPS app);
+the VPS itself (168.138.179.192:3000) is not reachable from the cloud workspace, so this
+verification is data-level plus code-level, not an HTTP check of the production UI.
+
+### 10.1 SQ-MOVERS deploy state
+
+SQ-MOVERS is already deployed and running in production — no new deploy was needed:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Scheduler 07:15 VN | PASS | `square_pipeline_executions` has `trigger_type = MOVERS_CRON` at 00:15 UTC daily |
+| Consecutive days | PASS | 50 runs, first `2026-10-03T00:15:00.119Z`, latest `2026-11-21T00:15:00.107Z` (= 07:15 VN) |
+| Posts per run | PASS | `evaluated 6 · qualified 6 · published 6 · failed 0`, duration ~8 min, `llm_used 6`, `template_fallback 0` |
+| Published records | PASS | `MOVERS_SETUP` opportunities: 300 total / 300 PUBLISHED / 0 FAILED (50 runs × 6) |
+| Analytics split | PASS | `getOverview`/`getPublicationFunnel` exclude `MOVERS_%`; `getTypeBreakdown` still shows `MOVERS_SETUP` |
+
+### 10.2 Square Analytics reconciliation (ALL range, 2026-11-21)
+
+| Metric | Analytics API (setup only) | Raw DB | Match |
+|---|---|---|---|
+| Executions | 413 | 463 − 50 `MOVERS_CRON` = 413 | PASS |
+| Published | 2 209 | 2 509 − 300 movers = 2 209 | PASS |
+| Failed | 400 | 400 (movers 0) | PASS |
+| Publications by status | types: 2 039 NARRATIVE_SETUP + 458 COIN_SETUP + 300 MOVERS_SETUP | 2 797 PUBLISHED / 55 FAILED | PASS |
+
+So the earlier blocker ("everything deduplicated, no eligible window") no longer applies:
+today alone the setup pipeline published 27 posts in 3 runs (UTC day), and the movers flow
+published 6/6 — a natural eligible window.
+
+### 10.3 Known caveat — range boundaries use UTC, not the Vietnam business day
+
+`getDateStr()` builds `YYYY-MM-DD` from `toISOString()`, so the UI switch label **“Today”** means
+the UTC day (07:00 VN → 07:00 VN next day), while the rest of the product uses
+`BUSINESS_TIMEZONE = Asia/Ho_Chi_Minh` (`getBusinessDate`).
+
+Measured at 2026-11-21 ~16:45 VN: `getOverview("TODAY")` → 3 runs / 27 published, but by the VN
+business day there are 5 runs / 41 published (the 00:28 and 04:30 VN runs fall before UTC
+midnight). The numbers are internally consistent; the label is what misleads. Changing the
+boundary is a semantic decision (all ranges shift by 7h) and was **not** changed here.
 
 The earliest expected window is ~23 hours from now when Aug 22 coin/setup fingerprints expire. Alternatively, the next scheduler cycle (every 4 hours) may produce new unique opportunities.

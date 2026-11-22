@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { runtimeGuardResponse } from "@/lib/env/route-guard";
 
 export const dynamic = "force-dynamic";
 
 // POST - Update scheduler config
 export async function POST(request: NextRequest) {
+  // ENV-GUARD-01: sửa nhịp scheduler (.env) — chỉ production + hostname allowlist.
+  const blocked = runtimeGuardResponse(request, "scheduler");
+  if (blocked) return blocked;
+
   try {
     const body = await request.json();
     const { enabled, hour, minute, intervalHours } = body;

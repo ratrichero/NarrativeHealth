@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { parseCatalystSyncScope, syncCatalysts } from "@/lib/catalyst/sync";
 import { readRadarRuntimeConfig } from "@/lib/settings/radar-config";
+import { runtimeGuardResponse } from "@/lib/env/route-guard";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
@@ -34,6 +35,10 @@ function tokenMatches(expected: string, got: string | null): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  // ENV-GUARD-01: job scheduler ghi DB production — local mặc định read-only.
+  const blocked = runtimeGuardResponse(request, "scheduler");
+  if (blocked) return blocked;
+
   const expected = process.env.SCHEDULER_CATALYST_TOKEN?.trim();
   if (expected && expected.length > 0) {
     const got = request.headers.get("x-scheduler-token");

@@ -241,10 +241,21 @@ export function computeClusters(
     const hash = clusterHash(members.join("|"));
     const clusterId = `cluster-${clusterSlug(dominant ?? "mixed")}-${hash}`;
     const label = dominant ?? `Cụm ${hash.slice(0, 6)}`;
-    const leader = [...group].sort((a, b) => b.composite - a.composite)[0];
     const avgChangePct =
       group.reduce((sum, item) => sum + item.changePct, 0) / Math.max(1, group.length);
     const direction = avgChangePct >= 0 ? 1 : -1;
+
+    // RADAR-05 bước 2 (E2): leader phải CÙNG CHIỀU với cụm. Chọn trong nhóm cùng
+    // chiều trước, nếu không một coin −18% (composite theo |change| cao nhất) có
+    // thể làm leader của cụm đang tăng và coin +6% bị gắn laggard.
+    const directional = group.filter((item) => Math.sign(item.changePct) === direction);
+    const leaderPool = directional.length > 0 ? directional : group;
+    // Tie-break theo symbol để leader không phụ thuộc thứ tự ticker Binance trả về
+    // (composite là percentile nên tie xảy ra thường xuyên, nhất là coin extra đã
+    // được chuẩn hoá về đúng mức composite cao nhất của enrich).
+    const leader = [...leaderPool].sort(
+      (a, b) => b.composite - a.composite || a.symbol.localeCompare(b.symbol)
+    )[0];
 
     for (const item of group) {
       const isLeader = item.symbol === leader.symbol;

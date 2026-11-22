@@ -13,6 +13,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { createHash } from "crypto";
 import { resolve } from "path";
+import { evaluatePublishGate } from "@/lib/env/runtime-guard";
 
 const execAsync = promisify(exec);
 
@@ -318,6 +319,16 @@ async function postTextDirect(
   text: string,
   title?: string
 ): Promise<PostResult> {
+  // ENV-GUARD-01: cổng cuối trước khi gọi Binance Square. Chạy ở mọi code
+  // path (refresh → pipeline, movers cron, retry tay): nếu process không phải
+  // production build thật thì không bao giờ đăng bài, kể cả khi .env ghi
+  // APP_ENV=production trên máy dev.
+  const gate = evaluatePublishGate();
+  if (!gate.allowed) {
+    console.warn(`[SQ-PUBLISHER] ${gate.reason}`);
+    return { success: false, error: gate.reason, errorCode: "PUBLISH_BLOCKED_ENV", isTimeout: false };
+  }
+
   const apiKey = process.env.BINANCE_SQUARE_OPENAPI_KEY;
   if (!apiKey) {
     return { success: false, error: "BINANCE_SQUARE_OPENAPI_KEY not set", isTimeout: false };
@@ -434,6 +445,20 @@ export async function publishContent(
   llmUsed?: boolean,
   llmProvider?: string
 ): Promise<PublicationResult> {
+  // ENV-GUARD-01: chặn sớm trước khi tốn quota/DB — runtime không phải
+  // production build thật thì trả lỗi PERMANENT thay vì gọi API Binance.
+  const publishGate = evaluatePublishGate();
+  if (!publishGate.allowed) {
+    console.warn(`[SQ-PUBLISHER] ${publishGate.reason}`);
+    return {
+      success: false,
+      errorCode: "PUBLISH_BLOCKED_ENV",
+      errorMessage: publishGate.reason,
+      retryCount: 0,
+      failureCategory: "PERMANENT",
+    };
+  }
+
   // 1. Check quota
   const quota = await getQuotaStatus();
   if (quota.postsRemaining <= 0) {
