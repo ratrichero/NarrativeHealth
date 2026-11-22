@@ -197,6 +197,14 @@ describe("TRACK-01 TrackRecordView", () => {
       <TrackRecordView
         data={{
           ...data,
+          meta: {
+            dataAsOf: "2026-09-20",
+            generatedAt: "2026-11-22T00:00:00.000Z",
+            metricsVersion: data.summary.metricsVersion,
+            commit: null,
+            changelog: [],
+            window: { capped: true, rowsRead: 4000, limit: 4000, oldestIncluded: "2026-01-01" },
+          },
           split: {
             liveSince: "2026-09-10",
             liveSinceSource: "env",
@@ -238,6 +246,33 @@ describe("TRACK-01 TrackRecordView", () => {
     expect(html).toContain("Basket forward 2026-09-10 → 2026-09-20");
     // Hai phần được đặt tên rõ ràng: forward ở trên, lịch sử ở dưới.
     expect(html).toContain("Toàn bộ lịch sử (gồm pick backfill)");
+    // WINDOW-01: khi bị cắt cửa sổ, số backfill bị loại cũng phải nói rõ phạm vi.
+    expect(html).toContain("đếm trong 4000 pick gần nhất do giới hạn cửa sổ");
+  });
+
+  it("báo LIVE_SINCE sai định dạng và không bịa pick live", () => {
+    const html = renderToStaticMarkup(
+      <TrackRecordView
+        data={{
+          ...dataFrom(POPULATED),
+          split: {
+            liveSince: null,
+            liveSinceSource: "invalid-env",
+            forwardPicks: 0,
+            backfilledPicks: 0,
+            unknownPicks: 4,
+            lagGraceDays: 1,
+            summary: null,
+            benchmark: null,
+            btc: null,
+          },
+        }}
+      />
+    );
+    expect(html).toContain("4 pick thiếu picked_at");
+    expect(html).toContain("LIVE_SINCE không đúng định dạng YYYY-MM-DD");
+    // Không có pick live thật → không hiện khối số liệu forward.
+    expect(html).not.toContain("Win rate kể từ live");
   });
 
   it("nói rõ khi toàn bộ dữ liệu là backfill, chưa có bằng chứng forward", () => {
@@ -259,7 +294,7 @@ describe("TRACK-01 TrackRecordView", () => {
       />
     );
     expect(html).toContain("Chưa có pick nào được tạo live");
-    expect(html).toContain("5 pick hiện có đều được ghi sau ngày dữ liệu");
+    expect(html).toContain("5 pick backfill bị loại khỏi phần forward");
     expect(html).toContain("chưa phải bằng chứng forward");
   });
 

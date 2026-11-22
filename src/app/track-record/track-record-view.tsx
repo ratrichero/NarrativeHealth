@@ -178,8 +178,8 @@ export interface HorizonStat {
  */
 export interface ForwardSplit {
   liveSince: string | null;
-  /** `env` = mốc LIVE_SINCE cấu hình; `derived` = suy từ pick forward sớm nhất. */
-  liveSinceSource?: "env" | "derived" | null;
+  /** `env` = mốc LIVE_SINCE cấu hình; `invalid-env` = env sai định dạng; `derived` = suy ra. */
+  liveSinceSource?: "env" | "derived" | "invalid-env" | null;
   forwardPicks: number;
   backfilledPicks: number;
   unknownPicks: number;
@@ -450,10 +450,24 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
         <SectionCard title="Forward record — kể từ mốc live">
           {forward == null ? (
             <p className="text-sm text-slate-400">
-              <strong className="text-slate-200">Chưa có pick nào được tạo live.</strong>{" "}
-              {split.backfilledPicks} pick hiện có đều được ghi sau ngày dữ liệu (backfill)
-              {split.unknownPicks > 0 ? `, ${split.unknownPicks} pick thiếu picked_at` : ""} — số
-              liệu bên dưới là lịch sử nạp lại, chưa phải bằng chứng forward.
+              {split.backfilledPicks === 0 && split.unknownPicks === 0 ? (
+                <>Chưa có pick nào đã chốt — chưa có bằng chứng forward.</>
+              ) : (
+                <>
+                  <strong className="text-slate-200">Chưa có pick nào được tạo live.</strong>{" "}
+                  {split.backfilledPicks > 0
+                    ? `${split.backfilledPicks} pick backfill`
+                    : "0 pick backfill"}
+                  {split.unknownPicks > 0
+                    ? ` và ${split.unknownPicks} pick thiếu picked_at`
+                    : ""}{" "}
+                  bị loại khỏi phần forward — số liệu bên dưới là lịch sử nạp lại, chưa phải bằng
+                  chứng forward.
+                </>
+              )}{" "}
+              {split.liveSinceSource === "invalid-env"
+                ? "LIVE_SINCE không đúng định dạng YYYY-MM-DD nên đã bị bỏ qua."
+                : ""}
             </p>
           ) : (
             <div className="space-y-3">
@@ -461,13 +475,19 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
                 Mốc live <span className="text-slate-300">{split.liveSince ?? "—"}</span>{" "}
                 {split.liveSinceSource === "env"
                   ? "(cấu hình LIVE_SINCE)"
-                  : split.liveSinceSource === "derived"
-                    ? "(suy từ picked_at)"
-                    : ""}{" "}
+                  : split.liveSinceSource === "invalid-env"
+                    ? "(LIVE_SINCE không hợp lệ — dùng mốc suy từ picked_at)"
+                    : split.liveSinceSource === "derived"
+                      ? "(suy từ picked_at)"
+                      : ""}{" "}
                 · {split.forwardPicks} pick được ghi trong {split.lagGraceDays} ngày kể từ ngày dữ
                 liệu · {split.backfilledPicks} pick backfill
                 {split.unknownPicks > 0 ? ` + ${split.unknownPicks} pick thiếu picked_at` : ""} bị
-                loại khỏi phần này.
+                loại khỏi phần này
+                {data.meta?.window?.capped
+                  ? ` (đếm trong ${data.meta.window.rowsRead} pick gần nhất do giới hạn cửa sổ)`
+                  : ""}
+                .
               </p>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <ForwardStat
@@ -1064,8 +1084,11 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
             forward khi được ghi trong {split ? split.lagGraceDays : 1} ngày kể từ `data_date` của
             nó: nạp lại lịch sử quá khứ (kể cả sau mốc live) bị loại khỏi khối forward và chỉ nằm
             trong &ldquo;Toàn bộ lịch sử&rdquo;, nên một lần backfill không thể làm đẹp con số forward.
-            Pick thiếu `picked_at` cũng bị loại vì không chứng minh được là live. Win rate, net R
-            và drawdown của khối forward đo trên đúng các lệnh đó, với benchmark riêng cùng cửa sổ.
+            Pick thiếu `picked_at` cũng bị loại vì không chứng minh được là live. Hàng được ghi bởi
+            một lượt chạy bù (`picked_origin = backfill`) bị loại ngay cả khi lag chỉ 1 ngày —
+            origin ghi lúc insert chỉ có thể hạ nhãn, không bao giờ nâng một pick lên forward. Win
+            rate, net R và drawdown của khối forward đo trên đúng các lệnh đó, với benchmark riêng
+            cùng cửa sổ.
           </p>
           <p>
             <span className="text-slate-200 font-medium">Benchmark:</span> basket{" "}
