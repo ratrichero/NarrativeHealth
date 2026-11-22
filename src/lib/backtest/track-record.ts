@@ -14,10 +14,62 @@
 //   * Pure + deterministic → unit-testable without a database.
 
 import { aggregateOutcomes, daysBetween, type GroupStats, type PickOutcome } from "./engine";
-import { maxDrawdownR, profitFactor, wilsonInterval, type WilsonCI } from "./metrics";
+import { maxDrawdownR, marRatio, profitFactor, sharpePerTrade, wilsonInterval, type WilsonCI } from "./metrics";
+import {
+  BOOTSTRAP_RESAMPLES,
+  BOOTSTRAP_SEED,
+  bootstrapMeanCi,
+  bootstrapProbabilityAbove,
+  bootstrapProfitFactorCi,
+  bootstrapTotalCi,
+  summarizeEpisodes,
+  type Interval,
+} from "./bootstrap";
 
 /** Bumped when the aggregation semantics change (shown on the public page). */
-export const TRACK_RECORD_METRICS_VERSION = "track-record-v1";
+export const TRACK_RECORD_METRICS_VERSION = "track-record-v7";
+
+/** 1R = 1% vốn (rủi ro cố định mỗi lệnh) — cùng đơn vị với % return của benchmark. */
+export const RISK_PCT_PER_TRADE = 1;
+
+/** Ngưỡng tối thiểu để câu kết luận "thắng/thua benchmark" được công bố. */
+export const MIN_TRADES_FOR_VERDICT = 30;
+export const MIN_EPISODES_FOR_VERDICT = 5;
+
+/**
+ * Người đọc cần biết con số đã đổi nghĩa gì giữa các lần — changelog công khai
+ * thay vì im lặng đổi số. Mới nhất trước.
+ */
+export const TRACK_RECORD_CHANGELOG: readonly { version: string; note: string }[] = [
+  {
+    version: "track-record-v7",
+    note: "Khối forward record neo vào mốc live tường minh (env LIVE_SINCE, so bằng picked_at): chỉ pick được ghi từ mốc live trở đi mới là bằng chứng forward; thiếu LIVE_SINCE thì mốc live suy từ pick forward sớm nhất.",
+  },
+  {
+    version: "track-record-v6",
+    note: "Tách track record thành hai phần: kết quả forward kể từ mốc live (pick được ghi đúng ngày dữ liệu, suy từ picked_at) và toàn bộ lịch sử — pick nạp lại (backfill) không còn trộn vào bằng chứng forward.",
+  },
+  {
+    version: "track-record-v5",
+    note: "Thêm cổng cỡ mẫu (chưa đủ 30 trade / 5 episode thì không kết luận), alpha so với basket kèm bootstrap CI + xác suất vượt, công bố khi chỉ tính N pick gần nhất, và độ dài drawdown theo thời gian.",
+  },
+  {
+    version: "track-record-v4",
+    note: "Thêm Sharpe trên mỗi lệnh và MAR (tổng net R / max drawdown) — profit factor một mình không cho biết đường equity gồ ghề cỡ nào.",
+  },
+  {
+    version: "track-record-v3",
+    note: "Thêm bootstrap 95% CI cho avg net R / profit factor và số episode độc lập (pick lặp cùng setup không tính là mẫu mới).",
+  },
+  {
+    version: "track-record-v2",
+    note: "Công bố entry fill rate và win rate tách riêng trên các pick thực sự khớp vùng entry.",
+  },
+  {
+    version: "track-record-v1",
+    note: "Bản đầu: win rate + Wilson CI, net R sau phí/slippage, drawdown, profit factor.",
+  },
+];
 
 /** One settled pick as read from `top_recommendation_picks`. */
 export interface TrackRecordPickRow {
@@ -30,8 +82,20 @@ export interface TrackRecordPickRow {
   status: string;
   exitRGross: number | null;
   exitRNet: number | null;
+  /**
+   * Did price trade back into the entry zone within 3 days? null on rows
+   * settled before the column existed (or with no entry levels to test).
+   */
+  entryFilled: boolean | null;
   /** ISO timestamp of settlement — used for trade ordering (falls back to dataDate). */
   evaluatedAt: string | null;
+  /**
+   * ISO timestamp of the FIRST write of this pick (`picked_at`). Optional
+   * because rows settled before the column existed cannot prove provenance.
+   * Forward evidence = a pick written at its own data date; anything written
+   * much later was backfilled into history.
+   */
+  pickedAt?: string | null;
 }
 
 export interface TrackRecordDirectionStats {
@@ -43,6 +107,38 @@ export interface TrackRecordDirectionStats {
   noHit: number;
   winRate: number | null;
   avgRNet: number | null;
+  /** % of direction picks with a recorded fill verdict (null = none recorded). */
+  entryFillRate: number | null;
+}
+
+/**
+ * FILL-01 — entry fill breakdown.
+ *
+ * Outcomes are measured from `entryMid`, so a pick whose TP is tagged before
+ * price ever returns to the entry zone still books a win. That is optimistic:
+ * a real trader was never in the trade. Splitting the record by fill state
+ * makes the gap visible instead of letting it inflate the headline win rate.
+ */
+export interface TrackRecordFillStats {
+  /** Picks with a recorded fill verdict (denominator of the fill rate). */
+  known: number;
+  filled: number;
+  unfilled: number;
+  /** filled / known (%), null when no pick recorded a verdict. */
+  rate: number | null;
+  /** Resolved trades whose entry actually filled. */
+  filledTrades: number;
+  filledWins: number;
+  filledLosses: number;
+  /** Win rate over filled trades only — the tradeable number. */
+  filledWinRate: number | null;
+  filledWinRateCI: WilsonCI | null;
+  /** Resolved trades that never touched the entry zone. */
+  unfilledTrades: number;
+  unfilledWins: number;
+  unfilledLosses: number;
+  /** Win rate of trades a real trader could not have taken. */
+  unfilledWinRate: number | null;
 }
 
 export interface TrackRecordMonth {
@@ -52,6 +148,141 @@ export interface TrackRecordMonth {
   losses: number;
   winRate: number | null;
   avgRNet: number | null;
+}
+
+export type TrackRecordSampleReason = "no-trades" | "thin-sample";
+
+/**
+ * SAMPLE-01 — cỡ mẫu có đủ để công bố kết luận không.
+ *
+ * Trang công khai trước đây in verdict "đang thắng benchmark" ngay cả khi mới
+ * có 5 lệnh. Gate không che số liệu (vẫn hiện đủ), chỉ chặn câu kết luận —
+ * "chưa đủ bằng chứng" là thông tin, còn kết luận từ 5 lệnh là thông tin sai.
+ */
+export interface TrackRecordSample {
+  trades: number;
+  /** Cỡ mẫu thật: pick lặp cùng symbol+hướng gộp thành một episode. */
+  episodes: number;
+  minTrades: number;
+  minEpisodes: number;
+  sufficient: boolean;
+  reason: TrackRecordSampleReason | null;
+}
+
+/**
+ * FORWARD-01 — pick được tạo live hay nạp lại từ lịch sử.
+ *
+ * `data_date` là ngày của tín hiệu; `picked_at` là lúc hàng được GHI lần đầu.
+ * Một hệ thống chạy live ghi pick ngay trong ngày dữ liệu (lệch 0–1 ngày vì
+ * job chạy sát nửa đêm UTC). Một lần backfill lịch sử ghi hàng loạt pick cũ
+ * trong một ngày hôm nay → lệch rất nhiều. Chỉ pick live mới là bằng chứng
+ * forward; pick backfill vẫn hiện trong "toàn bộ lịch sử" nhưng không được
+ * trộn vào phần forward.
+ */
+export const FORWARD_PICK_LAG_DAYS = 1;
+
+export type TrackRecordProvenance = "forward" | "backfill" | "unknown";
+
+/** `YYYY-MM-DD` hợp lệ → giữ nguyên; thiếu/sai định dạng → null (không đoán). */
+export function parseLiveSince(raw: string | null | undefined): string | null {
+  const value = raw?.trim();
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) ? value : null;
+}
+
+/**
+ * Phân loại một pick theo mốc live (nếu có) và độ trễ picked_at ~ data_date.
+ *
+ * `liveSince` là ranh giới tường minh (env LIVE_SINCE): pick được ghi TRƯỚC
+ * mốc đó là dữ liệu seed/lịch sử, dù lag tính theo ngày trông nhỏ. Mốc này so
+ * trên `picked_at` — thời điểm pick thực sự sinh ra — nên backfill chạy sau
+ * mốc live vẫn bị loại bởi quy tắc lag bên dưới.
+ */
+export function pickProvenance(
+  row: { dataDate: string; pickedAt?: string | null },
+  options: { liveSince?: string | null } = {}
+): TrackRecordProvenance {
+  const pickedDate = row.pickedAt?.slice(0, 10);
+  if (!pickedDate || !/^\d{4}-\d{2}-\d{2}$/.test(pickedDate)) return "unknown";
+  const liveSince = options.liveSince ?? null;
+  if (liveSince && pickedDate < liveSince) return "backfill";
+  const lagDays = daysBetween(row.dataDate, pickedDate);
+  if (!Number.isFinite(lagDays)) return "unknown";
+  // lag âm (picked_at trước data_date) = ghi đúng thời điểm, vẫn là live.
+  return lagDays <= FORWARD_PICK_LAG_DAYS ? "forward" : "backfill";
+}
+
+export interface TrackRecordPartition<T> {
+  forward: T[];
+  backfilled: T[];
+  unknown: T[];
+  /** data_date sớm nhất của một pick forward = mốc live; null khi chưa có. */
+  liveSince: string | null;
+}
+
+/** Chia rows theo nguồn gốc, giữ nguyên thứ tự đầu vào trong từng nhóm. */
+export function partitionByProvenance<
+  T extends { dataDate: string; pickedAt?: string | null },
+>(rows: readonly T[], options: { liveSince?: string | null } = {}): TrackRecordPartition<T> {
+  const forward: T[] = [];
+  const backfilled: T[] = [];
+  const unknown: T[] = [];
+  for (const row of rows) {
+    const provenance = pickProvenance(row, options);
+    if (provenance === "forward") forward.push(row);
+    else if (provenance === "backfill") backfilled.push(row);
+    else unknown.push(row);
+  }
+  const liveSince =
+    options.liveSince ??
+    (forward.length > 0
+      ? forward.reduce((min, row) => (row.dataDate < min ? row.dataDate : min), forward[0].dataDate)
+      : null);
+  return { forward, backfilled, unknown, liveSince };
+}
+
+/**
+ * DD-01 — drawdown theo thời gian, bổ sung cho độ sâu (maxR).
+ * 20R drawdown trong 3 tuần khác hẳn 20R trong 8 tháng về khả năng chịu đựng.
+ */
+export interface TrackRecordDrawdown {
+  /** Độ sâu lớn nhất (≤ 0) — trùng `maxDrawdownR`. */
+  maxR: number;
+  /** Chuỗi underwater dài nhất, tính bằng ngày lịch; null khi chưa từng drawdown. */
+  maxDays: number | null;
+  /** Drawdown hiện tại so với đỉnh gần nhất (≤ 0). */
+  currentR: number;
+  /** Ngày của đỉnh đang đo drawdown hiện tại; null khi đang ở đỉnh. */
+  currentFromDate: string | null;
+}
+
+/**
+ * ALPHA-01 — chênh lệch so với benchmark kèm bất định.
+ *
+ * `deltaPct` một mình không nói được là kỹ năng hay nhiễu: bootstrap phân phối
+ * tổng net R cho CI của strategy và của delta, cùng xác suất vượt benchmark.
+ * 1R = RISK_PCT_PER_TRADE% vốn nên đơn vị khớp với % return của benchmark.
+ */
+export interface TrackRecordAlpha {
+  strategyPct: number;
+  benchmarkPct: number;
+  deltaPct: number;
+  /** Bootstrap 95% CI của strategy %; null khi < 2 lệnh. */
+  strategyCI: Interval | null;
+  /** CI của delta = strategyCI − benchmarkPct; null khi không ước lượng được. */
+  deltaCI: Interval | null;
+  /** % lần lấy lại mẫu strategy vượt benchmark (không phải p-value). */
+  probOutperform: number | null;
+  resamples: number;
+  seed: number;
+}
+
+export interface BuildTrackRecordOptions {
+  /** % return của benchmark (basket) trong cùng cửa sổ; thiếu → không có alpha. */
+  benchmarkReturnPct?: number | null;
+  minTrades?: number;
+  minEpisodes?: number;
 }
 
 export interface TrackRecordSummary {
@@ -74,6 +305,13 @@ export interface TrackRecordSummary {
   totalRNet: number;
   maxDrawdownR: number;
   profitFactor: number | null;
+  /**
+   * Sharpe trên mỗi lệnh = avg net R / độ lệch chuẩn net R (chưa annualize).
+   * null khi < 2 lệnh hoặc mọi lệnh cùng R (sd = 0).
+   */
+  sharpePerTrade: number | null;
+  /** Tổng net R / |max drawdown R|; null khi chưa có drawdown (chia cho 0). */
+  marRatio: number | null;
   longestLosingStreak: number;
   firstDate: string | null;
   lastDate: string | null;
@@ -81,7 +319,81 @@ export interface TrackRecordSummary {
   equityCurve: { date: string; cumR: number }[];
   byDirection: TrackRecordDirectionStats[];
   monthly: TrackRecordMonth[];
+  /** FILL-01: entry fill rate + win rate split by fill state. */
+  fill: TrackRecordFillStats;
+  /** SAMPLE-01: đủ mẫu để kết luận chưa. */
+  sample: TrackRecordSample;
+  /** DD-01: drawdown theo độ sâu lẫn thời gian. */
+  drawdown: TrackRecordDrawdown;
+  /** ALPHA-01: chênh lệch so với benchmark kèm CI; null khi thiếu benchmark/lệnh. */
+  alpha: TrackRecordAlpha | null;
+  /** BT-09: độ bất định của kỳ vọng + cỡ mẫu thật (episode). */
+  uncertainty: {
+    /** Bootstrap 95% CI cho avg net R (R đơn vị), null khi < 2 lệnh. */
+    avgRNetCI: Interval | null;
+    /** Bootstrap 95% CI cho profit factor, null khi không ước lượng được. */
+    profitFactorCI: Interval | null;
+    resamples: number;
+    seed: number;
+    /** Số episode độc lập trong `trades`. */
+    episodes: number;
+    /** Episode lớn nhất chứa bao nhiêu trade. */
+    largestEpisode: number;
+  };
   metricsVersion: string;
+}
+
+/** BT-10 — một dòng kết quả horizon append-only (gross R, chưa trừ phí). */
+export interface TrackRecordHorizonRow {
+  horizonDays: number;
+  outcome: string | null;
+  exitRGross: number | null;
+}
+
+export interface TrackRecordHorizonStat {
+  days: number;
+  picks: number;
+  trades: number;
+  wins: number;
+  losses: number;
+  winRate: number | null;
+  /** Avg gross R — bảng horizon so hình dạng theo thời gian, không phải P&L. */
+  avgRGross: number | null;
+}
+
+/**
+ * Gom kết quả nhiều horizon thành bảng so sánh. Thuần; horizon không có dòng
+ * nào thì không xuất hiện (không bịa số 0).
+ */
+export function summarizeHorizons(
+  rows: readonly TrackRecordHorizonRow[]
+): TrackRecordHorizonStat[] {
+  const byHorizon = new Map<number, TrackRecordHorizonRow[]>();
+  for (const row of rows) {
+    const list = byHorizon.get(row.horizonDays);
+    if (list) list.push(row);
+    else byHorizon.set(row.horizonDays, [row]);
+  }
+
+  return [...byHorizon.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([days, group]) => {
+      const trades = group.filter((row) => isTrade(row.outcome));
+      const wins = trades.filter((row) => isWin(row.outcome)).length;
+      const losses = trades.filter((row) => isLoss(row.outcome)).length;
+      const rs = trades
+        .map((row) => row.exitRGross)
+        .filter((v): v is number => v != null);
+      return {
+        days,
+        picks: group.length,
+        trades: trades.length,
+        wins,
+        losses,
+        winRate: trades.length > 0 ? +((wins / trades.length) * 100).toFixed(1) : null,
+        avgRGross: mean(rs),
+      };
+    });
 }
 
 const WINS = new Set(["TP1_WIN", "TP2_WIN"]);
@@ -108,7 +420,10 @@ function resolutionDate(row: TrackRecordPickRow): string {
  * time (settlement timestamp, falling back to the data date), which is how the
  * trades actually landed in sequence.
  */
-export function buildTrackRecord(rows: readonly TrackRecordPickRow[]): TrackRecordSummary {
+export function buildTrackRecord(
+  rows: readonly TrackRecordPickRow[],
+  options: BuildTrackRecordOptions = {}
+): TrackRecordSummary {
   const wins = rows.filter((r) => isWin(r.outcome));
   const losses = rows.filter((r) => isLoss(r.outcome));
   const noHit = rows.filter((r) => r.outcome === NO_HIT);
@@ -155,7 +470,7 @@ export function buildTrackRecord(rows: readonly TrackRecordPickRow[]): TrackReco
       hitDay: null,
       mfePct: null,
       maePct: null,
-      entryFilled: null,
+      entryFilled: row.entryFilled,
     };
     const arr = byDirectionMap.get(row.direction);
     if (arr) arr.push(mapped);
@@ -173,6 +488,7 @@ export function buildTrackRecord(rows: readonly TrackRecordPickRow[]): TrackReco
         noHit: g.noHit,
         winRate: g.winRate,
         avgRNet: g.avgR,
+        entryFillRate: g.entryFillRate,
       };
     })
     .sort((a, b) => b.trades - a.trades || a.direction.localeCompare(b.direction));
@@ -199,11 +515,66 @@ export function buildTrackRecord(rows: readonly TrackRecordPickRow[]): TrackReco
     }))
     .sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
 
+  // FILL-01: fill rate over picks that recorded a verdict, then the trade
+  // split — filled trades are what a real trader could have taken.
+  const fillKnown = rows.filter((r) => r.entryFilled != null);
+  const fillFilled = fillKnown.filter((r) => r.entryFilled === true);
+  const filledTrades = trades.filter((r) => r.entryFilled === true);
+  const unfilledTrades = trades.filter((r) => r.entryFilled === false);
+  const filledWins = filledTrades.filter((r) => isWin(r.outcome)).length;
+  const filledLosses = filledTrades.filter((r) => isLoss(r.outcome)).length;
+  const unfilledWins = unfilledTrades.filter((r) => isWin(r.outcome)).length;
+  const unfilledLosses = unfilledTrades.filter((r) => isLoss(r.outcome)).length;
+
+  const episodeSummary = summarizeEpisodes(trades);
+
   const dates = rows.map((r) => r.dataDate).filter(Boolean).sort();
   const evalTimes = rows
     .map((r) => r.evaluatedAt)
     .filter((v): v is string => v != null)
     .sort();
+
+  const totalRNet = +netRs.reduce((a, b) => a + b, 0).toFixed(2);
+  const maxDrawdown = maxDrawdownR(netRs);
+
+  const minTrades = options.minTrades ?? MIN_TRADES_FOR_VERDICT;
+  const minEpisodes = options.minEpisodes ?? MIN_EPISODES_FOR_VERDICT;
+  const sampleSufficient =
+    trades.length >= minTrades && episodeSummary.episodes >= minEpisodes;
+  const sample: TrackRecordSample = {
+    trades: trades.length,
+    episodes: episodeSummary.episodes,
+    minTrades,
+    minEpisodes,
+    sufficient: sampleSufficient,
+    reason: sampleSufficient ? null : trades.length === 0 ? "no-trades" : "thin-sample",
+  };
+
+  const drawdown = summarizeDrawdown(equityCurve);
+
+  // ALPHA-01: chỉ tính khi có benchmark và ít nhất một lệnh; 1R = RISK % vốn
+  // nên tổng net R chính là strategy % ở cùng đơn vị với benchmark.returnPct.
+  const benchmarkPct = options.benchmarkReturnPct;
+  let alpha: TrackRecordAlpha | null = null;
+  if (benchmarkPct != null && Number.isFinite(benchmarkPct) && netRs.length > 0) {
+    const strategyPct = +(totalRNet * RISK_PCT_PER_TRADE).toFixed(2);
+    const strategyCI = bootstrapTotalCi(netRs);
+    alpha = {
+      strategyPct,
+      benchmarkPct: +benchmarkPct.toFixed(2),
+      deltaPct: +(strategyPct - benchmarkPct).toFixed(2),
+      strategyCI,
+      deltaCI: strategyCI
+        ? {
+            lo: +(strategyCI.lo - benchmarkPct).toFixed(2),
+            hi: +(strategyCI.hi - benchmarkPct).toFixed(2),
+          }
+        : null,
+      probOutperform: bootstrapProbabilityAbove(netRs, benchmarkPct),
+      resamples: BOOTSTRAP_RESAMPLES,
+      seed: BOOTSTRAP_SEED,
+    };
+  }
 
   return {
     totals: {
@@ -219,9 +590,11 @@ export function buildTrackRecord(rows: readonly TrackRecordPickRow[]): TrackReco
     winRateCI: wilsonInterval(wins.length, losses.length),
     avgRNet: mean(netRs),
     avgRGross: mean(grossRs),
-    totalRNet: +netRs.reduce((a, b) => a + b, 0).toFixed(2),
-    maxDrawdownR: maxDrawdownR(netRs),
+    totalRNet,
+    maxDrawdownR: maxDrawdown,
     profitFactor: profitFactor(netRs),
+    sharpePerTrade: sharpePerTrade(netRs),
+    marRatio: marRatio(totalRNet, maxDrawdown),
     longestLosingStreak: longestStreak(ordered),
     firstDate: dates[0] ?? null,
     lastDate: dates[dates.length - 1] ?? null,
@@ -229,7 +602,87 @@ export function buildTrackRecord(rows: readonly TrackRecordPickRow[]): TrackReco
     equityCurve,
     byDirection,
     monthly,
+    fill: {
+      known: fillKnown.length,
+      filled: fillFilled.length,
+      unfilled: fillKnown.length - fillFilled.length,
+      rate:
+        fillKnown.length > 0
+          ? +((fillFilled.length / fillKnown.length) * 100).toFixed(1)
+          : null,
+      filledTrades: filledTrades.length,
+      filledWins,
+      filledLosses,
+      filledWinRate:
+        filledTrades.length > 0
+          ? +((filledWins / filledTrades.length) * 100).toFixed(1)
+          : null,
+      filledWinRateCI: wilsonInterval(filledWins, filledLosses),
+      unfilledTrades: unfilledTrades.length,
+      unfilledWins,
+      unfilledLosses,
+      unfilledWinRate:
+        unfilledTrades.length > 0
+          ? +((unfilledWins / unfilledTrades.length) * 100).toFixed(1)
+          : null,
+    },
+    sample,
+    drawdown,
+    alpha,
+    uncertainty: {
+      avgRNetCI: bootstrapMeanCi(netRs),
+      profitFactorCI: bootstrapProfitFactorCi(netRs),
+      resamples: BOOTSTRAP_RESAMPLES,
+      seed: BOOTSTRAP_SEED,
+      episodes: episodeSummary.episodes,
+      largestEpisode: episodeSummary.largest,
+    },
     metricsVersion: TRACK_RECORD_METRICS_VERSION,
+  };
+}
+
+/**
+ * DD-01 — drawdown theo thời gian từ equity curve (cumR theo ngày chốt).
+ *
+ * `maxR` = đáy sâu nhất so với đỉnh (trùng maxDrawdownR). `maxDays` = chuỗi
+ * ngày lịch dài nhất mà equity còn dưới đỉnh trước đó — thước đo "phải chịu
+ * đựng bao lâu", thứ mà độ sâu R một mình không nói. `currentR`/`currentFromDate`
+ * cho biết hiện đang underwater hay đã hồi. Thuần, không I/O.
+ */
+export function summarizeDrawdown(
+  curve: readonly { date: string; cumR: number }[]
+): TrackRecordDrawdown {
+  if (curve.length === 0) {
+    return { maxR: 0, maxDays: null, currentR: 0, currentFromDate: null };
+  }
+
+  let peak = 0;
+  let peakDate = curve[0].date;
+  let underwaterStart: string | null = null;
+  let maxDays: number | null = null;
+  let worst = 0;
+
+  for (const point of curve) {
+    if (point.cumR >= peak) {
+      peak = point.cumR;
+      peakDate = point.date;
+      underwaterStart = null;
+      continue;
+    }
+    if (underwaterStart == null) underwaterStart = peakDate;
+    const days = daysBetween(underwaterStart, point.date);
+    if (maxDays == null || days > maxDays) maxDays = days;
+    const dd = point.cumR - peak;
+    if (dd < worst) worst = dd;
+  }
+
+  const last = curve[curve.length - 1];
+  const currentR = +(last.cumR - peak).toFixed(2);
+  return {
+    maxR: +worst.toFixed(2),
+    maxDays,
+    currentR,
+    currentFromDate: currentR < 0 ? peakDate : null,
   };
 }
 
