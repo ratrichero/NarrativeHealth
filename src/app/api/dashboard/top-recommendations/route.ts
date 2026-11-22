@@ -482,6 +482,25 @@ export async function GET() {
       });
     }
 
+    // ORIGIN-01/02: chỉ lượt chạy đúng ngày dữ liệu mới là bằng chứng live.
+    // Chạy bù cho ngày trước (dataDate < hôm nay) bị đánh dấu backfill kể cả
+    // khi picked_at chỉ trễ một ngày — heuristic thời gian không phân biệt
+    // được hai trường hợp. Nếu pipeline luôn chậm một ngày thì không lượt
+    // chạy nào là live, nên payload mang luôn độ trễ + cảnh báo để lộ ra thay
+    // vì để forward record rỗng mà không ai biết.
+    const pickOrigin: "live" | "backfill" = dataDate === today ? "live" : "backfill";
+    const dataLagDays = Math.max(
+      0,
+      Math.round(
+        (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${dataDate}T00:00:00Z`)) / 86400_000
+      )
+    );
+    if (pickOrigin === "backfill") {
+      console.warn(
+        `[ORIGIN-01] data_date ${dataDate} chậm ${dataLagDays} ngày so với hôm nay (${today}) — picks ghi origin=backfill, không phải bằng chứng forward.`
+      );
+    }
+
     // BT-01: persist the six picks (with setups) for later backtest —
     // best-effort, awaited before response; failure never breaks the API.
     try {
@@ -525,11 +544,7 @@ export async function GET() {
             setupUnavailableReason: t.setupUnavailableReason,
           };
         }),
-        // ORIGIN-01: chỉ lượt chạy đúng ngày dữ liệu mới là bằng chứng live.
-        // Chạy bù cho ngày trước (dataDate < hôm nay) bị đánh dấu backfill kể
-        // cả khi picked_at chỉ trễ một ngày — heuristic thời gian không phân
-        // biệt được hai trường hợp.
-        { origin: dataDate === today ? "live" : "backfill" }
+        { origin: pickOrigin }
       );
     } catch (e) {
       console.error("[BT-01] route persist failed:", e);
@@ -539,6 +554,15 @@ export async function GET() {
       success: true,
       data: {
         date: dataDate,
+        /** Nguồn của các pick vừa ghi: chỉ `live` mới là bằng chứng forward. */
+        origin: pickOrigin,
+        /** data_date chậm hơn hôm nay bao nhiêu ngày (0 = chạy đúng ngày). */
+        dataLagDays,
+        /** ORIGIN-02: khác null khi lượt chạy này không thể là forward evidence. */
+        originWarning:
+          pickOrigin === "backfill"
+            ? `data_date ${dataDate} chậm ${dataLagDays} ngày so với hôm nay — picks ghi origin=backfill. Nếu độ trễ này lặp lại mỗi ngày, forward record sẽ không bao giờ có pick live.`
+            : null,
         recommendations: top,
       },
     });

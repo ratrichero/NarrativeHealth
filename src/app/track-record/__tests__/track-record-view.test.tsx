@@ -298,6 +298,46 @@ describe("TRACK-01 TrackRecordView", () => {
     expect(html).toContain("chưa phải bằng chứng forward");
   });
 
+  // ORIGIN-02: pipeline chậm một ngày → origin không bao giờ live; trang phải
+  // nói rõ nguyên nhân thay vì chỉ báo "chưa có pick live" rồi để đó.
+  it("cảnh báo khi origin chưa từng ghi live dù pick chỉ trễ trong ngưỡng", () => {
+    const data = dataFrom(POPULATED);
+    const split = {
+      liveSince: null,
+      forwardPicks: 0,
+      backfilledPicks: 5,
+      unknownPicks: 0,
+      lagGraceDays: 1,
+      summary: null,
+      benchmark: null,
+      btc: null,
+    };
+
+    const warned = renderToStaticMarkup(
+      <TrackRecordView
+        data={{
+          ...data,
+          split: {
+            ...split,
+            originSignal: {
+              code: "origin-never-live",
+              backfilledPicks: 5,
+              withinGracePicks: 5,
+              minLagDays: 1,
+            },
+          },
+        }}
+      />
+    );
+    expect(warned).toContain("Origin chưa từng ghi nhận pick live");
+    expect(warned).toContain("5 pick backfill đều được ghi trong");
+    expect(warned).toContain("trễ ít nhất");
+    expect(warned).toContain("forward record sẽ rỗng mãi");
+    // Không có originSignal (hoặc null) → không cảnh báo bừa.
+    const quiet = renderToStaticMarkup(<TrackRecordView data={{ ...data, split }} />);
+    expect(quiet).not.toContain("Origin chưa từng ghi nhận pick live");
+  });
+
   // WINDOW-01: khi bị cắt ở MAX_ROWS phải nói rõ, không để tưởng là toàn bộ.
   it("công bố giới hạn cửa sổ khi chạm MAX_ROWS", () => {
     const data = dataFrom(POPULATED);

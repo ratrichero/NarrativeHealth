@@ -27,7 +27,7 @@ import {
 } from "./bootstrap";
 
 /** Bumped when the aggregation semantics change (shown on the public page). */
-export const TRACK_RECORD_METRICS_VERSION = "track-record-v8";
+export const TRACK_RECORD_METRICS_VERSION = "track-record-v9";
 
 /** 1R = 1% vốn (rủi ro cố định mỗi lệnh) — cùng đơn vị với % return của benchmark. */
 export const RISK_PCT_PER_TRADE = 1;
@@ -41,6 +41,10 @@ export const MIN_EPISODES_FOR_VERDICT = 5;
  * thay vì im lặng đổi số. Mới nhất trước.
  */
 export const TRACK_RECORD_CHANGELOG: readonly { version: string; note: string }[] = [
+  {
+    version: "track-record-v9",
+    note: "ORIGIN-02: công bố tín hiệu `origin-never-live` trong payload và cảnh báo trên trang khi mọi pick đã chốt đều mang origin backfill dù picked_at chỉ trễ trong ngưỡng — dấu hiệu pipeline dữ liệu luôn chậm một ngày khiến forward record rỗng vĩnh viễn. Số liệu forward không đổi, chỉ lộ nguyên nhân.",
+  },
   {
     version: "track-record-v8",
     note: "ORIGIN-01: ghi picked_origin (live/backfill) lúc insert — một lượt chạy bù cho ngày trước không còn được tính là bằng chứng forward chỉ vì picked_at trễ 1 ngày. Origin chỉ có thể hạ nhãn, không bao giờ nâng; hàng cũ (NULL) giữ heuristic cũ. LIVE_SINCE sai định dạng giờ được báo là invalid-env thay vì im lặng. Cần chạy migration 0039 trước khi deploy.",
@@ -226,6 +230,66 @@ export function pickProvenance(
   if (!Number.isFinite(lagDays)) return "unknown";
   // lag âm (picked_at trước data_date) = ghi đúng thời điểm, vẫn là live.
   return lagDays <= FORWARD_PICK_LAG_DAYS ? "forward" : "backfill";
+}
+
+/**
+ * ORIGIN-02 — origin chưa bao giờ ghi `live` dù pick chỉ trễ trong ngưỡng.
+ *
+ * Route dashboard đánh dấu `live` chỉ khi `data_date` đúng ngày chạy. Nếu
+ * pipeline dữ liệu (nến/health) luôn chậm một ngày thì điều kiện đó không bao
+ * giờ đúng: mọi pick thật đều bị ghi `backfill` và forward record rỗng mãi mà
+ * không có lỗi nào để lần ra. Hình dạng đó nhận diện được: không có pick
+ * forward nào, nhưng MỌI pick backfill có picked_at đều trễ trong ngưỡng lag
+ * — nạp lại lịch sử thật thì phải có ít nhất một pick trễ hơn ngưỡng. Tín
+ * hiệu này chỉ mô tả, không đổi nhãn của pick nào.
+ */
+export interface TrackRecordOriginSignal {
+  code: "origin-never-live";
+  /** Số pick mang provenance backfill (kể cả pick thiếu picked_at). */
+  backfilledPicks: number;
+  /** Số pick backfill có picked_at trễ trong ngưỡng — cơ sở của tín hiệu. */
+  withinGracePicks: number;
+  /** Độ trễ nhỏ nhất (ngày) giữa data_date và picked_at trong nhóm đó. */
+  minLagDays: number;
+}
+
+/** Dưới ngưỡng này thì một lượt chạy bù đơn lẻ chưa đủ kết luận "luôn chậm". */
+export const ORIGIN_NEVER_LIVE_MIN_PICKS = 2;
+
+export function originNeverLiveSignal(
+  picks: readonly {
+    dataDate: string;
+    pickedAt?: string | null;
+    provenance: TrackRecordProvenance;
+  }[]
+): TrackRecordOriginSignal | null {
+  // Có bằng chứng forward thật → origin đang hoạt động bình thường.
+  if (picks.some((pick) => pick.provenance === "forward")) return null;
+
+  const backfilled = picks.filter((pick) => pick.provenance === "backfill");
+  if (backfilled.length === 0) return null;
+
+  let withinGracePicks = 0;
+  let minLagDays = Infinity;
+  for (const pick of backfilled) {
+    const pickedDate = pick.pickedAt?.slice(0, 10);
+    if (!pickedDate || !/^\d{4}-\d{2}-\d{2}$/.test(pickedDate)) continue;
+    const lagDays = daysBetween(pick.dataDate, pickedDate);
+    if (!Number.isFinite(lagDays)) continue;
+    // Một pick trễ hơn ngưỡng nghĩa là có backfill thật → tín hiệu không kết luận được gì.
+    if (lagDays > FORWARD_PICK_LAG_DAYS) return null;
+    withinGracePicks += 1;
+    if (lagDays < minLagDays) minLagDays = lagDays;
+  }
+
+  if (withinGracePicks < ORIGIN_NEVER_LIVE_MIN_PICKS) return null;
+
+  return {
+    code: "origin-never-live",
+    backfilledPicks: backfilled.length,
+    withinGracePicks,
+    minLagDays,
+  };
 }
 
 /**

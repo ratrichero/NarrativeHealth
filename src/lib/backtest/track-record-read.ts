@@ -26,6 +26,7 @@ import {
 } from "./realistic-costs";
 import {
   buildTrackRecord,
+  originNeverLiveSignal,
   parseLiveSince,
   pickProvenance,
   summarizeHorizons,
@@ -38,6 +39,7 @@ import {
   TRACK_RECORD_METRICS_VERSION,
   type TrackRecordFreshness,
   type TrackRecordHorizonStat,
+  type TrackRecordOriginSignal,
   type TrackRecordPickRow,
   type TrackRecordProvenance,
   type TrackRecordSummary,
@@ -119,6 +121,12 @@ export interface TrackRecordForwardSplit {
   unknownPicks: number;
   /** picked_at được phép trễ hơn data_date bao nhiêu ngày mà vẫn coi là live. */
   lagGraceDays: number;
+  /**
+   * ORIGIN-02 — null = không có dấu hiệu bất thường; khác null = mọi pick đã
+   * chốt đều mang origin backfill trong ngưỡng lag, dấu hiệu pipeline luôn
+   * chậm một ngày nên forward record sẽ rỗng mãi. Chỉ mô tả, không đổi nhãn.
+   */
+  originSignal: TrackRecordOriginSignal | null;
   /** Summary CHỈ trên pick forward; null khi chưa có pick forward nào. */
   summary: TrackRecordSummary | null;
   /** Benchmark cùng cửa sổ các lệnh forward (không dùng cửa sổ lịch sử). */
@@ -631,6 +639,9 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
     backfilledPicks: provenanceOf.filter((p) => p === "backfill").length,
     unknownPicks: provenanceOf.filter((p) => p === "unknown").length,
     lagGraceDays: FORWARD_PICK_LAG_DAYS,
+    // ORIGIN-02: lộ trường hợp origin không bao giờ live (pipeline chậm ngày)
+    // thay vì để forward record rỗng mà không ai biết vì sao.
+    originSignal: originNeverLiveSignal(picks),
     summary:
       forwardRows.length > 0
         ? buildTrackRecord(forwardPicks, {

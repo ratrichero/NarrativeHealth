@@ -184,6 +184,16 @@ export interface ForwardSplit {
   backfilledPicks: number;
   unknownPicks: number;
   lagGraceDays: number;
+  /**
+   * ORIGIN-02: khác null = mọi pick chốt đều được ghi origin backfill trong
+   * ngưỡng lag — dấu hiệu pipeline luôn chậm một ngày.
+   */
+  originSignal?: {
+    code: "origin-never-live";
+    backfilledPicks: number;
+    withinGracePicks: number;
+    minLagDays: number;
+  } | null;
   summary: TrackRecordSummary | null;
   benchmark: Benchmark | null;
   btc: Benchmark | null;
@@ -465,6 +475,7 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
       {split ? (
         <SectionCard title="Forward record — kể từ mốc live">
           {forward == null ? (
+            <div className="space-y-3">
             <p className="text-sm text-slate-400">
               {split.backfilledPicks === 0 && split.unknownPicks === 0 ? (
                 <>Chưa có pick nào đã chốt — chưa có bằng chứng forward.</>
@@ -485,6 +496,17 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
                 ? "LIVE_SINCE không đúng định dạng YYYY-MM-DD nên đã bị bỏ qua."
                 : ""}
             </p>
+            {split.originSignal ? (
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+                <strong>Origin chưa từng ghi nhận pick live.</strong>{" "}
+                {split.originSignal.backfilledPicks} pick backfill đều được ghi trong{" "}
+                {split.lagGraceDays} ngày kể từ ngày dữ liệu (trễ ít nhất{" "}
+                {split.originSignal.minLagDays} ngày). Dấu hiệu pipeline dữ liệu luôn chậm một
+                ngày: lượt chạy thật bị đánh dấu backfill nên forward record sẽ rỗng mãi — kiểm
+                tra độ trễ nến/health thay vì chờ số liệu tự đầy.
+              </div>
+            ) : null}
+            </div>
           ) : (
             <div className="space-y-3">
               <p className="text-xs text-slate-500">
@@ -1102,7 +1124,9 @@ export function TrackRecordView({ data }: { data: TrackRecordData }) {
             trong &ldquo;Toàn bộ lịch sử&rdquo;, nên một lần backfill không thể làm đẹp con số forward.
             Pick thiếu `picked_at` cũng bị loại vì không chứng minh được là live. Hàng được ghi bởi
             một lượt chạy bù (`picked_origin = backfill`) bị loại ngay cả khi lag chỉ 1 ngày —
-            origin ghi lúc insert chỉ có thể hạ nhãn, không bao giờ nâng một pick lên forward. Win
+            origin ghi lúc insert chỉ có thể hạ nhãn, không bao giờ nâng một pick lên forward.
+            Nếu mọi pick đều mang origin backfill trong ngưỡng lag (không có pick live nào), trang
+            cảnh báo pipeline dữ liệu chậm ngày thay vì để forward record rỗng mà không rõ lý do. Win
             rate, net R và drawdown của khối forward đo trên đúng các lệnh đó, với benchmark riêng
             cùng cửa sổ.
           </p>

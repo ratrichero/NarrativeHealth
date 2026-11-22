@@ -680,6 +680,7 @@ describe("BT-E2E settlement trên Postgres thật", () => {
           forwardPicks: number;
           backfilledPicks: number;
           summary: unknown | null;
+          originSignal: { code: string; backfilledPicks: number } | null;
         };
       };
     };
@@ -687,6 +688,40 @@ describe("BT-E2E settlement trên Postgres thật", () => {
       forwardPicks: 0,
       backfilledPicks: 2,
       summary: null,
+      // ORIGIN-02: pick BTC trễ 20 ngày là backfill thật, nên không được kết
+      // luận "pipeline luôn chậm một ngày" — tín hiệu phải null.
+      originSignal: null,
+    });
+
+    // ORIGIN-02: mô phỏng pipeline luôn chậm một ngày — mọi pick đều mang
+    // origin backfill và picked_at chỉ trễ 1 ngày. Forward record rỗng, nhưng
+    // payload phải nói ra nguyên nhân thay vì để người đọc đoán.
+    await client.query(
+      `UPDATE top_recommendation_picks
+          SET picked_at = data_date + interval '1 day',
+              picked_origin = 'backfill'`
+    );
+    const lagged = (await (await trackRecordGET()).json()) as {
+      data: {
+        split: {
+          forwardPicks: number;
+          originSignal: {
+            code: string;
+            backfilledPicks: number;
+            withinGracePicks: number;
+            minLagDays: number;
+          } | null;
+        };
+      };
+    };
+    expect(lagged.data.split).toMatchObject({
+      forwardPicks: 0,
+      originSignal: {
+        code: "origin-never-live",
+        backfilledPicks: 2,
+        withinGracePicks: 2,
+        minLagDays: 1,
+      },
     });
 
     // FRESH-01 exposed cho uptime-check: record vừa được chốt hôm nay → không stale.

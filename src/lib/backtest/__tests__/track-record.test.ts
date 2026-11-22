@@ -2,17 +2,20 @@
 
 import {
   buildTrackRecord,
+  originNeverLiveSignal,
   parseLiveSince,
   pickProvenance,
   summarizeDrawdown,
   summarizeHorizons,
   trackRecordFreshness,
   FORWARD_PICK_LAG_DAYS,
+  ORIGIN_NEVER_LIVE_MIN_PICKS,
   MIN_EPISODES_FOR_VERDICT,
   MIN_TRADES_FOR_VERDICT,
   STALE_SETTLEMENT_AFTER_DAYS,
   TRACK_RECORD_METRICS_VERSION,
   type TrackRecordPickRow,
+  type TrackRecordProvenance,
   type TrackRecordSummary,
 } from "../track-record";
 
@@ -483,6 +486,76 @@ describe("FORWARD-01 forward vs backfill theo picked_at", () => {
     expect(forward.totals.trades).toBe(2);
     expect(forward.totalRNet).toBe(0.5);
     expect(forward.winRate).toBe(50);
+  });
+});
+
+/**
+ * ORIGIN-02 — pipeline luôn chậm một ngày: origin không bao giờ ghi `live`
+ * nên forward record rỗng mãi. Tín hiệu này phải lộ ra thay vì im lặng.
+ */
+describe("ORIGIN-02 origin-never-live", () => {
+  const pick = (
+    dataDate: string,
+    pickedAt: string | null,
+    provenance: TrackRecordProvenance
+  ) => ({ dataDate, pickedAt, provenance });
+
+  test("mọi pick backfill đều trễ trong ngưỡng → báo tín hiệu kèm lag nhỏ nhất", () => {
+    expect(ORIGIN_NEVER_LIVE_MIN_PICKS).toBe(2);
+    const signal = originNeverLiveSignal([
+      pick("2026-09-10", "2026-09-11T02:00:00.000Z", "backfill"),
+      pick("2026-09-11", "2026-09-12T02:00:00.000Z", "backfill"),
+      // Thiếu picked_at vẫn là backfill (origin quyết định) nhưng không dùng được để đo lag.
+      pick("2026-09-12", null, "backfill"),
+    ]);
+    expect(signal).toEqual({
+      code: "origin-never-live",
+      backfilledPicks: 3,
+      withinGracePicks: 2,
+      minLagDays: 1,
+    });
+  });
+
+  test("có pick forward → origin đang hoạt động, không cảnh báo", () => {
+    expect(
+      originNeverLiveSignal([
+        pick("2026-09-10", "2026-09-10T08:00:00.000Z", "forward"),
+        pick("2026-09-11", "2026-09-12T02:00:00.000Z", "backfill"),
+      ])
+    ).toBeNull();
+  });
+
+  test("một pick backfill trễ xa → có backfill thật, không kết luận gì", () => {
+    expect(
+      originNeverLiveSignal([
+        pick("2026-09-10", "2026-09-11T02:00:00.000Z", "backfill"),
+        pick("2026-08-01", "2026-09-20T09:00:00.000Z", "backfill"),
+      ])
+    ).toBeNull();
+  });
+
+  test("dưới ngưỡng hoặc toàn unknown → không cảnh báo", () => {
+    // Một lượt chạy bù đơn lẻ chưa đủ kết luận "luôn chậm".
+    expect(
+      originNeverLiveSignal([pick("2026-09-10", "2026-09-11T02:00:00.000Z", "backfill")])
+    ).toBeNull();
+    // Không có pick nào mang origin → đây là vấn đề picked_at, không phải origin.
+    expect(
+      originNeverLiveSignal([
+        pick("2026-09-10", null, "unknown"),
+        pick("2026-09-11", null, "unknown"),
+      ])
+    ).toBeNull();
+    expect(originNeverLiveSignal([])).toBeNull();
+  });
+
+  test("lag 0 nhưng bị origin hạ nhãn vẫn báo (chạy đúng ngày, bị đánh dấu bù)", () => {
+    expect(
+      originNeverLiveSignal([
+        pick("2026-09-10", "2026-09-10T08:00:00.000Z", "backfill"),
+        pick("2026-09-11", "2026-09-11T08:00:00.000Z", "backfill"),
+      ])
+    ).toMatchObject({ code: "origin-never-live", minLagDays: 0, withinGracePicks: 2 });
   });
 });
 
