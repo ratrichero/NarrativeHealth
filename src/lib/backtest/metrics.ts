@@ -118,6 +118,50 @@ export function profitFactor(tradeRs: readonly number[]): number | null {
 }
 
 /**
+ * Độ lệch chuẩn mẫu (n−1) của R mỗi lệnh. < 2 lệnh → null (một điểm không
+ * có độ phân tán).
+ */
+export function stdDevR(tradeRs: readonly number[]): number | null {
+  if (tradeRs.length < 2) return null;
+  const n = tradeRs.length;
+  const meanR = tradeRs.reduce((a, b) => a + b, 0) / n;
+  const variance = tradeRs.reduce((a, b) => a + (b - meanR) ** 2, 0) / (n - 1);
+  return +Math.sqrt(variance).toFixed(4);
+}
+
+/**
+ * Sharpe trên mỗi lệnh = avg R / độ lệch chuẩn R (mẫu), CHƯA annualize.
+ *
+ * Profit factor chỉ nói tổng thắng lớn hơn tổng thua bao nhiêu, không nói đường
+ * đi gồ ghề cỡ nào: cùng PF 2 mà một hệ thống +0.5R đều đặn khác hẳn một hệ
+ * thống +4R/−2R xen kẽ. Sharpe mỗi lệnh là thước đo "sống được" đó — > 0.3 đã
+ * là tín hiệu, quanh 0 nghĩa là kỳ vọng dương nhưng nhiễu át hết.
+ * Không annualize vì số lệnh/tuần không cố định; cứ so sánh cùng đơn vị là được.
+ * < 2 lệnh hoặc độ lệch chuẩn = 0 → null (không ước lượng được).
+ */
+export function sharpePerTrade(tradeRs: readonly number[]): number | null {
+  if (tradeRs.length < 2) return null;
+  const sd = stdDevR(tradeRs);
+  if (sd == null || sd <= 0) return null;
+  const meanR = tradeRs.reduce((a, b) => a + b, 0) / tradeRs.length;
+  return +(meanR / sd).toFixed(2);
+}
+
+/**
+ * MAR ratio = tổng net R / |max drawdown R|.
+ *
+ * Trả lời đúng câu "hệ thống có sống được không": kiếm 10R mà có lúc lỗ 10R
+ * thì MAR = 1 (phải chịu được đúng toàn bộ lợi nhuận); MAR < 1 nghĩa là
+ * drawdown sâu hơn cả lợi nhuận kiếm được. Không có drawdown (đường equity
+ * chưa từng giảm) → null: chia cho 0, không bịa "∞".
+ */
+export function marRatio(totalRNet: number, maxDrawdown: number): number | null {
+  if (!Number.isFinite(totalRNet) || !Number.isFinite(maxDrawdown)) return null;
+  if (maxDrawdown >= 0) return null;
+  return +(totalRNet / Math.abs(maxDrawdown)).toFixed(2);
+}
+
+/**
  * Chuỗi thua liên tiếp dài nhất (chỉ SL_LOSS; NO_HIT/OPEN/INVALID đứt chuỗi —
  * pick không phải lệnh không làm chuỗi dài thêm).
  */
