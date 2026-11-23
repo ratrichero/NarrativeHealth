@@ -1,0 +1,137 @@
+import { NextResponse } from "next/server";
+import { preflightTrackRecordSchema } from "@/lib/db/preflight";
+import { readTrackRecord } from "@/lib/backtest/track-record-read";
+import { getBusinessDate } from "@/lib/utils";
+
+export const dynamic = "force-dynamic";
+
+type CheckStatus = "ok" | "warn" | "fail";
+
+interface HealthCheck {
+  id: string;
+  status: CheckStatus;
+  detail: string;
+}
+
+/**
+ * HEALTH-TRACK-01 — healthcheck cho track record, đọc bằng máy.
+ *
+ * Trang công khai đã có banner cho người đọc; uptime monitor cần một chỗ trả
+ * lời được "track record này còn sống không" mà không phải parse HTML. Các
+ * trạng thái dưới đây đều là thứ đã từng âm thầm sai: schema thiếu cột sau
+ * deploy sai thứ tự, LIVE_SINCE sai định dạng, origin không bao giờ live, pick
+ * chờ chốt quá hạn, hoặc cửa sổ đọc bị cắt.
+ *
+ * 503 chỉ khi có `fail` (schema thiếu cột) — cảnh báo vẫn trả 200 để monitor
+ * phân biệt "hỏng" với "cần xem".
+ */
+export async function GET() {
+  const checks: HealthCheck[] = [];
+
+  const schema = await preflightTrackRecordSchema();
+  checks.push({
+    id: "schema",
+    status: schema.ok ? "ok" : "fail",
+    detail: schema.ok
+      ? "Đủ cột cho code hiện tại."
+      : `${schema.action ?? "Thiếu cột."}${
+          schema.missing.length
+            ? ` Thiếu: ${schema.missing.map((m) => `${m.table}.${m.column}`).join(", ")}`
+            : ""
+        }`,
+  });
+
+  let payload: Awaited<ReturnType<typeof readTrackRecord>>["payload"] | null = null;
+  let readError: string | null = null;
+  try {
+    payload = (await readTrackRecord()).payload;
+  } catch (error) {
+    readError = error instanceof Error ? error.message : String(error);
+  }
+
+  if (!payload) {
+    checks.push({
+      id: "read",
+      status: "fail",
+      detail: `Không dựng được payload: ${readError ?? "unknown"}`,
+    });
+    return NextResponse.json(
+      { ok: false, checks, generatedAt: new Date().toISOString() },
+      { status: 503 }
+    );
+  }
+
+  checks.push({
+    id: "read",
+    status: "ok",
+    detail: `Đọc ${payload.summary.totals.picks} pick đã chốt.`,
+  });
+
+  checks.push({
+    id: "freshness",
+    status: payload.freshness.stale ? "warn" : "ok",
+    detail: payload.freshness.stale
+      ? `Dữ liệu không còn cập nhật (${payload.freshness.reason}); pick mới nhất cách hôm nay ${payload.freshness.pickAgeDays ?? "?"} ngày.`
+      : "Dữ liệu còn cập nhật.",
+  });
+
+  checks.push({
+    id: "live-since",
+    status:
+      payload.split.liveSinceSource === "invalid-env"
+        ? "fail"
+        : payload.split.liveSinceSource === "derived"
+          ? "warn"
+          : "ok",
+    detail:
+      payload.split.liveSinceSource === "invalid-env"
+        ? "LIVE_SINCE có nhưng sai định dạng YYYY-MM-DD — mốc live đang bị suy ra."
+        : payload.split.liveSinceSource === "derived"
+          ? `LIVE_SINCE chưa đặt; mốc live suy từ pick forward sớm nhất (${payload.split.liveSince ?? "—"}).`
+          : `Mốc live: ${payload.split.liveSince ?? "chưa có"}.`,
+  });
+
+  checks.push({
+    id: "origin",
+    status: payload.split.originSignal ? "warn" : "ok",
+    detail: payload.split.originSignal
+      ? `Mọi pick đã chốt đều backfill trong ngưỡng lag (${payload.split.originSignal.withinGracePicks} pick) — pipeline có thể luôn chậm một ngày.`
+      : "Origin có ít nhất một pick forward hoặc có backfill thật.",
+  });
+
+  const today = getBusinessDate();
+  const overdue =
+    payload.settlement.pendingPicks > 0 &&
+    payload.settlement.nextSettlementAt != null &&
+    payload.settlement.nextSettlementAt < today;
+  checks.push({
+    id: "settlement",
+    status: overdue ? "warn" : "ok",
+    detail:
+      payload.settlement.pendingPicks === 0
+        ? "Không còn pick chờ chốt."
+        : overdue
+          ? `${payload.settlement.pendingPicks} pick chờ, hạn chốt sớm nhất ${payload.settlement.nextSettlementAt} đã qua.`
+          : `${payload.settlement.pendingPicks} pick chờ, chốt từ ${payload.settlement.nextSettlementAt ?? "—"}.`,
+  });
+
+  checks.push({
+    id: "window",
+    status: payload.meta.window.capped ? "warn" : "ok",
+    detail: payload.meta.window.capped
+      ? `Lịch sử bị cắt ở ${payload.meta.window.limit} dòng; phần forward đọc riêng nên không bị cắt.`
+      : `Đọc đủ ${payload.meta.window.rowsRead} dòng.`,
+  });
+
+  const ok = checks.every((check) => check.status !== "fail");
+  return NextResponse.json(
+    {
+      ok,
+      status: ok ? "healthy" : "unhealthy",
+      checks,
+      metricsVersion: payload.meta.metricsVersion,
+      generatedAt: new Date().toISOString(),
+    },
+    { status: ok ? 200 : 503 }
+  );
+}
