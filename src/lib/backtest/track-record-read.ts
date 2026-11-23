@@ -46,6 +46,14 @@ import {
 } from "./track-record";
 
 const MAX_ROWS = 4000;
+/**
+ * WINDOW-02 — trần riêng cho pick forward. Trước đây forward record được tính
+ * trên đúng 4000 dòng mới nhất của lịch sử, nên khi lịch sử dài hơn trần thì
+ * pick forward cũ rơi khỏi cửa sổ và "bằng chứng forward" âm thầm co lại —
+ * đúng loại số liệu không được phép mất. Forward được đọc riêng với trần cao
+ * hơn nhiều; nếu vẫn chạm trần thì payload nói rõ (`window.forward.capped`).
+ */
+const FORWARD_MAX_ROWS = 20000;
 const RECENT_LIMIT = 25;
 
 /** Ngưỡng cỡ mẫu có thể chỉnh qua env (1..100000); sai/thiếu → mặc định. */
@@ -85,12 +93,19 @@ export interface TrackRecordMeta {
   /** Commit đang chạy (12 ký tự) nếu môi trường cung cấp, ngược lại null. */
   commit: string | null;
   changelog: readonly { version: string; note: string }[];
-  /** WINDOW-01: cửa sổ đọc có bị cắt ở MAX_ROWS không. */
+  /** WINDOW-01/02: cửa sổ lịch sử và cửa sổ forward đọc riêng. */
   window: {
     capped: boolean;
     rowsRead: number;
     limit: number;
     oldestIncluded: string | null;
+    /** WINDOW-02: forward không bị trần lịch sử cắt. */
+    forward: {
+      rowsRead: number;
+      limit: number;
+      capped: boolean;
+      oldestIncluded: string | null;
+    };
   };
 }
 
@@ -544,40 +559,81 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
     sql`NOT (${nonCryptoCoinExistsSql(coins.id)})`
   );
 
-  const rows = await db
-    .select({
-      dataDate: topRecommendationPicks.dataDate,
-      pickedAt: topRecommendationPicks.pickedAt,
-      pickedOrigin: topRecommendationPicks.pickedOrigin,
-      coinId: topRecommendationPicks.coinId,
-      symbol: topRecommendationPicks.symbol,
-      direction: topRecommendationPicks.direction,
-      entryMid: topRecommendationPicks.entryMid,
-      stopLoss: topRecommendationPicks.stopLoss,
-      tp1: topRecommendationPicks.tp1,
-      atr14: topRecommendationPicks.atr14,
-      backtestHitDay: topRecommendationPicks.backtestHitDay,
-      backtestStatus: topRecommendationPicks.backtestStatus,
-      backtestOutcome: topRecommendationPicks.backtestOutcome,
-      backtestExitR: topRecommendationPicks.backtestExitR,
-      backtestEntryFilled: topRecommendationPicks.backtestEntryFilled,
-      backtestHorizonDays: topRecommendationPicks.backtestHorizonDays,
-      backtestEvaluatedAt: topRecommendationPicks.backtestEvaluatedAt,
-    })
+  // FORWARD-01: mốc live tường minh cần biết TRƯỚC khi đọc, để cửa sổ forward
+  // lọc được ở SQL thay vì kéo cả bảng về Node.
+  const liveSinceRaw = process.env.LIVE_SINCE;
+  const liveSinceMarker = parseLiveSince(liveSinceRaw);
+
+  const pickSelection = {
+    id: topRecommendationPicks.id,
+    dataDate: topRecommendationPicks.dataDate,
+    pickedAt: topRecommendationPicks.pickedAt,
+    pickedOrigin: topRecommendationPicks.pickedOrigin,
+    coinId: topRecommendationPicks.coinId,
+    symbol: topRecommendationPicks.symbol,
+    direction: topRecommendationPicks.direction,
+    entryMid: topRecommendationPicks.entryMid,
+    stopLoss: topRecommendationPicks.stopLoss,
+    tp1: topRecommendationPicks.tp1,
+    atr14: topRecommendationPicks.atr14,
+    backtestHitDay: topRecommendationPicks.backtestHitDay,
+    backtestStatus: topRecommendationPicks.backtestStatus,
+    backtestOutcome: topRecommendationPicks.backtestOutcome,
+    backtestExitR: topRecommendationPicks.backtestExitR,
+    backtestEntryFilled: topRecommendationPicks.backtestEntryFilled,
+    backtestHorizonDays: topRecommendationPicks.backtestHorizonDays,
+    backtestEvaluatedAt: topRecommendationPicks.backtestEvaluatedAt,
+  };
+
+  // Lịch sử: trần MAX_ROWS, mới nhất trước để bản bị cắt vẫn chứa pick mới và
+  // stamp settlement mới (freshness đọc max của chúng).
+  const historyRows = await db
+    .select(pickSelection)
     .from(topRecommendationPicks)
     .innerJoin(coins, eq(coins.id, topRecommendationPicks.coinId))
     .where(and(publicPickFilter, ne(topRecommendationPicks.backtestStatus, "PENDING")))
-    // Newest first so the capped read still contains the latest pick and the
-    // latest settlement stamp (freshness reads their max).
-    .orderBy(desc(topRecommendationPicks.dataDate))
+    .orderBy(desc(topRecommendationPicks.dataDate), desc(topRecommendationPicks.id))
     .limit(MAX_ROWS);
 
-  // FORWARD-01: phân loại MỘT lần cho cả trang lẫn export. Mốc tường minh lấy
-  // từ env LIVE_SINCE; pick ghi trước mốc là lịch sử seed dù lag nhỏ, và pick
-  // ghi trễ hơn data_date vẫn là backfill dù sau mốc live. Không có env thì
-  // mốc live suy từ pick forward sớm nhất.
-  const liveSinceRaw = process.env.LIVE_SINCE;
-  const liveSinceMarker = parseLiveSince(liveSinceRaw);
+  // WINDOW-02: forward đọc RIÊNG, không phụ thuộc trần lịch sử. Điều kiện lag
+  // viết bằng SQL để không phải kéo toàn bảng về Node; `picked_origin = 'live'`
+  // được giữ vì đó là tín hiệu mạnh hơn heuristic (lệch giờ quanh nửa đêm).
+  const liveSinceForSql = liveSinceMarker;
+  const forwardPredicate = and(
+    publicPickFilter,
+    ne(topRecommendationPicks.backtestStatus, "PENDING"),
+    sql`(
+      ${topRecommendationPicks.pickedOrigin} = 'live'
+      OR (
+        ${topRecommendationPicks.pickedAt} IS NOT NULL
+        AND (${topRecommendationPicks.pickedAt})::date <= ${topRecommendationPicks.dataDate} + CAST(${FORWARD_PICK_LAG_DAYS} AS integer)
+      )
+    )`,
+    ...(liveSinceForSql
+      ? [sql`(${topRecommendationPicks.pickedAt})::date >= ${liveSinceForSql}`]
+      : [])
+  );
+  const forwardSourceRows = await db
+    .select(pickSelection)
+    .from(topRecommendationPicks)
+    .innerJoin(coins, eq(coins.id, topRecommendationPicks.coinId))
+    .where(forwardPredicate)
+    .orderBy(desc(topRecommendationPicks.dataDate), desc(topRecommendationPicks.id))
+    .limit(FORWARD_MAX_ROWS);
+
+  // Gộp theo id: forward thắng bản trùng trong lịch sử, lịch sử vẫn giữ phần
+  // còn lại. Sắp xếp lại newest-first để mọi thứ phía dưới thấy cùng thứ tự.
+  const mergedRows = new Map<number, (typeof historyRows)[number]>();
+  for (const row of historyRows) mergedRows.set(row.id, row);
+  for (const row of forwardSourceRows) mergedRows.set(row.id, row);
+  const rows = [...mergedRows.values()].sort((a, b) =>
+    a.dataDate === b.dataDate ? b.id - a.id : a.dataDate < b.dataDate ? 1 : -1
+  );
+  const forwardRowsRead = forwardSourceRows.length;
+
+  // FORWARD-01: phân loại MỘT lần cho cả trang lẫn export. Pick ghi trước mốc
+  // LIVE_SINCE là lịch sử seed dù lag nhỏ, và pick ghi trễ hơn data_date vẫn là
+  // backfill dù sau mốc live. Không có env thì mốc live suy từ pick forward đầu.
   const provenanceOf = rows.map((row) =>
     pickProvenance(
       {
@@ -729,10 +785,22 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
         // WINDOW-01: cửa sổ đọc bị cắt ở MAX_ROWS — công bố thay vì để người
         // đọc tưởng đang xem toàn bộ lịch sử.
         window: {
-          capped: rows.length >= MAX_ROWS,
+          capped: historyRows.length >= MAX_ROWS,
           rowsRead: rows.length,
           limit: MAX_ROWS,
           oldestIncluded: picks.length > 0 ? picks[picks.length - 1].dataDate : null,
+          forward: {
+            rowsRead: forwardRowsRead,
+            limit: FORWARD_MAX_ROWS,
+            capped: forwardRowsRead >= FORWARD_MAX_ROWS,
+            oldestIncluded:
+              forwardPicks.length > 0
+                ? forwardPicks.reduce(
+                    (min, pick) => (pick.dataDate < min ? pick.dataDate : min),
+                    forwardPicks[0].dataDate
+                  )
+                : null,
+          },
         },
         generatedAt: new Date().toISOString(),
         metricsVersion: TRACK_RECORD_METRICS_VERSION,

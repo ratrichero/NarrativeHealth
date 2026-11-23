@@ -783,12 +783,14 @@ describe("BT-E2E settlement trên Postgres thật", () => {
     });
     expect(body.data.summary.drawdown.currentR).toBeLessThanOrEqual(0);
 
-    // WINDOW-01: chưa chạm MAX_ROWS → minh bạch "không bị cắt".
-    expect(body.data.meta.window).toEqual({
+    // WINDOW-01/02: chưa chạm trần nào → minh bạch "không bị cắt", và forward
+    // có cửa sổ đọc riêng (không phụ thuộc MAX_ROWS của lịch sử).
+    expect(body.data.meta.window).toMatchObject({
       capped: false,
       rowsRead: 2,
       limit: 4000,
       oldestIncluded: addDaysIso(today, -20),
+      forward: { capped: false, limit: 20000, rowsRead: 1 },
     });
 
     // BT-11: kịch bản chi phí thực tế đọc coin_metrics thật (BTC có funding,
