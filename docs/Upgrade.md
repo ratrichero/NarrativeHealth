@@ -3597,3 +3597,35 @@ lại job (`catalyst_announcements`, `catalyst_news`, `catalyst_unlocks`) — kh
 restart backend. Chỉ `SCHEDULER_CATALYST_TOKEN` vẫn là env-only (bí mật, không đưa
 vào form). `src/lib/catalyst/health.ts` đọc cùng nguồn nhịp để ngưỡng STALE khớp
 với lịch chạy thực tế.
+
+## TRACK-02 / RADAR-V2 — vận hành (sau ORIGIN-01)
+
+### Migration
+
+- **0040 `track_record_snapshots`** — bảng bản chụp công khai theo ngày + chuỗi hash.
+  Chạy `drizzle-kit migrate` (hoặc SQL file `drizzle/migrations/0040_track_record_snapshots.sql`)
+  **trước** khi deploy build có `/api/track-record/snapshots`.
+- 0039 (`picked_origin`) vẫn là điều kiện bắt buộc; deploy sai thứ tự giờ được
+  `/api/health/track-record` báo thành `schema: fail` kèm migration cần chạy
+  thay vì lỗi insert đầu tiên.
+
+### Endpoint mới
+
+| Endpoint | Nội dung |
+| --- | --- |
+| `GET /api/health/track-record` | preflight schema, freshness, `LIVE_SINCE` (`invalid-env`), origin-never-live, pick PENDING quá hạn, cửa sổ đọc. 503 chỉ khi `schema`/`read` fail. |
+| `GET /api/track-record/snapshots` | chuỗi bản chụp + kết quả kiểm hash. |
+| `POST /api/track-record/snapshots` | chốt payload hôm nay (idempotent theo ngày; không ghi đè). |
+| `GET /api/admin/radar/bias-review/rollup?days=30&periods=4` | gộp nhiều kỳ review, trend 24h, alert precision. |
+| `GET /api/admin/radar/backtest?days=30&horizon=24h` | chiến lược actionable vs basket vs random cùng số pick/ngày. |
+
+### Thay đổi số liệu
+
+- **WINDOW-02**: phần forward đọc riêng với trần 20 000 dòng, không còn bị
+  `MAX_ROWS` 4 000 của lịch sử cắt. `meta.window.forward` công bố số dòng/trần.
+  `TRACK_RECORD_METRICS_VERSION` → `track-record-v10`.
+- **Stats**: Wilson interval gộp về `src/lib/stats/wilson.ts`; bootstrap chuyển
+  sang `src/lib/stats/bootstrap.ts` (backtest vẫn import qua shim cũ).
+- **Bias review v2**: thêm cờ phản dự báo (`ciHigh < 50`, n ≥ 20), hiệu chuẩn
+  shadow (nửa đầu vs nửa sau), TTL đo từ độ dài run, alert precision. Không đổi
+  cách tính hit-rate cũ; mọi trường mới là additive.
