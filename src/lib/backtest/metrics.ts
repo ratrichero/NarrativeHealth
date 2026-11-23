@@ -8,6 +8,8 @@
 //     số quyết định "sống được với hệ thống hay không", quan trọng ngang win
 //     rate (mẫu nhỏ mà khoe 70% là tự lừa → Wilson CI hiện khoảng tin cậy).
 
+import { wilsonScoreInterval } from "@/lib/stats/wilson";
+
 export interface FeeConfig {
   feeBps: number;
   slippageBps: number;
@@ -72,17 +74,11 @@ export interface WilsonCI {
  * wins+losses = 0 → null.
  */
 export function wilsonInterval(wins: number, losses: number, z = 1.96): WilsonCI | null {
-  const n = wins + losses;
-  if (n <= 0) return null;
-  const p = wins / n;
-  const z2 = z * z;
-  const denom = 1 + z2 / n;
-  const center = (p + z2 / (2 * n)) / denom;
-  const half = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom;
-  return {
-    lo: +(Math.max(0, center - half) * 100).toFixed(1),
-    hi: +(Math.min(1, center + half) * 100).toFixed(1),
-  };
+  // STATS-01: một bản Wilson duy nhất ở `@/lib/stats/wilson`; ở đây chỉ đổi
+  // tên field (lo/hi) và giữ nguyên số chữ số thập phân của track record.
+  const ci = wilsonScoreInterval(wins, wins + losses, z);
+  if (!ci) return null;
+  return { lo: +ci.low.toFixed(1), hi: +ci.high.toFixed(1) };
 }
 
 /**
