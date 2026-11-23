@@ -20,6 +20,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import * as schema from "@/db/schema";
 import { topRecommendationPicks } from "@/db/schema";
+import { alignDdlWithSchema, missingColumnAlters } from "@/lib/db/ddl";
 import { addDaysIso } from "../engine";
 import { getBusinessDate } from "@/lib/utils";
 
@@ -36,7 +37,7 @@ import { GET as trackRecordGET } from "@/app/api/track-record/route";
 
 jest.setTimeout(30_000);
 
-const DDL = `
+const HAND_DDL = `
   CREATE TABLE coins (
     id serial PRIMARY KEY,
     symbol varchar(20) NOT NULL,
@@ -137,6 +138,14 @@ const DDL = `
   );
 
 `;
+
+// DDL-01: bảng picks vẫn viết tay (cần default cụ thể cho dữ liệu test), nhưng
+// KHÔNG còn tự trị: cột nào có trong `schema.ts` mà thiếu ở đây sẽ được sinh
+// thêm tự động. Đúng lỗi đã xảy ra với `picked_origin` (migration 0039): DDL
+// thiếu cột, Drizzle INSERT đầy đủ cột, Postgres từ chối — và chỉ lộ ra sau khi
+// commit. `missingColumnAlters` là danh sách lệch còn lại (rỗng = DDL khớp).
+const PICK_COLUMN_ALTERS = missingColumnAlters(topRecommendationPicks, HAND_DDL);
+const DDL = alignDdlWithSchema(topRecommendationPicks, HAND_DDL);
 
 // BT-10: bảng horizon KHÔNG được chép tay ở đây nữa — dùng chính file migration
 // sẽ chạy trên production. Nếu migration sai (thiếu cột, sai kiểu, thiếu unique
