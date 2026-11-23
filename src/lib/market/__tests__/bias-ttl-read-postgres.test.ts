@@ -29,6 +29,7 @@ import {
   readBiasHoldRuns,
   readMeasuredBiasTtl,
   resetMeasuredBiasTtlCache,
+  toTtlPayload,
 } from "../bias-ttl-read";
 import { BIAS_TTL_HOURS } from "../bias-ttl";
 
@@ -114,6 +115,14 @@ describe("bias TTL — đọc radar_bias_log trên Postgres thật", () => {
     expect(ttl.hours.exhaustion).toBe(6);
     expect(ttl.anyMeasured).toBe(true);
 
+    // Payload gửi ra UI phải mang theo NGUỒN, để badge không hiển thị một con
+    // số đo được y như số viết tay.
+    expect(toTtlPayload(ttl).exhaustion).toEqual({
+      hours: 6,
+      source: "measured",
+      samples: 12,
+    });
+
     // Run đọc thô cũng đúng: 12 run, mỗi run đúng 6h.
     const runs = await readBiasHoldRuns(new Date(NOW - TTL_WINDOW_DAYS * DAY));
     expect(runs).toHaveLength(12);
@@ -132,6 +141,12 @@ describe("bias TTL — đọc radar_bias_log trên Postgres thật", () => {
     });
     expect(ttl.hours.breakout).toBe(BIAS_TTL_HOURS.breakout);
     expect(ttl.anyMeasured).toBe(false);
+    // Nguồn `static` đi kèm số run thật (3) để tooltip nói được vì sao chưa đo.
+    expect(toTtlPayload(ttl).breakout).toEqual({
+      hours: BIAS_TTL_HOURS.breakout,
+      source: "static",
+      samples: 3,
+    });
   });
 
   test("cửa sổ `since`: run cũ hơn 30 ngày không được tính, dù đủ mẫu", async () => {

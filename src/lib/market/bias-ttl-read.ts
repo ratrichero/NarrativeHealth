@@ -81,6 +81,32 @@ export async function readBiasHoldRuns(since: Date): Promise<BiasHoldRun[]> {
   );
 }
 
+/**
+ * Dạng gọn để nhét vào payload công khai: đủ số để badge hiển thị, đủ nguồn để
+ * người đọc không nhầm con số viết tay với số đo từ log.
+ */
+export interface BiasTtlPayloadEntry {
+  hours: number;
+  source: "measured" | "static";
+  samples: number;
+}
+
+export function toTtlPayload(
+  measured: MeasuredBiasTtl
+): Record<Bias, BiasTtlPayloadEntry> {
+  const out = {} as Record<Bias, BiasTtlPayloadEntry>;
+  for (const [bias, estimate] of Object.entries(measured.estimates) as Array<
+    [Bias, BiasTtlEstimate]
+  >) {
+    out[bias] = {
+      hours: measured.hours[bias],
+      source: estimate.source,
+      samples: estimate.samples,
+    };
+  }
+  return out;
+}
+
 let cache: { expires: number; value: MeasuredBiasTtl } | null = null;
 
 /**
