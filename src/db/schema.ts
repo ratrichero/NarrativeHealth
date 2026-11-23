@@ -1848,3 +1848,24 @@ export type RadarBiasLogRow = typeof radarBiasLog.$inferSelect;
 export type NewRadarBiasLog = typeof radarBiasLog.$inferInsert;
 export type RadarBiasOutcomeRow = typeof radarBiasOutcome.$inferSelect;
 export type NewRadarBiasOutcome = typeof radarBiasOutcome.$inferInsert;
+
+// ==================== TRACK_RECORD_SNAPSHOTS (SNAPSHOT-01) ====================
+// Bản chụp công khai theo ngày, append-only. Mỗi dòng giữ hash payload + hash
+// dòng trước; sửa lịch sử làm gãy chuỗi. Xem src/lib/backtest/snapshot.ts.
+export const trackRecordSnapshots = pgTable(
+  "track_record_snapshots",
+  {
+    day: date("day").primaryKey(),
+    sequence: integer("sequence").notNull(),
+    payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
+    prevHash: varchar("prev_hash", { length: 64 }).notNull(),
+    hash: varchar("hash", { length: 64 }).notNull(),
+    metricsVersion: varchar("metrics_version", { length: 40 }).notNull(),
+    payload: jsonb("payload").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("track_record_snapshots_created_idx").on(table.createdAt)]
+);
+
+export type TrackRecordSnapshotRow = typeof trackRecordSnapshots.$inferSelect;
+export type NewTrackRecordSnapshot = typeof trackRecordSnapshots.$inferInsert;

@@ -27,7 +27,7 @@ import {
 } from "./bootstrap";
 
 /** Bumped when the aggregation semantics change (shown on the public page). */
-export const TRACK_RECORD_METRICS_VERSION = "track-record-v9";
+export const TRACK_RECORD_METRICS_VERSION = "track-record-v10";
 
 /** 1R = 1% vốn (rủi ro cố định mỗi lệnh) — cùng đơn vị với % return của benchmark. */
 export const RISK_PCT_PER_TRADE = 1;
@@ -41,6 +41,10 @@ export const MIN_EPISODES_FOR_VERDICT = 5;
  * thay vì im lặng đổi số. Mới nhất trước.
  */
 export const TRACK_RECORD_CHANGELOG: readonly { version: string; note: string }[] = [
+  {
+    version: "track-record-v10",
+    note: "WINDOW-02 + SNAPSHOT-01: phần forward được đọc riêng, không còn bị trần 4000 dòng của lịch sử cắt (payload công bố `window.forward`). Mỗi ngày có thể chốt một bản chụp bất biến kèm chuỗi hash (`/api/track-record/snapshots`) để chứng minh số đã công bố hôm qua. Số liệu của một ngày không đổi nghĩa; chỉ phạm vi đọc forward được nới đúng như đã công bố.",
+  },
   {
     version: "track-record-v9",
     note: "ORIGIN-02: công bố tín hiệu `origin-never-live` trong payload và cảnh báo trên trang khi mọi pick đã chốt đều mang origin backfill dù picked_at chỉ trễ trong ngưỡng — dấu hiệu pipeline dữ liệu luôn chậm một ngày khiến forward record rỗng vĩnh viễn. Số liệu forward không đổi, chỉ lộ nguyên nhân.",
