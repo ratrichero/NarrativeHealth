@@ -3613,9 +3613,9 @@ với lịch chạy thực tế.
 
 | Endpoint | Nội dung |
 | --- | --- |
-| `GET /api/health/track-record` | preflight schema, freshness, `LIVE_SINCE` (`invalid-env`), origin-never-live, pick PENDING quá hạn, cửa sổ đọc. 503 chỉ khi `schema`/`read` fail. |
-| `GET /api/track-record/snapshots` | chuỗi bản chụp + kết quả kiểm hash. |
-| `POST /api/track-record/snapshots` | chốt payload hôm nay (idempotent theo ngày; không ghi đè). |
+| `GET /api/health/track-record` | preflight schema, freshness, `LIVE_SINCE` (`invalid-env`), origin-never-live, pick PENDING quá hạn, cửa sổ đọc, và `snapshot`: bản chụp của ngày vừa đóng tồn tại, payload khớp `payload_hash`, `head_hash` nối đúng neo bản trước. Thiếu bản chụp = `warn`; lệch hash/head hoặc thiếu bảng = `fail` (503). |
+| `GET /api/track-record/snapshots` | các bản chụp + `head` (neo in ra ngoài) + kết quả băm lại payload từng dòng. |
+| `POST /api/track-record/snapshots` | chốt payload của ngày đã đóng (idempotent theo ngày; không ghi đè). **Chỉ scheduler**: bắt buộc token `SCHEDULER_CATALYST_TOKEN` qua `X-Scheduler-Token` (timing-safe); chưa set token → 503 fail-closed, sai/thiếu token → 401. Từ chối 409 khi ngày chưa đóng (`day >= hôm nay` theo giờ ICT) hoặc settlement chưa chạy trong/sau ngày đó. |
 | `GET /api/admin/radar/bias-review/rollup?days=30&periods=4` | gộp nhiều kỳ review, trend 24h, alert precision. |
 | `GET /api/admin/radar/backtest?days=30&horizon=24h` | chiến lược actionable vs basket vs random cùng số pick/ngày. |
 
@@ -3624,6 +3624,61 @@ với lịch chạy thực tế.
 - **WINDOW-02**: phần forward đọc riêng với trần 20 000 dòng, không còn bị
   `MAX_ROWS` 4 000 của lịch sử cắt. `meta.window.forward` công bố số dòng/trần.
   `TRACK_RECORD_METRICS_VERSION` → `track-record-v10`.
+- **SNAPSHOT-02**: mỗi ngày chốt `payload_hash` (băm lại được từ payload) +
+  `head_hash` (neo `head-v1|ngày|payload_hash|head trước`). Không còn chuỗi hash
+  nội bộ, sequence hay vòng retry. Giới hạn có chủ ý: sửa trực tiếp
+  `head_hash`/`payload_hash` trong DB không tự bị phát hiện — mỗi lần chốt phải
+  in `head` ra ngoài (commit, tin nhắn, log scheduler) và so lại khi cần.
+  `POST` không còn mở: dùng chung token scheduler `SCHEDULER_CATALYST_TOKEN`
+  (header `X-Scheduler-Token`), và chỉ chốt được ngày `day < hôm nay (ICT)` mà
+  settlement đã chạy trong/sau ngày đó (`summary.lastEvaluatedAt`). Ngày đang
+  mở hoặc settlement tụt lại bị từ chối 409 thay vì đóng băng số dở dang —
+  bảng append-only không sửa lại được. Ngoại lệ: track record rỗng
+  (`summary.totals.picks === 0`) bỏ qua cổng settlement, vì chưa có pick nào
+  thì không có gì để settlement chốt — nếu không, deployment mới với
+  `lastEvaluatedAt = null` sẽ không bao giờ chốt được ngày đầu tiên.
+  **Tự động chốt:** `/api/refresh` chốt bản chụp ngay sau mỗi lượt settlement
+  thành công, khoá theo ngày nghiệp vụ vừa đóng (hôm qua); settlement có lỗi
+  thì bỏ qua lượt đó. Chạy lại trong ngày trả `created: false`, không ghi đè.
+  **Job neo (scheduler):** FastAPI có job `snapshot_anchor` gọi
+  `POST /api/track-record/snapshots` hằng ngày lúc `SCHEDULER_SNAPSHOT_HOUR:MINUTE`
+  (mặc định 07:10 ICT, sau lượt refresh 07:00 — `SCHEDULER_SNAPSHOT_ENABLED=false`
+  để tắt), gửi header `X-Scheduler-Token` và log dòng
+  `[SNAPSHOT-02] head=<head> day=<ngày> created=<bool> payloadHash=<hash>`.
+  Đây là lớp dự phòng khi refresh không chốt được (deployment mới, settlement
+  lỗi) và là **neo in ra ngoài**: giữ dòng log đó (hoặc head trong commit/tin
+  nhắn) để đối chiếu về sau. `409 reason=day-open|settlement-pending` nghĩa là
+  chưa chốt được — job chỉ log lỗi, lượt sau thử lại.
+  **Chốt bù ngày thiếu:** refresh không chạy một ngày thì ngày đó mất vĩnh viễn
+  (lượt sau chỉ chốt "hôm qua"), nên mỗi lượt refresh gọi
+  `publishMissingSnapshots`: đọc `readSnapshotEntries`, lấy `SNAPSHOT_BACKFILL_DAYS = 3`
+  ngày đã đóng gần nhất, bỏ ngày đã có bản chụp, rồi chốt phần còn thiếu qua
+  đúng cổng cũ (ngày đã đóng + settlement đã chạy + không ghi đè). Cả route
+  POST, job trong `/api/refresh` và chốt bù đều đi qua `publishClosedDaySnapshot`
+  — một bản luật duy nhất.
+  Hai giới hạn có chủ ý: (1) chỉ chốt bù ở **đuôi** chuỗi neo — ngày thiếu chen
+  giữa hai bản đã chốt trả `chain-gap`, vì head tính từ bản liền trước nên thêm
+  vào giữa sẽ làm lệch `head_hash` của ngày sau; (2) payload chốt bù mang dấu
+  `snapshotBackfill: { capturedAt, dataAsOf }` — số đọc ở thời điểm chốt bù, có
+  thể đã bao gồm ngày sau, nên không được giả vờ là bản chụp đúng ngày; dấu nằm
+  trong `payload_hash` nên không thể bỏ im lặng. Chỉ hai thông tin không suy ra
+  được mới lưu: sự có mặt của key = chốt bù, ngày là `day` của dòng.
+  **Báo ngày ngoài cửa sổ:** `listSnapshotGaps` so cửa sổ chốt bù với đuôi
+  chuỗi neo — ngày đã đóng nằm giữa `tip + 1` và ngày cũ nhất của cửa sổ là
+  ngày không lượt refresh nào chốt nữa, nên `/api/refresh` log warning kèm
+  danh sách, và `/api/health/track-record` trả `warn` (không phải `fail`) nêu
+  rõ số ngày + tên ngày. Danh sách hiển thị tối đa
+  `SNAPSHOT_GAP_REPORT_MAX_DAYS = 31` ngày gần nhất, `outsideWindowCount` vẫn
+  đếm đủ. Bảng chụp rỗng thì không báo: chưa có đuôi neo nào để nói "đáng lẽ
+  phải có".
+  **Đặt token ở đâu:** một giá trị bí mật, **cùng một giá trị** ở hai nơi —
+  (1) `.env` của Next.js: `SCHEDULER_CATALYST_TOKEN=<token>` (Production cũng
+  phải có, vì Next fail-closed 503 khi thiếu), và (2) `.env` mà FastAPI đọc:
+  `scheduler_catalyst_token=<token>` (cùng file `.env` trên VPS nếu backend và
+  Next dùng chung). Đổi token = sửa env + restart cả hai tiến trình; token
+  không có trong form Admin và không lưu DB.
+  `/api/health/track-record` kiểm bản chụp hôm qua (tồn tại + khớp
+  `payload_hash` + `head_hash` nối đúng neo bản trước).
 - **Stats**: Wilson interval gộp về `src/lib/stats/wilson.ts`; bootstrap chuyển
   sang `src/lib/stats/bootstrap.ts` (backtest vẫn import qua shim cũ).
 - **Bias review v2**: thêm cờ phản dự báo (`ciHigh < 50`, n ≥ 20), hiệu chuẩn

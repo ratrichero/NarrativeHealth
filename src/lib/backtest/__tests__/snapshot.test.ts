@@ -1,136 +1,121 @@
 import { describe, expect, it } from "@jest/globals";
 import {
   SNAPSHOT_GENESIS_HASH,
+  buildBackfillPayload,
   buildSnapshotEntry,
+  closedDaysBefore,
   canonicalJson,
-  computeSnapshotHash,
+  computeHeadHash,
+  sha256Hex,
   snapshotPayloadHash,
-  verifySnapshotChain,
-  type SnapshotEntry,
+  snapshotPayloadMatches,
 } from "@/lib/backtest/snapshot";
 
 const payloadA = { b: 2, a: 1, nested: { z: true, y: [1, 2] } };
-const payloadB = { totalRNet: 12.5, metricsVersion: "track-record-v9" };
+const payloadB = { totalRNet: 12.5, metricsVersion: "track-record-v11" };
 
-function chain(): SnapshotEntry[] {
-  const first = buildSnapshotEntry(
-    {
-      day: "2026-11-20",
-      payloadHash: snapshotPayloadHash(payloadA),
-      metricsVersion: "track-record-v9",
-      prevHash: SNAPSHOT_GENESIS_HASH,
-    },
-    { sequence: 1 }
-  );
-  const second = buildSnapshotEntry(
-    {
-      day: "2026-11-21",
-      payloadHash: snapshotPayloadHash(payloadB),
-      metricsVersion: "track-record-v9",
-      prevHash: first.hash,
-    },
-    { sequence: 2 }
-  );
-  return [first, second];
-}
-
-describe("SNAPSHOT-01 — payload canonical + hash", () => {
+describe("SNAPSHOT-02 — payload canonical + hash", () => {
   it("canonicalJson sắp key đệ quy nên thứ tự dựng object không đổi hash", () => {
     expect(canonicalJson({ a: 1, b: 2 })).toBe(canonicalJson({ b: 2, a: 1 }));
     expect(snapshotPayloadHash({ a: 1, b: 2 })).toBe(snapshotPayloadHash({ b: 2, a: 1 }));
-    expect(canonicalJson({ a: [1, 2] })).not.toBe(canonicalJson({ a: [2, 1] }));
+    expect(snapshotPayloadHash(payloadA)).toHaveLength(64);
   });
 
-  it("payload khác một số → hash khác", () => {
-    expect(snapshotPayloadHash({ totalRNet: 1 })).not.toBe(
-      snapshotPayloadHash({ totalRNet: 2 })
-    );
+  it("undefined bị bỏ, NaN về null — hash không phụ thuộc môi trường", () => {
+    expect(canonicalJson({ a: undefined, b: 1 })).toBe(canonicalJson({ b: 1 }));
+    expect(canonicalJson({ a: Number.NaN })).toBe('{"a":null}');
   });
 
-  it("hash dòng phụ thuộc prevHash (đổi quá khứ làm lệch tương lai)", () => {
-    const base = {
-      day: "2026-11-21",
-      payloadHash: snapshotPayloadHash(payloadB),
-      metricsVersion: "track-record-v9",
-      prevHash: SNAPSHOT_GENESIS_HASH,
-    };
-    expect(computeSnapshotHash(base)).not.toBe(
-      computeSnapshotHash({ ...base, prevHash: "a".repeat(64) })
-    );
-    expect(computeSnapshotHash(base)).not.toBe(
-      computeSnapshotHash({ ...base, metricsVersion: "track-record-v10" })
-    );
+  it("payload khác → hash khác; payload giống → hash giống", () => {
+    expect(snapshotPayloadHash(payloadA)).not.toBe(snapshotPayloadHash(payloadB));
+    expect(snapshotPayloadHash(payloadA)).toBe(snapshotPayloadHash({ ...payloadA }));
+  });
+
+  it("snapshotPayloadMatches chỉ đúng khi payload còn nguyên", () => {
+    const entry = buildSnapshotEntry({
+      day: "2026-11-20",
+      payloadHash: snapshotPayloadHash(payloadA),
+      metricsVersion: "track-record-v11",
+      prevHead: SNAPSHOT_GENESIS_HASH,
+    });
+    expect(snapshotPayloadMatches(entry, payloadA)).toBe(true);
+    expect(snapshotPayloadMatches(entry, { ...payloadA, b: 3 })).toBe(false);
   });
 });
 
-describe("SNAPSHOT-01 — kiểm chuỗi", () => {
-  it("chuỗi hợp lệ, kể cả khi kiểm payload gốc", () => {
-    const entries = chain();
-    expect(verifySnapshotChain(entries)).toEqual({
-      ok: true,
-      brokenAtIndex: null,
-      reason: null,
-      checked: 2,
-    });
-    expect(verifySnapshotChain(entries, [payloadA, payloadB]).ok).toBe(true);
+describe("SNAPSHOT-02 — head neo", () => {
+  const base = {
+    day: "2026-11-20",
+    payloadHash: snapshotPayloadHash(payloadA),
+    prevHead: SNAPSHOT_GENESIS_HASH,
+  };
+  const entryInput = { ...base, metricsVersion: "track-record-v11" };
+
+  it("head = băm (head trước, ngày, payload hash)", () => {
+    expect(computeHeadHash(base)).toBe(
+      sha256Hex(`head-v1|${base.day}|${base.payloadHash}|${base.prevHead}`)
+    );
+    expect(computeHeadHash(base)).toHaveLength(64);
+    expect(computeHeadHash(base)).not.toBe(base.payloadHash);
   });
 
-  it("sửa hash một dòng → phát hiện tại đúng dòng đó", () => {
-    const entries = chain();
-    entries[0] = { ...entries[0], hash: "b".repeat(64) };
-    const result = verifySnapshotChain(entries);
-    expect(result.ok).toBe(false);
-    expect(result.brokenAtIndex).toBe(0);
-    expect(result.reason).toBe("hash-mismatch");
-  });
-
-  it("dòng sau trỏ sai prevHash → gãy tại dòng đó", () => {
-    const entries = chain();
-    entries[1] = { ...entries[1], prevHash: "c".repeat(64) };
-    const result = verifySnapshotChain(entries);
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe("prev-hash-mismatch");
-    expect(result.brokenAtIndex).toBe(1);
-  });
-
-  it("dòng sau trỏ sai hash mà prevHash vẫn khớp → hash-mismatch", () => {
-    const entries = chain();
-    entries[1] = {
-      ...entries[1],
-      hash: computeSnapshotHash({
-        day: entries[1].day,
-        payloadHash: entries[1].payloadHash,
-        metricsVersion: entries[1].metricsVersion,
-        prevHash: "e".repeat(64),
-      }),
-    };
-    const result = verifySnapshotChain(entries);
-    expect(result.reason).toBe("hash-mismatch");
-    expect(result.brokenAtIndex).toBe(1);
-  });
-
-  it("payload bị sửa dù hash dòng khớp → payload-hash-mismatch", () => {
-    const entries = chain();
-    const result = verifySnapshotChain(entries, [payloadA, { tampered: true }]);
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe("payload-hash-mismatch");
-    expect(result.brokenAtIndex).toBe(1);
-  });
-
-  it("nhảy sequence hoặc ngày không tăng → gãy chuỗi", () => {
-    const withGap = chain();
-    withGap[1] = { ...withGap[1], sequence: 5 };
-    expect(verifySnapshotChain(withGap).reason).toBe("sequence-gap");
-
-    const sameDay = chain();
-    sameDay[1] = { ...sameDay[1], day: sameDay[0].day };
-    expect(verifySnapshotChain(sameDay).reason).toBe("day-not-increasing");
-  });
-
-  it("dòng đầu sequence=1 phải nối genesis", () => {
-    const [first] = chain();
+  it("đổi ngày, payload hoặc head trước đều đổi head", () => {
+    const head = computeHeadHash(base);
+    expect(computeHeadHash({ ...base, day: "2026-11-21" })).not.toBe(head);
     expect(
-      verifySnapshotChain([{ ...first, prevHash: "d".repeat(64) }]).reason
-    ).toBe("prev-hash-mismatch");
+      computeHeadHash({ ...base, payloadHash: snapshotPayloadHash(payloadB) })
+    ).not.toBe(head);
+    expect(computeHeadHash({ ...base, prevHead: "a".repeat(64) })).not.toBe(head);
+  });
+
+  it("chuỗi hai ngày nối bằng head: head hôm sau tính từ head hôm trước", () => {
+    const first = buildSnapshotEntry(entryInput);
+    const second = buildSnapshotEntry(
+      {
+        day: "2026-11-21",
+        payloadHash: snapshotPayloadHash(payloadB),
+        metricsVersion: "track-record-v11",
+        prevHead: first.headHash,
+      },
+      { createdAt: "2026-11-22T00:00:00.000Z" }
+    );
+    expect(second.headHash).toBe(
+      computeHeadHash({
+        day: second.day,
+        payloadHash: second.payloadHash,
+        prevHead: first.headHash,
+      })
+    );
+    // Sao lưu ngoài head của ngày đầu là đủ để phát hiện sửa ngày đầu.
+    expect(first.headHash).toBe(computeHeadHash(base));
+  });
+});
+
+describe("SNAPSHOT-02 — chốt bù ngày thiếu", () => {
+  it("closedDaysBefore trả các ngày đã đóng gần nhất, cũ → mới, không gồm hôm nay", () => {
+    expect(closedDaysBefore("2026-11-24", 3)).toEqual(["2026-11-21", "2026-11-22", "2026-11-23"]);
+    // Qua ranh giới tháng/năm theo UTC, không phụ thuộc timezone máy chạy.
+    expect(closedDaysBefore("2026-01-02", 3)).toEqual(["2025-12-30", "2025-12-31", "2026-01-01"]);
+    expect(closedDaysBefore("2026-11-24", 0)).toEqual(["2026-11-23"]);
+  });
+
+
+  it("payload chốt bù mang dấu snapshotBackfill và đổi hash so với payload gốc", () => {
+    const payload = { summary: { totals: { picks: 3 } }, meta: { dataAsOf: "2026-11-23" } };
+    const marked = buildBackfillPayload(payload, { capturedAt: "2026-11-24T01:00:00.000Z" });
+
+    expect(marked.snapshotBackfill).toEqual({
+      capturedAt: "2026-11-24T01:00:00.000Z",
+      dataAsOf: "2026-11-23",
+    });
+    // Số vẫn nguyên, nhưng hash khác payload gốc — dấu không thể bỏ im lặng.
+    expect(marked.summary).toEqual(payload.summary);
+    expect(snapshotPayloadHash(marked)).not.toBe(snapshotPayloadHash(payload));
+  });
+
+  it("payload không có meta.dataAsOf → dataAsOf null, vẫn bọc được", () => {
+    expect(
+      buildBackfillPayload({ picks: [] }, { capturedAt: "x" }).snapshotBackfill.dataAsOf
+    ).toBeNull();
   });
 });

@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     # SCHEDULER_MOVERS_TOKEN). Để trống = không gửi header (giữ hành vi cũ).
     scheduler_movers_token: str = ""
 
+    # SNAPSHOT-02: chốt bản chụp track record của ngày vừa đóng
+    # (POST /api/track-record/snapshots). Chạy hằng ngày, mặc định 07:10 ICT —
+    # sau lượt refresh 07:00 để settlement của ngày hôm qua đã xong. Endpoint
+    # idempotent theo ngày (chạy trùng trả `created: false`), nên đây là lớp dự
+    # phòng cho auto-snapshot trong `/api/refresh`. Auth: token chung
+    # SCHEDULER_CATALYST_TOKEN gửi qua header X-Scheduler-Token.
+    scheduler_snapshot_enabled: bool = True
+    scheduler_snapshot_hour: int = 7
+    scheduler_snapshot_minute: int = 10
+    scheduler_snapshot_timeout: int = 120
+
     # RADAR-06-SCHED: Catalyst layer sync (POST /api/catalyst/sync).
     # Tách nhịp theo tính chất nguồn: announcement cần tươi (5–10 phút), RSS
     # 10–15 phút là đủ, unlock chỉ đọc event_risks (đổi 1 lần/ngày) nên 60 phút.

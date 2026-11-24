@@ -49,6 +49,12 @@ RADAR_COHORT_JOB_ID = "radar_cohort"
 # cho horizon đã đủ tuổi và chưa có dòng, nên chạy trùng không nhân bản dữ liệu.
 RADAR_BIAS_OUTCOME_JOB_ID = "radar_bias_outcomes"
 
+# SNAPSHOT-02: chốt bản chụp track record của ngày vừa đóng
+# (POST /api/track-record/snapshots) và in `head` ra log để neo. Chạy hằng
+# ngày sau lượt refresh (mặc định 07:10 ICT), là lớp dự phòng cho auto-snapshot
+# trong `/api/refresh`. Endpoint idempotent theo ngày nên chạy trùng vô hại.
+SNAPSHOT_ANCHOR_JOB_ID = "snapshot_anchor"
+
 
 def _as_bool(value, fallback: bool) -> bool:
     if isinstance(value, bool):
@@ -184,6 +190,31 @@ class DataRefreshScheduler:
         else:
             print("Movers scheduler disabled in config")
 
+        # SNAPSHOT-02: chốt bản chụp ngày vừa đóng + log `head` để neo ra ngoài.
+        # Đặt sau giờ refresh để settlement của hôm qua đã xong; nếu settlement
+        # chưa chạy, endpoint trả 409 và job chỉ log lỗi (không chốt số dở dang).
+        if settings.scheduler_snapshot_enabled:
+            self.scheduler.add_job(
+                self._run_snapshot_anchor,
+                trigger=CronTrigger(
+                    hour=settings.scheduler_snapshot_hour,
+                    minute=settings.scheduler_snapshot_minute,
+                    timezone=self.vietnam_tz
+                ),
+                id=SNAPSHOT_ANCHOR_JOB_ID,
+                name='Daily Track Record Snapshot',
+                args=[],
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True
+            )
+            print(
+                "Snapshot scheduler started - will run daily at "
+                f"{settings.scheduler_snapshot_hour:02d}:{settings.scheduler_snapshot_minute:02d} Vietnam time"
+            )
+        else:
+            print("Snapshot scheduler disabled in config")
+
         # P3 Historical Execution Loop (P3-15)
         # Every scheduler_p3_interval_hours (default 48h = 2 days), or daily after
         # the main refresh when interval is 0. The endpoint is idempotent.
@@ -268,6 +299,7 @@ class DataRefreshScheduler:
                 'catalyst_config_watch',
                 RADAR_COHORT_JOB_ID,
                 RADAR_BIAS_OUTCOME_JOB_ID,
+                SNAPSHOT_ANCHOR_JOB_ID,
             ):
                 try:
                     self.scheduler.remove_job(job_id)
@@ -769,6 +801,79 @@ class DataRefreshScheduler:
         if error_message:
             logger.error("Radar bias outcomes (%sm) failed: %s", minutes, error_message)
             print(f"Radar bias outcomes failed: {error_message}")
+
+    async def _run_snapshot_anchor(self):
+        """Chốt bản chụp track record ngày vừa đóng và in `head` ra log.
+
+        SNAPSHOT-02: `track_record_snapshots` là append-only và `head_hash` chỉ
+        neo được khi bản in ra ngoài khớp, nên log của job là một trong những
+        nơi neo (`[SNAPSHOT-02] head=...`). Không bao giờ bỏ qua bước log này,
+        kể cả khi ngày đã có bản chụp (`created: false`) — head hiện tại vẫn là
+        thứ cần đối chiếu.
+
+        Endpoint idempotent theo ngày; gọi khi ngày chưa đóng hoặc settlement
+        chưa chạy sẽ trả 409 kèm `reason` (`day-open` / `settlement-pending`).
+        """
+        started_at = datetime.now(self.vietnam_tz)
+        timeout = max(30, settings.scheduler_snapshot_timeout)
+        error_message = None
+
+        try:
+            async with httpx.AsyncClient() as client:
+                headers = {}
+                token = (settings.scheduler_catalyst_token or "").strip()
+                if token:
+                    headers["X-Scheduler-Token"] = token
+                else:
+                    logger.warning(
+                        "SCHEDULER_CATALYST_TOKEN chưa set — POST "
+                        "/api/track-record/snapshots sẽ bị Next từ chối 503; "
+                        "set cùng token cho Next và FastAPI rồi restart."
+                    )
+                response = await client.post(
+                    "http://localhost:3000/api/track-record/snapshots",
+                    json={},
+                    headers=headers,
+                    timeout=timeout,
+                )
+                if response.status_code == 200:
+                    data = response.json().get('data', {}) or {}
+                    entry = data.get('entry', {}) or {}
+                    head = data.get('head')
+                    # Dòng này là neo: giữ nguyên prefix + `head=` để grep/đối
+                    # chiếu về sau (commit, tin nhắn, log scheduler).
+                    logger.info(
+                        "[SNAPSHOT-02] head=%s day=%s created=%s payloadHash=%s",
+                        head,
+                        entry.get('day'),
+                        data.get('created'),
+                        entry.get('payloadHash'),
+                    )
+                    print(
+                        f"[SNAPSHOT-02] head={head} day={entry.get('day')} "
+                        f"created={data.get('created')}"
+                    )
+                else:
+                    reason = None
+                    try:
+                        reason = (response.json().get('data') or {}).get('reason')
+                    except ValueError:
+                        pass
+                    error_message = (
+                        f"Snapshot API returned status {response.status_code}"
+                        + (f" reason={reason}" if reason else "")
+                        + f": {response.text}"
+                    )
+        except ConnectError as e:
+            error_message = f"Snapshot API connection failed: {e}"
+        except TimeoutException as e:
+            error_message = f"Snapshot API timeout: {e}"
+        except Exception as e:
+            error_message = f"Snapshot API error: {e}"
+
+        if error_message:
+            logger.error("Snapshot anchor failed: %s", error_message)
+            print(f"Snapshot anchor failed: {error_message}")
 
     async def _run_p3_execution(self):
         """Run the P3 historical execution loop via the Next.js API."""
