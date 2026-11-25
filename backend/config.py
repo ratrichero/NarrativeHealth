@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     # Nhịp được Next.js kẹp 1–5 phút; không phụ thuộc radar.config để có thể
     # bật/tắt bằng env khi sự cố.
     scheduler_radar_fast_minutes: int = 3
+    # Timeout HTTP của lượt gọi cohort ở lane fast (giây, sàn 30). Không dùng
+    # chung `scheduler_radar_cohort_timeout` để một lượt fast treo không giữ
+    # slot tới 5 phút.
     scheduler_radar_fast_timeout: int = 120
 
     # RADAR-BIAS-LOG: job tính outcome 1h/4h/24h/3d/7d cho `radar_bias_log`

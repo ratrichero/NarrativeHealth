@@ -746,9 +746,18 @@ class DataRefreshScheduler:
         `after()`). Endpoint Next.js tự giành khoá trong `app_settings`, nên
         nhiều instance Next.js chỉ cho một instance chạy mỗi lượt; instance
         khác trả `skipped="locked"` chứ không chạy trùng.
+
+        `mode="fast"` dùng ngân sách timeout riêng
+        (`scheduler_radar_fast_timeout`) vì universe nhỏ và chỉ alert URGENT.
         """
         started_at = datetime.now(self.vietnam_tz)
-        timeout = max(60, settings.scheduler_radar_cohort_timeout)
+        if mode == "fast":
+            # Fast lane chỉ quét universe nhỏ và chỉ alert URGENT → ngân sách
+            # riêng, ngắn hơn cohort đầy đủ. Sàn 30 giây để env 0/âm không biến
+            # lượt gọi thành timeout tức thì.
+            timeout = max(30, settings.scheduler_radar_fast_timeout)
+        else:
+            timeout = max(60, settings.scheduler_radar_cohort_timeout)
         error_message = None
         result_message = None
 

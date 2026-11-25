@@ -1,6 +1,23 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-11-24
+## Ngày cập nhật: 2026-11-25
+
+## RADAR-TG P3-fix — `SCHEDULER_RADAR_FAST_TIMEOUT` nối vào lượt gọi fast lane (2026-11-25)
+
+`SCHEDULER_RADAR_FAST_TIMEOUT` được khai báo ở `backend/config.py` và `.env.example` nhưng
+không nơi nào đọc: `_run_radar_cohort()` luôn dùng `SCHEDULER_RADAR_COHORT_TIMEOUT` (300s) cho cả
+lane `fast`, nên đặt 120s trong env không có tác dụng và một lượt fast bị treo vẫn giữ slot tới
+5 phút.
+
+- `_run_radar_cohort(minutes, mode)`: `mode == "fast"` dùng
+  `max(30, SCHEDULER_RADAR_FAST_TIMEOUT)`; lane `full` giữ nguyên
+  `max(60, SCHEDULER_RADAR_COHORT_TIMEOUT)`. Sàn 30s để giá trị 0/âm không thành timeout tức thì.
+- `.env.example` + `backend/config.py`: ghi rõ đây là timeout HTTP của lượt fast, không phải nhịp
+  và không dùng chung với cohort đầy đủ.
+- Hành vi mặc định không đổi với lane `full`; lane `fast` chỉ hết timeout sớm hơn (120s) như
+  giá trị vốn được ghi trong docs.
+
+Không cần migration; Next.js không đọc biến này.
 
 ## SCHEDULER-AUTH — `GET /api/refresh/status` chỉ trả trạng thái tối thiểu (2026-11-24)
 
