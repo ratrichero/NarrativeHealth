@@ -10,16 +10,15 @@ import { db } from "@/db";
 import { trackRecordSnapshots } from "@/db/schema";
 import {
   SNAPSHOT_GENESIS_HASH,
-  buildBackfillPayload,
+  buildSnapshotPayload,
   closedDaysBefore,
-  shiftBusinessDay,
   computeHeadHash,
   evaluateSnapshotDay,
   snapshotPayloadHash,
   type SnapshotDayDecision,
   type SnapshotEntry,
-  type SnapshotRefusalReason,
 } from "./snapshot";
+import { emitSnapshotAnchor, type SnapshotAnchorOutcome } from "./snapshot-anchor";
 
 /** Số dòng tối đa trả về cho API công khai (đủ ~1 tháng, payload vừa phải). */
 export const SNAPSHOT_READ_LIMIT = 90;
@@ -57,22 +56,35 @@ export interface PublishSnapshotResult {
   entry: SnapshotEntry;
   /** Head hiện tại của chuỗi neo — in ra ngoài sau mỗi lần chốt. */
   head: string;
+  /**
+   * Kết quả neo `head` ra ngoài (SNAPSHOT-02-ANCHOR). `null` = lần gọi này
+   * không tạo dòng mới nên không có gì để neo (tránh gửi trùng mỗi lượt refresh).
+   */
+  anchor: SnapshotAnchorOutcome | null;
 }
 
 /**
  * Chốt payload của `day`. Idempotent: ngày đã có bản chụp thì trả dòng cũ với
  * `created: false` — không âm thầm ghi đè thứ đã công bố.
+ *
+ * `capturedAt` được gói vào payload (`snapshot.capturedAt`) TRƯỚC khi băm, nên
+ * thời điểm chụp nằm trong `payload_hash` và không sửa được sau khi công bố.
+ * Chỉ truyền khi cần khoá giá trị trong test; production dùng thời điểm thực.
  */
 export async function publishDailySnapshot(
   payload: unknown,
   day: string,
-  metricsVersion: string
+  metricsVersion: string,
+  options: { capturedAt?: string } = {}
 ): Promise<PublishSnapshotResult> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
     throw new Error(`SNAPSHOT-02: ngày không hợp lệ (${day})`);
   }
 
-  const payloadHash = snapshotPayloadHash(payload);
+  const sealedPayload = buildSnapshotPayload(payload as object, {
+    capturedAt: options.capturedAt ?? new Date().toISOString(),
+  });
+  const payloadHash = snapshotPayloadHash(sealedPayload);
   const [tip] = await db
     .select({ headHash: trackRecordSnapshots.headHash })
     .from(trackRecordSnapshots)
@@ -86,12 +98,17 @@ export async function publishDailySnapshot(
 
   const inserted = await db
     .insert(trackRecordSnapshots)
-    .values({ day, payloadHash, headHash, metricsVersion, payload: payload as object })
+    .values({ day, payloadHash, headHash, metricsVersion, payload: sealedPayload })
     .onConflictDoNothing({ target: trackRecordSnapshots.day })
     .returning();
 
   if (inserted.length > 0) {
-    return { created: true, entry: toEntry(inserted[0]), head: headHash };
+    const entry = toEntry(inserted[0]);
+    // Neo ngay tại cửa ghi duy nhất: route POST và job trong `/api/refresh`
+    // đều đi qua đây nên không có đường chốt nào quên neo. Chỉ ngày
+    // vừa tạo mới được gửi — chạy lại job không dội lại tin đã gửi.
+    const anchor = await emitSnapshotAnchor(entry);
+    return { created: true, entry, head: headHash, anchor };
   }
 
   // Ngày đã có (có thể do instance khác vừa ghi) → trả dòng hiện có, kèm head
@@ -113,6 +130,7 @@ export async function publishDailySnapshot(
     created: false,
     entry: toEntry(existing),
     head: currentTip?.headHash ?? existing.headHash,
+    anchor: null,
   };
 }
 
@@ -120,8 +138,8 @@ export async function publishDailySnapshot(
  * Chốt MỘT ngày đã đóng, kèm cổng kiểm tra dùng chung với route POST.
  *
  * Đây là chỗ DUY NHẤT gộp cổng (ngày đã đóng + settlement) với việc chốt:
- * route POST, job tự động trong `/api/refresh` và chốt bù đều đi qua đây, nên
- * không có bản sao luật nào để lệch nhau. Trả cả `decision` để caller hiển thị
+ * route POST và job tự động trong `/api/refresh` đều đi qua đây, nên không có
+ * bản sao luật nào để lệch nhau. Trả cả `decision` để caller hiển thị
  * được `day/today/settlementDay` khi từ chối mà không phải tự gọi
  * `evaluateSnapshotDay`.
  */
@@ -133,6 +151,8 @@ export async function publishClosedDaySnapshot(options: {
   today: string;
   /** false = track record rỗng; bỏ cổng settlement vì không có gì để chốt. */
   hasPicks?: boolean;
+  /** Chỉ để test khoá `snapshot.capturedAt`; production dùng thời điểm thực. */
+  capturedAt?: string;
 }): Promise<{ decision: SnapshotDayDecision; result: PublishSnapshotResult | null }> {
   const decision = evaluateSnapshotDay({
     day: options.day,
@@ -145,145 +165,67 @@ export async function publishClosedDaySnapshot(options: {
   }
   return {
     decision,
-    result: await publishDailySnapshot(options.payload, options.day, options.metricsVersion),
+    result: await publishDailySnapshot(options.payload, options.day, options.metricsVersion, {
+      capturedAt: options.capturedAt,
+    }),
   };
 }
 
-/** Số ngày đã đóng gần nhất được thử chốt bù trong mỗi lượt refresh. */
-export const SNAPSHOT_BACKFILL_DAYS = 3;
-/** Số ngày ngoài cửa sổ tối đa liệt kê trong báo cáo/health (đếm vẫn đủ). */
-export const SNAPSHOT_GAP_REPORT_MAX_DAYS = 31;
+/**
+ * Số ngày đã đóng gần nhất được kiểm khi báo gap. Không có "cửa sổ chốt bù":
+ * ngày thiếu chỉ được BÁO, không được ghi lại — số hiện tại không phải số của
+ * ngày đó nên gán nhãn ngày cũ là tuyên bố sai (xem docs/Upgrade.md SNAPSHOT-02).
+ */
+export const SNAPSHOT_GAP_WINDOW_DAYS = 31;
 
 export interface SnapshotGapReport {
-  /** Ngày đã đóng còn thiếu TRONG cửa sổ chốt bù (lượt refresh tới sẽ thử chốt). */
-  inWindow: string[];
   /**
-   * Ngày đã đóng còn thiếu NGOÀI cửa sổ chốt bù nhưng vẫn nằm sau đuôi chuỗi neo
-   * — tức là chốt bù được nếu cửa sổ rộng hơn, nhưng lượt refresh hiện tại sẽ
-   * bỏ qua. Đây là chỗ "mất âm thầm" mà health/log phải nói ra. Liệt kê tối đa
-   * `SNAPSHOT_GAP_REPORT_MAX_DAYS` ngày gần nhất; `outsideWindowCount` là tổng.
+   * Ngày ĐÃ ĐÓNG, từ bản chụp đầu tiên trở đi, mà không có bản chụp nào, cũ →
+   * mới. Mảng rỗng khi bảng chưa từng được chốt hoặc khi mọi ngày đều đã chốt.
    */
-  outsideWindow: string[];
-  outsideWindowCount: number;
+  missing: string[];
+  /** Số ngày đã đóng gần nhất được kiểm (cửa sổ báo cáo). */
+  windowDays: number;
   /** Ngày mới nhất đã chốt (đuôi chuỗi neo); null = bảng rỗng. */
   tip: string | null;
 }
 
 /**
- * Liệt kê các ngày ĐÃ ĐÓNG còn thiếu bản chụp, tách theo khả năng chốt bù.
+ * Liệt kê các ngày ĐÃ ĐÓNG còn thiếu bản chụp trong cửa sổ báo cáo.
  *
- * Bảng rỗng thì không báo gì ngoài cửa sổ: chưa từng có bản chụp nào thì không
- * có mốc nào để nói "đáng lẽ phải có". Chỉ khi đã có đuôi chuỗi neo mới biết
- * những ngày sau nó là thiếu thật.
+ * Chỉ xét ngày SAU `tip`: trước bản chụp đầu tiên thì chưa có gì để hứa, và
+ * ngày chen giữa hai bản đã chốt chỉ xuất hiện khi ai đó sửa/xoá DB — việc đó
+ * `readSnapshotDayStatus` bắt ở chính ngày bị sửa, không phải ở đây.
+ *
+ * Hàm này KHÔNG chốt bù gì cả: nó chỉ trả lời "ngày nào đang thiếu" để log và
+ * health nói ra. Bảng append-only nên thiếu là thiếu vĩnh viễn.
  */
 export async function listSnapshotGaps(options: {
   today: string;
+  /** Số ngày đã đóng gần nhất được kiểm; mặc định `SNAPSHOT_GAP_WINDOW_DAYS`. */
+  windowDays?: number;
   /** Truyền sẵn entries để caller khỏi đọc DB hai lần. */
   entries?: SnapshotEntry[];
 }): Promise<SnapshotGapReport> {
-  const days = closedDaysBefore(options.today, SNAPSHOT_BACKFILL_DAYS);
+  const windowDays = Math.min(
+    Math.max(1, Math.floor(options.windowDays ?? SNAPSHOT_GAP_WINDOW_DAYS)),
+    366
+  );
   const entries = options.entries ?? (await readSnapshotEntries());
-  const sealed = new Set(entries.map((entry) => entry.day));
   const tip = entries.length > 0 ? entries[entries.length - 1].day : null;
+  // Chưa từng chốt ngày nào: không có mốc nào để nói "đáng lẽ phải có", và
+  // deployment mới không được coi là đang thiếu 31 ngày.
+  if (tip === null) return { missing: [], windowDays, tip: null };
 
-  const inWindow = days.filter((day) => !sealed.has(day));
-
-  // Thiếu giữa đuôi neo và cửa sổ: lùi từ ngày cũ nhất của cửa sổ về tip+1.
-  // Đếm đủ để báo, chỉ giữ tối đa SNAPSHOT_GAP_REPORT_MAX_DAYS ngày gần nhất.
-  const outsideWindow: string[] = [];
-  let outsideWindowCount = 0;
-  let cursor = shiftBusinessDay(days[0], -1);
-  while (tip !== null && cursor > tip) {
-    outsideWindowCount += 1;
-    if (outsideWindow.length < SNAPSHOT_GAP_REPORT_MAX_DAYS) outsideWindow.push(cursor);
-    cursor = shiftBusinessDay(cursor, -1);
-  }
-  outsideWindow.reverse();
-
-  return { inWindow, outsideWindow, outsideWindowCount, tip };
-}
-
-export interface SnapshotBackfillRow {
-  day: string;
-  /**
-   * `sealed` = vừa chốt (lần đầu), `exists` = đã có bản chụp nên giữ nguyên,
-   * `skipped` = chưa chốt được (xem `skipped`).
-   */
-  status: "sealed" | "exists" | "skipped";
-  /**
-   * Lý do cổng từ chối, hoặc `chain-gap`: ngày thiếu nằm TRƯỚC bản chụp mới
-   * nhất nên chốt bù sẽ phải neo vào head của ngày sau nó → phá neo, không ghi.
-   */
-  skipped: SnapshotRefusalReason | "chain-gap" | null;
-  result: PublishSnapshotResult | null;
-}
-
-/**
- * Chốt bù các ngày ĐÃ ĐÓNG nhưng chưa có bản chụp (SNAPSHOT-02).
- *
- * Vì sao cần: refresh không chạy một ngày thì ngày đó không bao giờ được chốt
- * nữa — lượt sau chỉ chốt "hôm qua", và bảng append-only không điền lại được.
- *
- * Ba ràng buộc giữ cho việc chốt bù không thành bịa số:
- *   1. Chỉ ngày đã đóng và đã qua settlement (`evaluateSnapshotDay`) — cùng
- *      cổng với lượt chốt thường.
- *   2. Không ghi đè: ngày đã có bản chụp trả `exists`.
- *   3. Chỉ chốt bù ở ĐUÔI chuỗi neo: ngày thiếu phải mới hơn bản chụp mới nhất.
- *      Ngày thiếu chen giữa hai bản đã chốt không thể thêm mà không làm lệch
- *      `head_hash` của ngày đứng sau (head tính từ bản liền trước), nên trả
- *      `chain-gap` và để health báo.
- *
- * Payload chốt bù mang dấu `snapshotBackfill` (xem `buildBackfillPayload`):
- * số đọc ở thời điểm chốt bù, không phải số đã công bố đúng ngày đó. Dấu này
- * nằm trong `payload_hash` nên không thể bỏ im lặng.
- */
-export async function publishMissingSnapshots(options: {
-  payload: object;
-  /** Hôm nay theo giờ nghiệp vụ ICT. */
-  today: string;
-  lastEvaluatedAt: string | null;
-  metricsVersion: string;
-  hasPicks?: boolean;
-  /** Chỉ để test khoá được giá trị; production dùng thời điểm thực. */
-  capturedAt?: string;
-}): Promise<{ rows: SnapshotBackfillRow[]; gaps: SnapshotGapReport }> {
-  const days = closedDaysBefore(options.today, SNAPSHOT_BACKFILL_DAYS);
-  const entries = await readSnapshotEntries();
-  // Báo cáo tính trên cùng tập entries — một lần đọc, không lệch nhau.
-  const gaps = await listSnapshotGaps({ today: options.today, entries });
   const sealed = new Set(entries.map((entry) => entry.day));
-  // `readSnapshotEntries` trả cũ → mới, nên phần tử cuối là đuôi chuỗi neo.
-  const tip = entries.length > 0 ? entries[entries.length - 1].day : null;
-  // Cùng một payload cho mọi ngày được chốt bù trong lượt này.
-  const payload = buildBackfillPayload(options.payload, {
-    capturedAt: options.capturedAt ?? new Date().toISOString(),
-  });
-
-  const rows: SnapshotBackfillRow[] = [];
-  for (const day of days) {
-    if (sealed.has(day)) {
-      rows.push({ day, status: "exists", skipped: null, result: null });
-      continue;
-    }
-    if (tip !== null && day < tip) {
-      rows.push({ day, status: "skipped", skipped: "chain-gap", result: null });
-      continue;
-    }
-    const { decision, result } = await publishClosedDaySnapshot({
-      payload,
-      lastEvaluatedAt: options.lastEvaluatedAt,
-      hasPicks: options.hasPicks,
-      metricsVersion: options.metricsVersion,
-      day,
-      today: options.today,
-    });
-    rows.push(
-      decision.ok && result
-        ? { day, status: result.created ? "sealed" : "exists", skipped: null, result }
-        : { day, status: "skipped", skipped: decision.reason, result: null }
-    );
-  }
-  return { rows, gaps };
+  // Mốc bắt đầu "đã hứa": ngày chốt sớm nhất. Ngày trước nó thì chưa có gì để
+  // thiếu; từ nó trở đi, ngày đã đóng mà không có dòng đều được báo — kể cả lỗ
+  // chen giữa (chỉ xảy ra khi ai đó sửa/xoá DB, và càng phải nói ra).
+  const first = entries[0].day;
+  const missing = closedDaysBefore(options.today, windowDays).filter(
+    (day) => day >= first && !sealed.has(day)
+  );
+  return { missing, windowDays, tip };
 }
 
 export interface SnapshotDayStatus {
@@ -335,6 +277,44 @@ export async function readSnapshotDayStatus(day: string): Promise<SnapshotDaySta
     payloadMatches: snapshotPayloadHash(row.payload) === row.payloadHash,
     headLinked: expectedHead === row.headHash,
     previousDay: prev?.day ?? null,
+  };
+}
+
+/**
+ * Một bản chụp kèm MỌI thứ cần để người ngoài kiểm lại mà không phải tin app:
+ * payload gốc, hai hash đã công bố và `prevHead` (đầu vào của neo). Không có
+ * `prevHead` thì không ai tự tính lại được `head_hash` — đó là lý do endpoint
+ * công khai trả cả ba thứ này cùng payload thay vì chỉ hai hash như GET list.
+ */
+export interface SnapshotPayloadBundle {
+  entry: SnapshotEntry;
+  payload: unknown;
+  /** Head của bản chụp liền trước; `SNAPSHOT_GENESIS_HASH` khi đây là bản đầu. */
+  prevHead: string;
+}
+
+/** Bản chụp đầy đủ của một ngày (null = ngày chưa được chốt). */
+export async function readSnapshotPayloadBundle(
+  day: string
+): Promise<SnapshotPayloadBundle | null> {
+  const [row] = await db
+    .select()
+    .from(trackRecordSnapshots)
+    .where(eq(trackRecordSnapshots.day, day))
+    .limit(1);
+  if (!row) return null;
+
+  const [prev] = await db
+    .select({ headHash: trackRecordSnapshots.headHash })
+    .from(trackRecordSnapshots)
+    .where(lt(trackRecordSnapshots.day, day))
+    .orderBy(desc(trackRecordSnapshots.day))
+    .limit(1);
+
+  return {
+    entry: toEntry(row),
+    payload: row.payload,
+    prevHead: prev?.headHash ?? SNAPSHOT_GENESIS_HASH,
   };
 }
 

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "@jest/globals";
 import {
   SNAPSHOT_GENESIS_HASH,
-  buildBackfillPayload,
+  SNAPSHOT_SCHEMA_VERSION,
   buildSnapshotEntry,
+  buildSnapshotPayload,
   closedDaysBefore,
   canonicalJson,
   computeHeadHash,
@@ -40,6 +41,33 @@ describe("SNAPSHOT-02 — payload canonical + hash", () => {
     });
     expect(snapshotPayloadMatches(entry, payloadA)).toBe(true);
     expect(snapshotPayloadMatches(entry, { ...payloadA, b: 3 })).toBe(false);
+  });
+});
+
+describe("SNAPSHOT-02 — dấu chụp nằm trong payload", () => {
+  const capturedAt = "2026-11-24T00:10:00.000Z";
+
+  it("buildSnapshotPayload thêm snapshot.capturedAt và đổi hash so với payload trần", () => {
+    const sealed = buildSnapshotPayload(payloadA, { capturedAt });
+
+    expect(sealed.snapshot).toEqual({ capturedAt });
+    // Số liệu giữ nguyên — chỉ thêm dấu.
+    expect(sealed.a).toBe(payloadA.a);
+    expect(snapshotPayloadHash(sealed)).not.toBe(snapshotPayloadHash(payloadA));
+  });
+
+  it("cùng số liệu, khác capturedAt → hash khác: không sửa được thời điểm chụp", () => {
+    const a = buildSnapshotPayload(payloadB, { capturedAt });
+    const b = buildSnapshotPayload(payloadB, { capturedAt: "2026-11-24T00:11:00.000Z" });
+
+    expect(snapshotPayloadHash(a)).not.toBe(snapshotPayloadHash(b));
+  });
+
+  it("version hiện tại là v2 và quy tắc băm dùng đúng version đó", () => {
+    expect(SNAPSHOT_SCHEMA_VERSION).toBe(2);
+    expect(snapshotPayloadHash(payloadB)).toBe(
+      sha256Hex(`v${SNAPSHOT_SCHEMA_VERSION}|${canonicalJson(payloadB)}`)
+    );
   });
 });
 
@@ -91,31 +119,11 @@ describe("SNAPSHOT-02 — head neo", () => {
   });
 });
 
-describe("SNAPSHOT-02 — chốt bù ngày thiếu", () => {
+describe("SNAPSHOT-02 — ngày đã đóng gần nhất", () => {
   it("closedDaysBefore trả các ngày đã đóng gần nhất, cũ → mới, không gồm hôm nay", () => {
     expect(closedDaysBefore("2026-11-24", 3)).toEqual(["2026-11-21", "2026-11-22", "2026-11-23"]);
     // Qua ranh giới tháng/năm theo UTC, không phụ thuộc timezone máy chạy.
     expect(closedDaysBefore("2026-01-02", 3)).toEqual(["2025-12-30", "2025-12-31", "2026-01-01"]);
     expect(closedDaysBefore("2026-11-24", 0)).toEqual(["2026-11-23"]);
-  });
-
-
-  it("payload chốt bù mang dấu snapshotBackfill và đổi hash so với payload gốc", () => {
-    const payload = { summary: { totals: { picks: 3 } }, meta: { dataAsOf: "2026-11-23" } };
-    const marked = buildBackfillPayload(payload, { capturedAt: "2026-11-24T01:00:00.000Z" });
-
-    expect(marked.snapshotBackfill).toEqual({
-      capturedAt: "2026-11-24T01:00:00.000Z",
-      dataAsOf: "2026-11-23",
-    });
-    // Số vẫn nguyên, nhưng hash khác payload gốc — dấu không thể bỏ im lặng.
-    expect(marked.summary).toEqual(payload.summary);
-    expect(snapshotPayloadHash(marked)).not.toBe(snapshotPayloadHash(payload));
-  });
-
-  it("payload không có meta.dataAsOf → dataAsOf null, vẫn bọc được", () => {
-    expect(
-      buildBackfillPayload({ picks: [] }, { capturedAt: "x" }).snapshotBackfill.dataAsOf
-    ).toBeNull();
   });
 });

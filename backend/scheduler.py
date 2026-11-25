@@ -10,6 +10,7 @@ Architecture Note:
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime, timedelta
+import asyncio
 import json
 import logging
 import pytz
@@ -54,6 +55,41 @@ RADAR_BIAS_OUTCOME_JOB_ID = "radar_bias_outcomes"
 # ngày sau lượt refresh (mặc định 07:10 ICT), là lớp dự phòng cho auto-snapshot
 # trong `/api/refresh`. Endpoint idempotent theo ngày nên chạy trùng vô hại.
 SNAPSHOT_ANCHOR_JOB_ID = "snapshot_anchor"
+SNAPSHOT_ANCHOR_ENDPOINT = "http://localhost:3000/api/track-record/snapshots"
+
+# Refresh 07:00 có thể chạy tới 10 phút, nên lượt 07:10 dễ nhận 409
+# `settlement-pending` — số của ngày chưa chốt hết, endpoint TỪ CHỐI chốt (đúng).
+# Bỏ luôn thì mất ngày (bảng append-only), nên job chờ rồi thử lại trong ngày.
+#   • `settlement-pending` (409) → chờ `retry_minutes` rồi thử lại; refresh chạy
+#     xong là lượt sau chốt được.
+#   • `day-open` (409) → không chờ: ngày chưa đóng thì chờ mấy cũng vậy.
+#   • 401/403/503 → lỗi cấu hình (token/host guard), thử lại không sửa được gì.
+#   • 5xx/429/lỗi kết nối → có thể do Next restart trong lúc refresh: thử lại.
+SNAPSHOT_ANCHOR_TERMINAL_HTTP = frozenset({401, 403, 503})
+
+
+def snapshot_anchor_retry_decision(
+    status_code: int, reason: Optional[str], attempts_left: int
+) -> str:
+    """`done` | `retry` | `fail` cho một lượt gọi endpoint chốt bản chụp.
+
+    Thuần (không mạng, không settings) để test được toàn bộ luật chờ: đây là
+    chỗ dễ sai nhất — thử lại sai loại lỗi thì hoặc mất ngày, hoặc quay vòng
+    6 lần trong vô ích.
+    """
+    if 200 <= status_code < 300:
+        return "done"
+    if status_code in SNAPSHOT_ANCHOR_TERMINAL_HTTP:
+        return "fail"
+    # `day-open`: endpoint khoá ngày đang mở; đợi thêm trong ngày không làm
+    # ngày đó đóng lại. `settlement-pending` (hoặc reason không đọc được do
+    # refresh đang trả lỗi) mới là thứ đáng chờ.
+    if status_code == 409 and reason == "day-open":
+        return "fail"
+    if attempts_left <= 0:
+        return "fail"
+    # 0 = lỗi kết nối/timeout, 5xx/429 = Next đang restart hoặc quá tải.
+    return "retry"
 
 
 def _as_bool(value, fallback: bool) -> bool:
@@ -191,8 +227,9 @@ class DataRefreshScheduler:
             print("Movers scheduler disabled in config")
 
         # SNAPSHOT-02: chốt bản chụp ngày vừa đóng + log `head` để neo ra ngoài.
-        # Đặt sau giờ refresh để settlement của hôm qua đã xong; nếu settlement
-        # chưa chạy, endpoint trả 409 và job chỉ log lỗi (không chốt số dở dang).
+        # Đặt sau giờ refresh để settlement của hôm qua đã xong. Refresh 07:00 có
+        # thể kéo dài tới 10 phút → 409 `settlement-pending`; job chờ rồi thử lại
+        # trong ngày (xem `_run_snapshot_anchor`) thay vì bỏ mất ngày.
         if settings.scheduler_snapshot_enabled:
             self.scheduler.add_job(
                 self._run_snapshot_anchor,
@@ -802,6 +839,69 @@ class DataRefreshScheduler:
             logger.error("Radar bias outcomes (%sm) failed: %s", minutes, error_message)
             print(f"Radar bias outcomes failed: {error_message}")
 
+    async def _post_snapshot_anchor_once(self, headers: dict, timeout: int) -> dict:
+        """Một lượt gọi endpoint chốt bản chụp. Không bao giờ ném lỗi.
+
+        Trả `status` (0 = không có HTTP response: kết nối/timeout), `reason`
+        (lý do cổng từ chối của Next), `data` và `error` (câu để log).
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    SNAPSHOT_ANCHOR_ENDPOINT,
+                    json={},
+                    headers=headers,
+                    timeout=timeout,
+                )
+        except ConnectError as e:
+            return {
+                "status": 0,
+                "reason": "connection",
+                "data": {},
+                "error": f"Snapshot API connection failed: {e}",
+            }
+        except TimeoutException as e:
+            return {
+                "status": 0,
+                "reason": "timeout",
+                "data": {},
+                "error": f"Snapshot API timeout: {e}",
+            }
+        except Exception as e:  # noqa: BLE001 — job không được làm sập scheduler
+            return {
+                "status": 0,
+                "reason": "error",
+                "data": {},
+                "error": f"Snapshot API error: {e}",
+            }
+
+        data = {}
+        reason = None
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                raw_data = body.get("data")
+                if isinstance(raw_data, dict):
+                    data = raw_data
+                    reason = raw_data.get("reason")
+        except ValueError:
+            pass
+
+        error = None
+        if response.status_code != 200:
+            error = (
+                f"Snapshot API returned status {response.status_code}"
+                + (f" reason={reason}" if reason else "")
+                + f": {response.text}"
+            )
+
+        return {
+            "status": response.status_code,
+            "reason": reason,
+            "data": data,
+            "error": error,
+        }
+
     async def _run_snapshot_anchor(self):
         """Chốt bản chụp track record ngày vừa đóng và in `head` ra log.
 
@@ -811,69 +911,79 @@ class DataRefreshScheduler:
         kể cả khi ngày đã có bản chụp (`created: false`) — head hiện tại vẫn là
         thứ cần đối chiếu.
 
-        Endpoint idempotent theo ngày; gọi khi ngày chưa đóng hoặc settlement
-        chưa chạy sẽ trả 409 kèm `reason` (`day-open` / `settlement-pending`).
+        Chờ refresh: lượt 07:10 có thể trùng lúc refresh 07:00 (timeout tới 600s)
+        còn đang chạy → endpoint trả 409 `settlement-pending`. Bỏ luôn là mất
+        ngày vĩnh viễn (bảng append-only), nên job chờ `retry_minutes` rồi thử
+        lại, tối đa `attempts` lượt. Luật chờ nằm ở
+        `snapshot_anchor_retry_decision` để test được mà không cần mạng.
         """
-        started_at = datetime.now(self.vietnam_tz)
+        attempts = max(1, settings.scheduler_snapshot_attempts)
+        retry_seconds = max(0, settings.scheduler_snapshot_retry_minutes) * 60
         timeout = max(30, settings.scheduler_snapshot_timeout)
-        error_message = None
 
-        try:
-            async with httpx.AsyncClient() as client:
-                headers = {}
-                token = (settings.scheduler_catalyst_token or "").strip()
-                if token:
-                    headers["X-Scheduler-Token"] = token
-                else:
-                    logger.warning(
-                        "SCHEDULER_CATALYST_TOKEN chưa set — POST "
-                        "/api/track-record/snapshots sẽ bị Next từ chối 503; "
-                        "set cùng token cho Next và FastAPI rồi restart."
-                    )
-                response = await client.post(
-                    "http://localhost:3000/api/track-record/snapshots",
-                    json={},
-                    headers=headers,
-                    timeout=timeout,
+        headers = {}
+        token = (settings.scheduler_catalyst_token or "").strip()
+        if token:
+            headers["X-Scheduler-Token"] = token
+        else:
+            logger.warning(
+                "SCHEDULER_CATALYST_TOKEN chưa set — POST "
+                "/api/track-record/snapshots sẽ bị Next từ chối 503; "
+                "set cùng token cho Next và FastAPI rồi restart."
+            )
+
+        for attempt in range(1, attempts + 1):
+            result = await self._post_snapshot_anchor_once(headers, timeout)
+            decision = snapshot_anchor_retry_decision(
+                result["status"], result["reason"], attempts - attempt
+            )
+
+            if decision == "done":
+                data = result["data"]
+                entry = data.get("entry", {}) or {}
+                head = data.get("head")
+                # Dòng này là neo: giữ nguyên prefix + `head=` để grep/đối
+                # chiếu về sau (commit, tin nhắn, log scheduler).
+                logger.info(
+                    "[SNAPSHOT-02] head=%s day=%s created=%s payloadHash=%s",
+                    head,
+                    entry.get("day"),
+                    data.get("created"),
+                    entry.get("payloadHash"),
                 )
-                if response.status_code == 200:
-                    data = response.json().get('data', {}) or {}
-                    entry = data.get('entry', {}) or {}
-                    head = data.get('head')
-                    # Dòng này là neo: giữ nguyên prefix + `head=` để grep/đối
-                    # chiếu về sau (commit, tin nhắn, log scheduler).
-                    logger.info(
-                        "[SNAPSHOT-02] head=%s day=%s created=%s payloadHash=%s",
-                        head,
-                        entry.get('day'),
-                        data.get('created'),
-                        entry.get('payloadHash'),
-                    )
-                    print(
-                        f"[SNAPSHOT-02] head={head} day={entry.get('day')} "
-                        f"created={data.get('created')}"
-                    )
-                else:
-                    reason = None
-                    try:
-                        reason = (response.json().get('data') or {}).get('reason')
-                    except ValueError:
-                        pass
-                    error_message = (
-                        f"Snapshot API returned status {response.status_code}"
-                        + (f" reason={reason}" if reason else "")
-                        + f": {response.text}"
-                    )
-        except ConnectError as e:
-            error_message = f"Snapshot API connection failed: {e}"
-        except TimeoutException as e:
-            error_message = f"Snapshot API timeout: {e}"
-        except Exception as e:
-            error_message = f"Snapshot API error: {e}"
+                print(
+                    f"[SNAPSHOT-02] head={head} day={entry.get('day')} "
+                    f"created={data.get('created')}"
+                )
+                return
 
-        if error_message:
-            logger.error("Snapshot anchor failed: %s", error_message)
-            print(f"Snapshot anchor failed: {error_message}")
+            message = result["error"] or (
+                f"Snapshot API returned status {result['status']}"
+                + (f" reason={result['reason']}" if result["reason"] else "")
+            )
+
+            if decision == "fail":
+                logger.error(
+                    "Snapshot anchor failed (lần %s/%s): %s",
+                    attempt,
+                    attempts,
+                    message,
+                )
+                print(f"Snapshot anchor failed: {message}")
+                return
+
+            logger.warning(
+                "[SNAPSHOT-02] chưa chốt được (lần %s/%s): %s — chờ %ss rồi thử "
+                "lại (refresh 07:00 có thể còn đang chạy).",
+                attempt,
+                attempts,
+                message,
+                retry_seconds,
+            )
+            await asyncio.sleep(retry_seconds)
+
+        # Mỗi nhánh ở trên đều return; đây chỉ là lưới an toàn.
+        logger.error("Snapshot anchor failed: hết %s lượt mà chưa chốt được", attempts)
 
     async def _run_p3_execution(self):
         """Run the P3 historical execution loop via the Next.js API."""

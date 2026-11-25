@@ -73,6 +73,11 @@ export function trackRecordLimitPerMinute(): number {
   return envInt("RADAR_TRACK_RECORD_PER_IP_PER_MIN", 15);
 }
 
+/** Payload một ngày là full JSON của track record — trần riêng, chặt hơn list. */
+export function snapshotPayloadLimitPerMinute(): number {
+  return envInt("RADAR_SNAPSHOT_PAYLOAD_PER_IP_PER_MIN", 30);
+}
+
 /**
  * IP cho rate limit. Không tin X-Forwarded-For mặc định vì client tự gửi được.
  * Chỉ dùng header do edge/proxy ghi đè (Cloudflare, reverse proxy).
@@ -102,6 +107,10 @@ export function clientIpFromHeaders(headers: Headers): string {
 export const listLimiter = new SlidingWindowLimiter(listLimitPerMinute(), 60_000);
 export const briefIpLimiter = new SlidingWindowLimiter(briefLimitPerHour(), 3_600_000);
 export const trackRecordLimiter = new SlidingWindowLimiter(trackRecordLimitPerMinute(), 60_000);
+export const snapshotPayloadLimiter = new SlidingWindowLimiter(
+  snapshotPayloadLimitPerMinute(),
+  60_000
+);
 
 let catalystLimit = peekRadarRuntimeConfig().catalystPerIpPerMin;
 let catalystLimiterInstance = new SlidingWindowLimiter(catalystLimit, 60_000);

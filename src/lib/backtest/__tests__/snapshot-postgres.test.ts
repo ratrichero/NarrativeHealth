@@ -28,9 +28,9 @@ jest.mock("@/db", () => ({
 }));
 
 import {
+  listSnapshotGaps,
   publishClosedDaySnapshot,
   publishDailySnapshot,
-  publishMissingSnapshots,
   readSnapshotDayStatus,
   readSnapshotEntries,
   readSnapshotPayload,
@@ -38,6 +38,7 @@ import {
 } from "../snapshot-store";
 import {
   SNAPSHOT_GENESIS_HASH,
+  buildSnapshotPayload,
   computeHeadHash,
   snapshotPayloadHash,
 } from "../snapshot";
@@ -82,9 +83,20 @@ beforeEach(async () => {
   await client.query("DELETE FROM track_record_snapshots");
 });
 
+// `capturedAt` cố định để test khoá được hash: mọi payload đã chốt mang
+// `snapshot.capturedAt` và field đó nằm trong `payload_hash`.
+const CAPTURED_ONE = "2026-11-20T23:59:00.000Z";
+const CAPTURED_TWO = "2026-11-21T23:59:00.000Z";
+const sealedOne = buildSnapshotPayload(payloadOne, { capturedAt: CAPTURED_ONE });
+const sealedTwo = buildSnapshotPayload(payloadTwo, { capturedAt: CAPTURED_TWO });
+
 async function sealTwoDays() {
-  const first = await publishDailySnapshot(payloadOne, DAY_ONE, METRICS_VERSION);
-  const second = await publishDailySnapshot(payloadTwo, DAY_TWO, METRICS_VERSION);
+  const first = await publishDailySnapshot(payloadOne, DAY_ONE, METRICS_VERSION, {
+    capturedAt: CAPTURED_ONE,
+  });
+  const second = await publishDailySnapshot(payloadTwo, DAY_TWO, METRICS_VERSION, {
+    capturedAt: CAPTURED_TWO,
+  });
   return { first, second };
 }
 
@@ -126,13 +138,13 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
     expect(first.entry).toMatchObject({
       day: DAY_ONE,
       metricsVersion: METRICS_VERSION,
-      payloadHash: snapshotPayloadHash(payloadOne),
+      payloadHash: snapshotPayloadHash(sealedOne),
     });
     // Ngày đầu neo từ genesis.
     expect(first.entry.headHash).toBe(
       computeHeadHash({
         day: DAY_ONE,
-        payloadHash: snapshotPayloadHash(payloadOne),
+        payloadHash: snapshotPayloadHash(sealedOne),
         prevHead: SNAPSHOT_GENESIS_HASH,
       })
     );
@@ -143,7 +155,7 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
     expect(second.entry.headHash).toBe(
       computeHeadHash({
         day: DAY_TWO,
-        payloadHash: snapshotPayloadHash(payloadTwo),
+        payloadHash: snapshotPayloadHash(sealedTwo),
         prevHead: first.entry.headHash,
       })
     );
@@ -156,8 +168,12 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
 
     // Payload đã chốt đọc lại đúng nội dung và khớp payload_hash.
     const stored = await readSnapshotPayload(DAY_TWO);
-    expect(stored).toEqual(payloadTwo);
+    // Payload đọc lại mang dấu `snapshot.capturedAt` đã nằm trong hash.
+    expect(stored).toEqual(sealedTwo);
     expect(snapshotPayloadHash(stored)).toBe(second.entry.payloadHash);
+    expect((stored as { snapshot: { capturedAt: string } }).snapshot.capturedAt).toBe(
+      CAPTURED_TWO
+    );
   });
 
   test("chạy lại cùng ngày trả created=false, giữ nguyên payload đã công bố", async () => {
@@ -176,13 +192,13 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
       `SELECT day, payload, head_hash FROM track_record_snapshots ORDER BY day`
     );
     expect(rows.rows).toHaveLength(2);
-    expect(rows.rows[0].payload).toEqual(payloadOne);
+    expect(rows.rows[0].payload).toEqual(sealedOne);
     expect(rows.rows[0].head_hash).toBe(first.entry.headHash);
     expect(rows.rows[1].head_hash).toBe(second.entry.headHash);
 
     const chain = await readVerifiedSnapshotChain();
     expect(chain.verification.ok).toBe(true);
-    expect(await readSnapshotPayload(DAY_ONE)).toEqual(payloadOne);
+    expect(await readSnapshotPayload(DAY_ONE)).toEqual(sealedOne);
   });
 
   test("sửa payload trong DB: payload_hash không còn khớp, verify báo đúng ngày", async () => {
@@ -201,7 +217,7 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
     });
     // Hash đã công bố vẫn nguyên — chính nó là bằng chứng payload bị đổi.
     const entries = await readSnapshotEntries();
-    expect(entries[1].payloadHash).toBe(snapshotPayloadHash(payloadTwo));
+    expect(entries[1].payloadHash).toBe(snapshotPayloadHash(sealedTwo));
   });
 
   test("auto-snapshot: từ chối ngày chưa đóng và ngày chưa qua settlement, không ghi dòng nào", async () => {
@@ -238,11 +254,14 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
       metricsVersion: METRICS_VERSION,
       day: DAY_ONE,
       today: DAY_TWO,
+      capturedAt: CAPTURED_ONE,
     });
 
     expect(result.decision.ok).toBe(true);
     expect(result.result).toMatchObject({ created: true, entry: { day: DAY_ONE } });
-    expect(await readSnapshotPayload(DAY_ONE)).toEqual(emptyPayload);
+    expect(await readSnapshotPayload(DAY_ONE)).toEqual(
+      buildSnapshotPayload(emptyPayload, { capturedAt: CAPTURED_ONE })
+    );
   });
 
   test("auto-snapshot: ngày đã đóng + đã settlement thì chốt, chạy lại không ghi đè", async () => {
@@ -253,6 +272,7 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
       metricsVersion: METRICS_VERSION,
       day: DAY_ONE,
       today: DAY_TWO,
+      capturedAt: CAPTURED_ONE,
     });
     expect(first.decision.ok).toBe(true);
     expect(first.result).toMatchObject({ created: true, entry: { day: DAY_ONE } });
@@ -267,8 +287,39 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
     });
     expect(second.decision.ok).toBe(true);
     expect(second.result).toMatchObject({ created: false, entry: { day: DAY_ONE } });
-    expect(await readSnapshotPayload(DAY_ONE)).toEqual(payloadOne);
+    expect(await readSnapshotPayload(DAY_ONE)).toEqual(sealedOne);
     expect(await readSnapshotEntries()).toHaveLength(1);
+  });
+
+  test("chốt xong tự neo head ra ngoài: log đủ day/payloadHash/head, chạy lại không neo lần nữa", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => undefined);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const first = await publishDailySnapshot(payloadOne, DAY_ONE, METRICS_VERSION);
+      const anchorLines = info.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.startsWith("[SNAPSHOT-ANCHOR]"));
+
+      expect(anchorLines).toEqual([
+        `[SNAPSHOT-ANCHOR] day=${DAY_ONE} payloadHash=${first.entry.payloadHash} head=${first.entry.headHash}`,
+      ]);
+      expect(first.anchor).toMatchObject({ delivered: 0, anchored: false, skipped: null });
+      // Test env không cấu hình kênh nào → phải nói ra là head mới chỉ ở log.
+      expect(
+        warn.mock.calls.map((call) => String(call[0])).some((line) => line.includes("không kênh nào nhận"))
+      ).toBe(true);
+
+      // Lượt chạy lại cùng ngày không tạo dòng mới → không gửi neo trùng.
+      info.mockClear();
+      const again = await publishDailySnapshot(otherPayload, DAY_ONE, METRICS_VERSION);
+      expect(again.anchor).toBeNull();
+      expect(
+        info.mock.calls.map((call) => String(call[0])).filter((line) => line.startsWith("[SNAPSHOT-ANCHOR]"))
+      ).toEqual([]);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
   });
 
   test("readSnapshotDayStatus: ngày chưa có bản chụp trả entry null", async () => {
@@ -341,158 +392,122 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
   });
 });
 
-describe("SNAPSHOT-02 — chốt bù các ngày đã đóng còn thiếu", () => {
+describe("SNAPSHOT-02 — báo ngày đã đóng còn thiếu (không chốt bù)", () => {
   const TODAY = "2026-11-24";
-  const backfillPayload = {
-    summary: { totals: { picks: 4 }, lastEvaluatedAt: `${TODAY}T00:30:00.000Z` },
-    meta: { dataAsOf: "2026-11-23", metricsVersion: METRICS_VERSION },
-  };
 
-  test("bảng trống: chốt bù cả cửa sổ, nối head liền nhau, payload mang dấu backfill", async () => {
-    const { rows } = await publishMissingSnapshots({
-      payload: backfillPayload,
-      today: TODAY,
-      lastEvaluatedAt: `${TODAY}T00:30:00.000Z`,
-      metricsVersion: METRICS_VERSION,
-      capturedAt: "2026-11-24T01:00:00.000Z",
-    });
+  test("bảng trống: không báo gì vì chưa có mốc neo nào", async () => {
+    const gaps = await listSnapshotGaps({ today: TODAY });
 
-    expect(rows.map((row) => [row.day, row.status])).toEqual([
-      ["2026-11-21", "sealed"],
-      ["2026-11-22", "sealed"],
-      ["2026-11-23", "sealed"],
-    ]);
-    // Ngày đang mở không bao giờ nằm trong danh sách chốt bù.
-    expect(rows.some((row) => row.day === TODAY)).toBe(false);
-
-    // Neo phải nối từng ngày một, dù chốt muộn.
-    for (const day of ["2026-11-21", "2026-11-22", "2026-11-23"]) {
-      const status = await readSnapshotDayStatus(day);
-      expect(status.headLinked).toBe(true);
-      expect(status.payloadMatches).toBe(true);
-    }
-
-    const stored = (await readSnapshotPayload("2026-11-22")) as {
-      snapshotBackfill: { capturedAt: string; dataAsOf: string | null };
-      summary: { totals: { picks: number } };
-    };
-    expect(stored.summary.totals.picks).toBe(4);
-    expect(stored.snapshotBackfill).toEqual({
-      capturedAt: "2026-11-24T01:00:00.000Z",
-      dataAsOf: "2026-11-23",
-    });
-    // Hash đã chốt là hash của payload có dấu, không phải payload gốc.
-    const entries = await readSnapshotEntries();
-    expect(entries[1].payloadHash).not.toBe(snapshotPayloadHash(backfillPayload));
-    expect(entries).toHaveLength(3);
+    // Deployment mới không bị coi là "đang thiếu 31 ngày".
+    expect(gaps).toEqual({ missing: [], windowDays: 31, tip: null });
   });
 
-  test("không ghi đè ngày đã có bản chụp", async () => {
-    // Cả cửa sổ đã chốt sẵn → không thêm, không sửa payload đã công bố.
+  test("refresh chết 5 ngày: báo đủ 5 ngày và KHÔNG ghi thêm dòng nào", async () => {
+    await publishDailySnapshot(payloadOne, "2026-11-18", METRICS_VERSION);
+
+    const gaps = await listSnapshotGaps({ today: TODAY });
+
+    expect(gaps.tip).toBe("2026-11-18");
+    expect(gaps.missing).toEqual([
+      "2026-11-19",
+      "2026-11-20",
+      "2026-11-21",
+      "2026-11-22",
+      "2026-11-23",
+    ]);
+    // Không có chốt bù: bảng vẫn đúng 1 dòng, ngày thiếu vẫn thiếu.
+    expect(await readSnapshotEntries()).toHaveLength(1);
+    expect(await readSnapshotDayStatus("2026-11-20")).toMatchObject({ entry: null });
+  });
+
+  test("lỗ chen giữa hai bản đã chốt cũng được báo, chuỗi vẫn nối đúng", async () => {
+    await publishDailySnapshot(payloadOne, "2026-11-21", METRICS_VERSION);
+    await publishDailySnapshot(payloadTwo, "2026-11-23", METRICS_VERSION);
+
+    const gaps = await listSnapshotGaps({ today: TODAY });
+
+    expect(gaps.tip).toBe("2026-11-23");
+    expect(gaps.missing).toEqual(["2026-11-22"]);
+    // Ngày sau vẫn neo vào bản liền trước nó (11-21), không bị chen.
+    expect((await readSnapshotDayStatus("2026-11-23")).headLinked).toBe(true);
+  });
+
+  test("ngày trước bản chụp đầu tiên không bị tính là thiếu", async () => {
+    await publishDailySnapshot(payloadOne, "2026-11-20", METRICS_VERSION);
+
+    const gaps = await listSnapshotGaps({ today: TODAY });
+    expect(gaps.missing).toEqual(["2026-11-21", "2026-11-22", "2026-11-23"]);
+    // Không có 2026-10-24..2026-11-19 (trước khi chuỗi bắt đầu).
+    expect(gaps.missing).not.toContain("2026-11-19");
+  });
+
+  test("cửa sổ báo cáo bị kẹp theo tham số, không quét vô hạn", async () => {
+    await publishDailySnapshot(payloadOne, "2026-09-25", METRICS_VERSION);
+
+    const gaps = await listSnapshotGaps({ today: TODAY, windowDays: 3 });
+    expect(gaps.windowDays).toBe(3);
+    expect(gaps.missing).toEqual(["2026-11-21", "2026-11-22", "2026-11-23"]);
+  });
+
+  test("mọi ngày đã đóng đều có bản chụp → không báo gì", async () => {
     await publishDailySnapshot(payloadOne, "2026-11-21", METRICS_VERSION);
     await publishDailySnapshot(payloadTwo, "2026-11-22", METRICS_VERSION);
     await publishDailySnapshot({ ...payloadOne, sealed: "23" }, "2026-11-23", METRICS_VERSION);
 
-    const { rows } = await publishMissingSnapshots({
-      payload: backfillPayload,
-      today: TODAY,
-      lastEvaluatedAt: `${TODAY}T00:30:00.000Z`,
-      metricsVersion: METRICS_VERSION,
-    });
-
-    expect(rows.map((row) => [row.day, row.status])).toEqual([
-      ["2026-11-21", "exists"],
-      ["2026-11-22", "exists"],
-      ["2026-11-23", "exists"],
-    ]);
-    expect(await readSnapshotPayload("2026-11-21")).toEqual(payloadOne);
-    expect(await readSnapshotPayload("2026-11-22")).toEqual(payloadTwo);
-    expect(await readSnapshotEntries()).toHaveLength(3);
+    const gaps = await listSnapshotGaps({ today: TODAY });
+    expect(gaps).toEqual({ missing: [], windowDays: 31, tip: "2026-11-23" });
   });
+});
 
-  test("ngày thiếu chen giữa hai bản đã chốt → chain-gap, không ghi để khỏi phá neo ngày sau", async () => {
-    await publishDailySnapshot(payloadOne, "2026-11-21", METRICS_VERSION);
-    await publishDailySnapshot(payloadTwo, "2026-11-23", METRICS_VERSION);
+describe("SNAPSHOT-02 — 0041 chạy lại được", () => {
+  test("backfill từ `hash` ở lần đầu; lần thứ hai không lỗi và không đổi head_hash", async () => {
+    const db = new PGlite();
+    try {
+      await db.exec(MIGRATION_0040);
+      // Dòng do SNAPSHOT-01 ghi: có sequence/prev_hash/hash, chưa có head_hash.
+      await db.query(
+        `INSERT INTO track_record_snapshots
+           (day, sequence, payload_hash, prev_hash, hash, metrics_version, payload)
+         VALUES ($1, 1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          "2026-11-20",
+          "p".repeat(64),
+          SNAPSHOT_GENESIS_HASH,
+          "h".repeat(64),
+          METRICS_VERSION,
+          JSON.stringify(payloadOne),
+        ]
+      );
 
-    const { rows } = await publishMissingSnapshots({
-      payload: backfillPayload,
-      today: TODAY,
-      lastEvaluatedAt: `${TODAY}T00:30:00.000Z`,
-      metricsVersion: METRICS_VERSION,
-    });
+      await db.exec(MIGRATION_0041);
+      const first = await db.query<{ head_hash: string }>(
+        "SELECT head_hash FROM track_record_snapshots"
+      );
+      // Backfill giữ nguyên giá trị `hash` cũ.
+      expect(first.rows[0].head_hash).toBe("h".repeat(64));
 
-    expect(rows.find((row) => row.day === "2026-11-22")).toMatchObject({
-      status: "skipped",
-      skipped: "chain-gap",
-    });
-    expect(await readSnapshotEntries()).toHaveLength(2);
-    // Ngày sau vẫn nối đúng neo của ngày trước nó (11-21), không bị chen.
-    expect((await readSnapshotDayStatus("2026-11-23")).headLinked).toBe(true);
-  });
+      // Lần thứ hai: trước đây chết ở `UPDATE ... = hash` vì 0041 đã drop cột đó.
+      await db.exec(MIGRATION_0041);
 
-  test("settlement chưa chạy tới ngày nào → không chốt bù gì", async () => {
-    const { rows } = await publishMissingSnapshots({
-      payload: backfillPayload,
-      today: TODAY,
-      lastEvaluatedAt: "2026-11-19T02:00:00.000Z",
-      metricsVersion: METRICS_VERSION,
-    });
-
-    expect(rows.every((row) => row.status === "skipped" && row.skipped === "settlement-pending")).toBe(true);
-    expect(await readSnapshotEntries()).toEqual([]);
-  });
-
-  test("báo rõ ngày đã đóng nằm ngoài cửa sổ chốt bù (không được chốt bù)", async () => {
-    // Refresh chết 6 ngày: đuôi neo 11-18, cửa sổ 3 ngày phủ 11-21..11-23.
-    // 11-19 và 11-20 đã đóng nhưng nằm ngoài cửa sổ → không lượt nào chốt.
-    await publishDailySnapshot(payloadOne, "2026-11-18", METRICS_VERSION);
-
-    const { rows, gaps } = await publishMissingSnapshots({
-      payload: backfillPayload,
-      today: TODAY,
-      lastEvaluatedAt: `${TODAY}T00:30:00.000Z`,
-      metricsVersion: METRICS_VERSION,
-    });
-
-    expect(gaps).toEqual({
-      inWindow: ["2026-11-21", "2026-11-22", "2026-11-23"],
-      outsideWindow: ["2026-11-19", "2026-11-20"],
-      outsideWindowCount: 2,
-      tip: "2026-11-18",
-    });
-    // Chuỗi vẫn nối liền: 11-18 → 11-21 (11-19/11-20 không được ghi).
-    expect(rows.map((row) => row.status)).toEqual(["sealed", "sealed", "sealed"]);
-    expect((await readSnapshotDayStatus("2026-11-21")).headLinked).toBe(true);
-    expect(await readSnapshotDayStatus("2026-11-20")).toMatchObject({ entry: null });
-  });
-
-  test("danh sách ngoài cửa sổ bị chặn trần nhưng đếm vẫn đủ", async () => {
-    await publishDailySnapshot(payloadOne, "2026-09-25", METRICS_VERSION);
-
-    const { gaps } = await publishMissingSnapshots({
-      payload: backfillPayload,
-      today: TODAY,
-      lastEvaluatedAt: `${TODAY}T00:30:00.000Z`,
-      metricsVersion: METRICS_VERSION,
-    });
-
-    // 09-26 .. 11-20 = 56 ngày đã đóng ngoài cửa sổ.
-    expect(gaps.outsideWindowCount).toBe(56);
-    expect(gaps.outsideWindow).toHaveLength(31);
-    expect(gaps.outsideWindow[0]).toBe("2026-10-21");
-    expect(gaps.outsideWindow[gaps.outsideWindow.length - 1]).toBe("2026-11-20");
-  });
-
-  test("bảng rỗng: không báo ngày ngoài cửa sổ vì chưa có mốc neo nào", async () => {
-    const { gaps } = await publishMissingSnapshots({
-      payload: backfillPayload,
-      today: TODAY,
-      lastEvaluatedAt: `${TODAY}T00:30:00.000Z`,
-      metricsVersion: METRICS_VERSION,
-    });
-
-    expect(gaps.tip).toBeNull();
-    expect(gaps.outsideWindow).toEqual([]);
-    expect(gaps.outsideWindowCount).toBe(0);
+      const cols = await db.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_name = 'track_record_snapshots'
+          ORDER BY ordinal_position`
+      );
+      expect(cols.rows.map((row) => row.column_name)).toEqual([
+        "day",
+        "payload_hash",
+        "metrics_version",
+        "payload",
+        "created_at",
+        "head_hash",
+      ]);
+      const again = await db.query<{ head_hash: string }>(
+        "SELECT head_hash FROM track_record_snapshots"
+      );
+      expect(again.rows[0].head_hash).toBe("h".repeat(64));
+    } finally {
+      await db.close();
+    }
   });
 });

@@ -15,8 +15,11 @@
 import { createHash } from "node:crypto";
 import { getBusinessDate } from "@/lib/utils";
 
-/** Tăng khi cách băm/định dạng payload đổi — khác version thì không so hash. */
-export const SNAPSHOT_SCHEMA_VERSION = 1;
+/**
+ * Tăng khi cách băm/định dạng payload đổi — khác version thì không so hash.
+ * v2: mọi payload mang thêm `snapshot: { capturedAt }` (xem `buildSnapshotPayload`).
+ */
+export const SNAPSHOT_SCHEMA_VERSION = 2;
 
 /** `prevHead` của bản chụp đầu tiên: 64 số 0, không phải null. */
 export const SNAPSHOT_GENESIS_HASH = "0".repeat(64);
@@ -107,6 +110,29 @@ export function snapshotPayloadMatches(entry: SnapshotEntry, payload: unknown): 
 }
 
 /**
+ * Dấu đóng gói trong payload của MỌI bản chụp (không chỉ bản chốt bù, khái niệm
+ * đó đã bị bỏ): thời điểm đọc số liệu. Trước đây mốc này chỉ có ở cột
+ * `created_at` — sửa được mà không ai thấy, vì nó không nằm trong `payload_hash`.
+ * Đặt trong payload nghĩa là đổi `capturedAt` sẽ đổi hash và lệch với head đã neo.
+ */
+export interface SnapshotSeal {
+  /** ISO-8601, thời điểm đọc payload. */
+  capturedAt: string;
+}
+
+/**
+ * Payload để chốt: giữ nguyên số liệu, thêm `snapshot: { capturedAt }`.
+ * Gọi ở đúng một chỗ (`publishDailySnapshot`) để không có đường ghi nào bỏ sót.
+ */
+export function buildSnapshotPayload(
+  payload: object,
+  input: { capturedAt: string }
+): Record<string, unknown> & { snapshot: SnapshotSeal } {
+  const record = payload as Record<string, unknown>;
+  return { ...record, snapshot: { capturedAt: input.capturedAt } };
+}
+
+/**
  * Dịch một ngày nghiệp vụ (YYYY-MM-DD) đi `deltaDays` ngày, tính theo UTC để
  * không phụ thuộc timezone của máy chạy (ngày đã là ngày ICT do caller quyết).
  */
@@ -129,40 +155,6 @@ export function closedDaysBefore(today: string, count: number): string[] {
     days.push(shiftBusinessDay(today, -offset));
   }
   return days;
-}
-
-/**
- * Dấu trên payload của một bản chụp CHỐT BÙ: ngày đó không có bản chụp lúc nó
- * đóng (refresh không chạy), nên payload được đọc ở `capturedAt` — có thể đã
- * bao gồm cả số của những ngày sau ngày được chốt bù. Ghi rõ thay vì giả vờ đó là bản
- * chụp đúng ngày; `payload_hash` bao gồm luôn dấu này nên không thể lặng lẽ bỏ.
- */
-export interface SnapshotBackfillMarker {
-  /** Thời điểm thực sự đọc payload (ISO). */
-  capturedAt: string;
-  /** `meta.dataAsOf` của payload lúc chụp; null nếu payload không có. */
-  dataAsOf: string | null;
-}
-
-/**
- * Payload để chốt bù: giữ nguyên payload gốc, thêm `snapshotBackfill`.
- *
- * Dấu chỉ còn hai thông tin KHÔNG suy ra được: đọc lúc nào và payload thực sự
- * bao phủ tới ngày nào. Sự có mặt của key đã nói "đây là bản chốt bù", còn
- * ngày được chốt bù chính là `day` của dòng.
- */
-export function buildBackfillPayload(
-  payload: object,
-  input: { capturedAt: string }
-): Record<string, unknown> & { snapshotBackfill: SnapshotBackfillMarker } {
-  const record = payload as Record<string, unknown>;
-  const meta = record.meta;
-  const dataAsOf =
-    meta !== null && typeof meta === "object" && !Array.isArray(meta) &&
-    typeof (meta as Record<string, unknown>).dataAsOf === "string"
-      ? ((meta as Record<string, unknown>).dataAsOf as string)
-      : null;
-  return { ...record, snapshotBackfill: { capturedAt: input.capturedAt, dataAsOf } };
 }
 
 /**

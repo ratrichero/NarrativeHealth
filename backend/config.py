@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     scheduler_snapshot_hour: int = 7
     scheduler_snapshot_minute: int = 10
     scheduler_snapshot_timeout: int = 120
+    # Refresh 07:00 có timeout 600s nên lượt 07:10 có thể gặp 409
+    # `settlement-pending`. Thay vì bỏ cả ngày, job chờ rồi thử lại trong ngày:
+    # 6 lượt, 5 lần chờ × 15 phút → lượt cuối ~08:25 ICT. Chỉ lỗi cấu hình
+    # (401/403/503) và `day-open` mới dừng ngay — luật ở
+    # `snapshot_anchor_retry_decision`.
+    scheduler_snapshot_attempts: int = 6
+    scheduler_snapshot_retry_minutes: int = 15
 
     # RADAR-06-SCHED: Catalyst layer sync (POST /api/catalyst/sync).
     # Tách nhịp theo tính chất nguồn: announcement cần tươi (5–10 phút), RSS

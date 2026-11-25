@@ -779,58 +779,16 @@ export async function POST(request: NextRequest) {
     }
 
     // -----------------------------------------------------------------------
-    // SNAPSHOT-02: chốt bản chụp track record sau khi settlement xong
+    // SNAPSHOT-02: chốt bản chụp track record + báo ngày đã đóng còn thiếu
     // -----------------------------------------------------------------------
-    // Trước đây POST /api/track-record/snapshots không có ai gọi nên bảng chụp
-    // rỗng mãi. Chốt ngay trong lượt refresh (sau settlement, trước digest) để
-    // con số công khai được neo mỗi ngày mà không cần scheduler thứ hai.
-    // Khoá theo ngày nghiệp vụ VỪA ĐÓNG (hôm qua): refresh chạy trong ngày D
-    // không được chốt D khi D còn đang thay đổi. Lần chạy sau trong cùng ngày
-    // trả `created: false`, không ghi đè. Lỗi không phá refresh.
-    if (settleErrors > 0) {
-      // Settlement hỏng → số chưa chốt hết, đóng băng bây giờ là đóng băng số dở.
-      console.warn(`[SNAPSHOT-02] skip: settlement có ${settleErrors} lỗi, chưa chốt bản chụp.`);
-    } else {
-      try {
-        const { readTrackRecord } = await import("@/lib/backtest/track-record-read");
-        const { publishMissingSnapshots, SNAPSHOT_BACKFILL_DAYS } = await import(
-          "@/lib/backtest/snapshot-store"
-        );
-        const { payload } = await readTrackRecord();
-        // Chốt hôm qua + chốt bù các ngày đã đóng còn thiếu (tối đa
-        // SNAPSHOT_BACKFILL_DAYS ngày gần nhất): refresh không chạy một ngày
-        // thì ngày đó không còn cơ hội nào khác. Payload chốt bù mang dấu
-        // `snapshotBackfill` để không ai nhầm là số đã công bố đúng ngày.
-        const { rows, gaps } = await publishMissingSnapshots({
-          payload,
-          lastEvaluatedAt: payload.summary.lastEvaluatedAt ?? null,
-          // Rỗng thì không có gì để settlement chốt; vẫn chốt được ngày đầu.
-          hasPicks: (payload.summary.totals?.picks ?? 0) > 0,
-          metricsVersion: payload.meta.metricsVersion,
-          today: getBusinessDate(),
-        });
-        for (const row of rows) {
-          if (row.status === "sealed") {
-            const backfilled = row.day !== getYesterdayBusinessDate();
-            console.log(
-              `[SNAPSHOT-02] sealed day=${row.day} head=${row.result?.head}${backfilled ? " (backfill)" : ""}`
-            );
-          } else if (row.status === "exists") {
-            console.log(`[SNAPSHOT-02] already-sealed day=${row.day}`);
-          } else {
-            console.log(`[SNAPSHOT-02] skip day=${row.day} reason=${row.skipped}`);
-          }
-        }
-        // Ngày đã đóng nhưng nằm ngoài cửa sổ chốt bù: không lượt refresh nào
-        // chốt chúng nữa, nên phải nói ra thay vì để mất âm thầm.
-        if (gaps.outsideWindowCount > 0) {
-          console.warn(
-            `[SNAPSHOT-02] ${gaps.outsideWindowCount} ngày đã đóng NGOÀI cửa sổ chốt bù (${SNAPSHOT_BACKFILL_DAYS} ngày) nên không được chốt bù: ${gaps.outsideWindow.join(", ")}${gaps.outsideWindowCount > gaps.outsideWindow.length ? " (chỉ liệt kê ngày gần nhất)" : ""}. Tăng SNAPSHOT_BACKFILL_DAYS hoặc chốt tay nếu cần neo những ngày này.`
-          );
-        }
-      } catch (snapshotError) {
-        console.error("Snapshot publish error (non-blocking):", snapshotError);
-      }
+    // Settlement lỗi chỉ chặn bước CHỐT; bước gap vẫn chạy để ngày thiếu được
+    // nói ra ngay trong lượt refresh hỏng (xem `refresh-snapshot.ts`). Không
+    // còn chốt bù: số hiện tại không phải số của ngày cũ.
+    try {
+      const { runRefreshSnapshotStep } = await import("@/lib/backtest/refresh-snapshot");
+      await runRefreshSnapshotStep({ settleErrors });
+    } catch (snapshotStepError) {
+      console.error("Snapshot step error (non-blocking):", snapshotStepError);
     }
 
     // -----------------------------------------------------------------------

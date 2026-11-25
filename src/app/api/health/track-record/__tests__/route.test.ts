@@ -14,7 +14,6 @@ jest.mock("@/lib/backtest/track-record-read", () => ({
   readTrackRecord: jest.fn(),
 }));
 jest.mock("@/lib/backtest/snapshot-store", () => ({
-  SNAPSHOT_BACKFILL_DAYS: 3,
   listSnapshotGaps: jest.fn(),
   readSnapshotDayStatus: jest.fn(),
 }));
@@ -64,12 +63,7 @@ beforeEach(() => {
     headLinked: true,
     previousDay: "2026-11-22",
   });
-  listSnapshotGaps.mockResolvedValue({
-    inWindow: [],
-    outsideWindow: [],
-    outsideWindowCount: 0,
-    tip: "2026-11-23",
-  });
+  listSnapshotGaps.mockResolvedValue({ missing: [], windowDays: 31, tip: "2026-11-23" });
 });
 
 describe("GET /api/health/track-record — snapshot", () => {
@@ -103,12 +97,11 @@ describe("GET /api/health/track-record — snapshot", () => {
     expect(snapshot?.detail).toContain("Chưa có bản chụp");
   });
 
-  it("có ngày đã đóng ngoài cửa sổ chốt bù → warn và liệt kê ngày", async () => {
+  it("có ngày đã đóng khác không có bản chụp → warn và liệt kê ngày", async () => {
     listSnapshotGaps.mockResolvedValue({
-      inWindow: [],
-      outsideWindow: ["2026-11-19", "2026-11-20"],
-      outsideWindowCount: 2,
-      tip: "2026-11-18",
+      missing: ["2026-11-19", "2026-11-20"],
+      windowDays: 31,
+      tip: "2026-11-23",
     });
 
     const response = await GET();
@@ -118,7 +111,7 @@ describe("GET /api/health/track-record — snapshot", () => {
     // Không phải "hỏng" (không 503) nhưng không được im lặng.
     expect(response.status).toBe(200);
     expect(snapshot?.status).toBe("warn");
-    expect(snapshot?.detail).toContain("NGOÀI cửa sổ chốt bù");
+    expect(snapshot?.detail).toContain("KHÔNG có bản chụp");
     expect(snapshot?.detail).toContain("2026-11-19");
     expect(snapshot?.detail).toContain("2026-11-20");
   });

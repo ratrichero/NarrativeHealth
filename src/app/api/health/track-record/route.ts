@@ -1,11 +1,7 @@
 import { NextResponse } from "next/server";
 import { preflightTrackRecordSchema } from "@/lib/db/preflight";
 import { readTrackRecord } from "@/lib/backtest/track-record-read";
-import {
-  SNAPSHOT_BACKFILL_DAYS,
-  listSnapshotGaps,
-  readSnapshotDayStatus,
-} from "@/lib/backtest/snapshot-store";
+import { listSnapshotGaps, readSnapshotDayStatus } from "@/lib/backtest/snapshot-store";
 import { getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -136,19 +132,19 @@ export async function GET() {
   const snapshotDay = getYesterdayBusinessDate();
   try {
     const status = await readSnapshotDayStatus(snapshotDay);
-    // Ngày đã đóng nhưng nằm ngoài cửa sổ chốt bù: không lượt refresh nào chốt
-    // chúng nữa. Phải hiện ra ở đây, nếu không chúng mất âm thầm.
+    // Ngày đã đóng mà không có bản chụp: không còn chốt bù nên chúng thiếu vĩnh
+    // viễn. Phải hiện ra ở đây, nếu không chúng mất âm thầm.
     const gaps = await listSnapshotGaps({ today: getBusinessDate() });
-    const outsideDetail =
-      gaps.outsideWindowCount > 0
-        ? ` ${gaps.outsideWindowCount} ngày đã đóng nằm NGOÀI cửa sổ chốt bù ${SNAPSHOT_BACKFILL_DAYS} ngày nên không được chốt bù: ${gaps.outsideWindow.join(", ")}${gaps.outsideWindowCount > gaps.outsideWindow.length ? " (chỉ liệt kê ngày gần nhất)" : ""}.`
+    const missing = gaps.missing;
+    const missingDetail =
+      missing.length > 0
+        ? ` ${missing.length} ngày đã đóng trong ${gaps.windowDays} ngày gần nhất KHÔNG có bản chụp (không chốt bù — số hiện tại không phải số của ngày đó): ${missing.slice(0, 10).join(", ")}${missing.length > 10 ? " (chỉ liệt kê 10 ngày gần nhất)" : ""}.`
         : "";
-    const gapsWarn = gaps.outsideWindowCount > 0;
     if (!status.entry) {
       checks.push({
         id: "snapshot",
         status: "warn",
-        detail: `Chưa có bản chụp cho ${snapshotDay} — job chốt trong /api/refresh có thể chưa chạy hoặc đang lỗi; lượt refresh tới sẽ chốt bù tối đa ${SNAPSHOT_BACKFILL_DAYS} ngày đã đóng gần nhất (payload chốt bù mang dấu snapshotBackfill).${outsideDetail}`,
+        detail: `Chưa có bản chụp cho ${snapshotDay} — job chốt trong /api/refresh có thể chưa chạy hoặc đang lỗi.${missingDetail}`
       });
     } else if (status.payloadMatches === false) {
       checks.push({
@@ -162,11 +158,11 @@ export async function GET() {
         status: "fail",
         detail: `Bản chụp ${snapshotDay}: head_hash không nối đúng neo của bản trước (${status.previousDay ?? "genesis"}) — head trong DB đã bị sửa.`,
       });
-    } else if (gapsWarn) {
+    } else if (missing.length > 0) {
       checks.push({
         id: "snapshot",
         status: "warn",
-        detail: `Bản chụp ${snapshotDay}: payload khớp hash, head nối đúng (${status.entry.headHash.slice(0, 12)}…).${outsideDetail}`,
+        detail: `Bản chụp ${snapshotDay}: payload khớp hash, head nối đúng (${status.entry.headHash.slice(0, 12)}…).${missingDetail}`,
       });
     } else {
       checks.push({

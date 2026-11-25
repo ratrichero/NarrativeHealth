@@ -24,7 +24,8 @@
     "audit:score-configs": "node src/lib/p3/__tests__/score-configs-audit.js",
     "check:backup": "node src/lib/p3/__tests__/check-backup.js",
     "migrate:p3": "node src/lib/p3/__tests__/execute-migrations.js",
-    "check:radar-ui": "tsx scripts/check-radar-ui.ts"
+    "check:radar-ui": "tsx scripts/check-radar-ui.ts",
+    "verify:snapshot": "node scripts/verify-snapshot.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
