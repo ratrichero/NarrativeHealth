@@ -44,23 +44,117 @@ function formatAlertText(p: AlertDeliveryPayload): string {
     .join("\n");
 }
 
-async function sendTelegram(text: string): Promise<boolean> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return false;
+export interface TelegramInlineButton {
+  text: string;
+  url: string;
+}
+
+export interface TelegramMessageInput {
+  chatId: string | number;
+  /** Topic trong group forum (`message_thread_id`). */
+  threadId?: number | string | null;
+  /** Gửi dạng HTML (`parse_mode: HTML`). Truyền `html` hoặc `text`, không cả hai. */
+  html?: string;
+  text?: string;
+  /** Inline URL buttons — không cần callback/webhook bot. */
+  buttons?: TelegramInlineButton[];
+  /** Mặc định lấy `TELEGRAM_BOT_TOKEN`; cho phép truyền để test/nhiều bot. */
+  token?: string | null;
+  timeoutMs?: number;
+}
+
+/** Escape cho `parse_mode: HTML` (Telegram chỉ cần &, <, >; escape cả nháy cho href). */
+export function escapeTelegramHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export interface TelegramDeliveryResult {
+  ok: boolean;
+  /** HTTP status khi Telegram trả lỗi. */
+  status?: number;
+  /** 429: Telegram trả `parameters.retry_after` — outbox dùng để hẹn lần sau. */
+  retryAfterSeconds?: number;
+  error?: string;
+}
+
+/**
+ * RADAR-TG: adapter Telegram dùng lại được — nhiều chat/topic, HTML và nút
+ * deep link. Tách khỏi `sendTelegram` (một chat từ env) để Radar gửi được
+ * đồng thời kênh công khai, group trả phí và DM admin. Best-effort: lỗi mạng
+ * trả `{ok:false}`, không throw.
+ */
+export async function deliverTelegramMessage(
+  input: TelegramMessageInput
+): Promise<TelegramDeliveryResult> {
+  const token = (input.token ?? process.env.TELEGRAM_BOT_TOKEN)?.trim();
+  const chatId = String(input.chatId ?? "").trim();
+  const content = input.html ?? input.text ?? "";
+  if (!token) return { ok: false, error: "TELEGRAM_BOT_TOKEN chưa set" };
+  if (!chatId) return { ok: false, error: "chat_id rỗng" };
+  if (!content.trim()) return { ok: false, error: "nội dung rỗng" };
+
+  const threadId = Number(input.threadId);
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    text: content,
+    link_preview_options: { is_disabled: true },
+    ...(input.html ? { parse_mode: "HTML" } : {}),
+    ...(Number.isInteger(threadId) && threadId > 0 ? { message_thread_id: threadId } : {}),
+    ...(input.buttons && input.buttons.length > 0
+      ? { reply_markup: { inline_keyboard: [input.buttons] } }
+      : {}),
+  };
 
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
-      signal: AbortSignal.timeout(8000),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(input.timeoutMs ?? 8000),
     });
-    return res.ok;
+    if (res.ok) return { ok: true, status: res.status };
+
+    // 429: `parameters.retry_after` là nguồn duy nhất đáng tin để hẹn lần sau
+    // (Telegram có thể phạt nặng hơn nếu gửi lại sớm).
+    const errorBody = (await res.json().catch(() => null)) as
+      | { description?: string; parameters?: { retry_after?: unknown } }
+      | null;
+    const retryAfter = Number(errorBody?.parameters?.retry_after);
+    console.error(
+      `[alert-delivery] Telegram rejected chat=${chatId} thread=${threadId || "-"} status=${res.status}`
+    );
+    return {
+      ok: false,
+      status: res.status,
+      ...(Number.isFinite(retryAfter) && retryAfter > 0
+        ? { retryAfterSeconds: Math.ceil(retryAfter) }
+        : {}),
+      error: errorBody?.description
+        ? `Telegram ${res.status}: ${errorBody.description}`
+        : `Telegram ${res.status}`,
+    };
   } catch (error) {
-    console.error("[alert-delivery] Telegram failed:", error instanceof Error ? error.message : error);
-    return false;
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[alert-delivery] Telegram failed:", message);
+    return { ok: false, error: message };
   }
+}
+
+/** Wrapper boolean cho caller cũ (guard/heartbeat/digest/radar P1). */
+export async function sendTelegramMessage(input: TelegramMessageInput): Promise<boolean> {
+  return (await deliverTelegramMessage(input)).ok;
+}
+
+async function sendTelegram(text: string): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return false;
+  return sendTelegramMessage({ token, chatId, text });
 }
 
 async function sendWebhook(

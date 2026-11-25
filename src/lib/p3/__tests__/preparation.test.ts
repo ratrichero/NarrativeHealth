@@ -5,6 +5,94 @@
 import { createP3ExecutionContext, prepareBreadthInputs, prepareMomentumInputs } from "../preparation";
 import { resolveP3Window } from "../windows";
 
+// CI không có Postgres: mock `@/db` bằng fixture cố định cho feature/rule version
+// và membership snapshot. Chain drizzle tối thiểu (select/from/where/orderBy/
+// limit + thenable) đủ để các query trong test trả đúng bảng, không đổi ngữ nghĩa
+// kernel — chỉ thay nguồn dữ liệu.
+jest.mock("@/db", () => {
+  const schema = require("@/db/schema") as typeof import("@/db/schema");
+  const coverageStart = new Date("2026-08-09T00:00:00.000Z");
+  const members = [
+    { coinId: 101, isPrimary: true, sourceEventId: 11 },
+    { coinId: 102, isPrimary: false, sourceEventId: 12 },
+  ];
+  // sha256 của canonical digest trong membership.ts cho đúng 2 member trên.
+  const memberDigest = "611cf50b6a2500b067e7d86dd610c97b4022c2c6c3ee188b68f12794ce1f9d8a";
+
+  const fixtures = new Map<unknown, unknown[]>([
+    [schema.featureVersions, [{ id: 1, isActive: true }]],
+    [schema.ruleVersions, [{ id: 1, isActive: true }]],
+    [schema.narrativeMembershipCoverage, [{ historyCoverageStart: coverageStart }]],
+    [
+      schema.narrativeMembershipSnapshots,
+      [
+        {
+          id: 9001,
+          narrativeId: 1,
+          windowEnd: coverageStart,
+          membershipMode: "observed",
+          snapshotRevision: 1,
+          memberCount: members.length,
+          memberDigest,
+        },
+      ],
+    ],
+    [schema.narrativeMembershipSnapshotMembers, members],
+    [schema.narrativeMembershipEvents, []],
+    [
+      schema.coins,
+      [
+        { id: 101, symbol: "AAA", isActive: true, binanceFuturesSymbol: "AAAUSDT", coingeckoId: "aaa" },
+        { id: 102, symbol: "BBB", isActive: true, binanceFuturesSymbol: "BBBUSDT", coingeckoId: "bbb" },
+      ],
+    ],
+    [
+      schema.coinMetrics,
+      [
+        { coinId: 101, marketCap: "1000000", date: "2026-08-09" },
+        { coinId: 102, marketCap: null, date: "2026-08-09" },
+      ],
+    ],
+    [
+      schema.healthScores,
+      [
+        { coinId: 101, healthScore: 72 },
+        { coinId: 102, healthScore: 55 },
+      ],
+    ],
+    [
+      schema.narrativeHealth,
+      [
+        { date: "2026-08-03", healthScore: 60 },
+        { date: "2026-08-09", healthScore: 66 },
+      ],
+    ],
+    [schema.features, []],
+    [schema.p3NarrativeIntelligence, []],
+  ]);
+
+  const rowsFor = (table: unknown) => fixtures.get(table) ?? [];
+
+  function chain(table: unknown) {
+    const self = {
+      from: (next: unknown) => chain(next),
+      where: () => self,
+      orderBy: () => self,
+      limit: async (count: number) => rowsFor(table).slice(0, count),
+      then: (resolve: (rows: unknown[]) => unknown, reject?: (error: unknown) => unknown) =>
+        Promise.resolve(rowsFor(table)).then(resolve, reject),
+    };
+    return self;
+  }
+
+  return {
+    db: {
+      select: () => chain(undefined),
+      execute: async () => ({ rows: [] }),
+    },
+  };
+});
+
 describe("P3-10C Input Preparation", () => {
   describe("UTC Window Resolution", () => {
     test("resolves UTC window through P3-03 kernel", async () => {
@@ -239,7 +327,9 @@ describe("P3-10C Input Preparation", () => {
       const result = await createP3ExecutionContext(config);
 
       expect(result.context.provenance.snapshotId).toBeDefined();
-      expect(typeof result.context.provenance.snapshotId).toBe("string");
+      // Kernel freeze: membership.snapshotId là id số của bản ghi
+      // narrative_membership_snapshots, không bị đổi sang string.
+      expect(typeof result.context.provenance.snapshotId).toBe("number");
     });
 
     test("preserves version identities", async () => {

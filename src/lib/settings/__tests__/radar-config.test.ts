@@ -24,6 +24,18 @@ describe("envRadarConfig", () => {
     expect(config.schedulerAnnouncementsMinutes).toBe(5);
     expect(config.schedulerNewsMinutes).toBe(15);
     expect(config.schedulerUnlocksMinutes).toBe(60);
+    expect(config.telegramTargets).toEqual([]);
+  });
+
+  it("RADAR_TELEGRAM_TARGETS vẫn là fallback env cho telegramTargets", () => {
+    const config = envRadarConfig({
+      RADAR_TELEGRAM_TARGETS:
+        '[{"chatId":"-1001","label":"public"},{"chatId":"-1002","threadId":42,"minScore":80}]',
+    } as unknown as NodeJS.ProcessEnv);
+    expect(config.telegramTargets).toEqual([
+      { chatId: "-1001", label: "public" },
+      { chatId: "-1002", threadId: 42, minScore: 80 },
+    ]);
   });
 
   it("đọc env và bỏ giá trị không phải số", () => {
@@ -105,6 +117,23 @@ describe("resolveRadarConfig", () => {
     expect(applied.sort()).toEqual(["alertCooldownHours", "clusterThreshold"]);
   });
 
+  it("telegramTargets: DB thay toàn bộ env, mảng rỗng cũng là giá trị hợp lệ", () => {
+    const env = {
+      RADAR_TELEGRAM_TARGETS: '-1001,-1002:7',
+    } as unknown as NodeJS.ProcessEnv;
+    const stored = resolveRadarConfig(
+      { values: { telegramTargets: [{ chatId: "-2001", threadId: 9, minScore: 90 }] } },
+      env
+    );
+    expect(stored.config.telegramTargets).toEqual([
+      { chatId: "-2001", threadId: 9, minScore: 90 },
+    ]);
+    expect(stored.applied).toEqual(["telegramTargets"]);
+
+    const cleared = resolveRadarConfig({ values: { telegramTargets: [] } }, env);
+    expect(cleared.config.telegramTargets).toEqual([]);
+  });
+
   it("bỏ qua field lưu hỏng thay vì làm sập config", () => {
     const { config } = resolveRadarConfig(
       { values: { clusterThreshold: 99, clusterUniverse: 40 } },
@@ -148,6 +177,30 @@ describe("coerceFieldValue", () => {
     expect(() => coerceFieldValue(spec("schedulerUnlocksMinutes"), 1441)).toThrow(
       RadarConfigError
     );
+  });
+
+  it("targets: nhận mảng/chuỗi JSON, từ chối entry hỏng hoặc trùng", () => {
+    expect(
+      coerceFieldValue(spec("telegramTargets"), [
+        { chatId: "-1001", threadId: "42", minScore: "80" },
+      ])
+    ).toEqual([{ chatId: "-1001", threadId: 42, minScore: 80 }]);
+    expect(
+      coerceFieldValue(spec("telegramTargets"), '[{"chatId":"-1002","label":"paid"}]')
+    ).toEqual([{ chatId: "-1002", label: "paid" }]);
+    expect(coerceFieldValue(spec("telegramTargets"), "")).toEqual([]);
+    expect(() => coerceFieldValue(spec("telegramTargets"), "[not json")).toThrow(
+      RadarConfigError
+    );
+    expect(() =>
+      coerceFieldValue(spec("telegramTargets"), [{ chatId: "not-a-chat" }])
+    ).toThrow(RadarConfigError);
+    expect(() =>
+      coerceFieldValue(spec("telegramTargets"), [
+        { chatId: "-1" },
+        { chatId: "-1" },
+      ])
+    ).toThrow(/trùng/);
   });
 
   it("bool nhận boolean và chuỗi 0/1", () => {

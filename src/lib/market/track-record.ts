@@ -21,10 +21,16 @@ import {
 } from "@/lib/market/ledger";
 import { buildSetup, type SetupLevels } from "@/lib/market/setup";
 import { dispatchClusterAlerts, dispatchRadarAlerts } from "@/lib/market/alerts";
+import {
+  FAST_LANE_INTERVAL_MINUTES,
+  fastCohortIntervalMinutes,
+  normalizeCohortMode,
+  type CohortMode,
+} from "@/lib/market/fast-lane";
 import { recordClusterSnapshots } from "@/lib/market/cluster-history";
 import { recordBiasSnapshot } from "@/lib/market/bias-log";
 import { isBearishBias, isBullishBias } from "@/lib/market/ledger";
-import { getRadarSnapshot, type RadarRow } from "@/lib/market/radar";
+import { getRadarSnapshot, type RadarMarketContext, type RadarRow } from "@/lib/market/radar";
 import { matchCatalystsForSymbol } from "@/lib/catalyst/matching";
 import { readRecentCatalystFacts } from "@/lib/catalyst/store";
 import type { CatalystFact } from "@/lib/catalyst/types";
@@ -47,6 +53,8 @@ const MAX_RECENT = 20;
  * sớm nhất được chạy lượt kế tiếp (nhịp tối thiểu), đồng thời chặn chạy chồng.
  */
 export const COHORT_LOCK_KEY = "radar.cohort.lock";
+/** Fast lane 3 phút có khoá riêng: không chặn và không bị chặn bởi cohort đầy đủ. */
+export const FAST_COHORT_LOCK_KEY = "radar.cohort.fast.lock";
 export const DEFAULT_COHORT_INTERVAL_MINUTES = 30;
 export const MAX_COHORT_INTERVAL_MINUTES = 1440;
 /** Sàn khoá: một lượt build nguội + alert có thể tới ~1 phút. */
@@ -59,6 +67,8 @@ export type CohortSkipReason = "test" | "demo" | "disabled" | "locked" | "error"
 export interface CohortRunResult {
   ran: boolean;
   skipped: CohortSkipReason | null;
+  /** `fast` = làn 3 phút (universe ~30 symbol, chỉ alert URGENT). */
+  mode: CohortMode;
   intervalMinutes: number;
   /** Số tín hiệu mới thực sự ghi vào ledger. */
   signals: number;
@@ -98,7 +108,11 @@ function returnedRows(result: unknown): unknown[] {
 }
 
 /** true = giành được khoá; false = instance khác đang giữ; null = DB lỗi. */
-async function acquireCohortLock(now: number, leaseMs: number): Promise<boolean | null> {
+async function acquireCohortLock(
+  now: number,
+  leaseMs: number,
+  key = COHORT_LOCK_KEY
+): Promise<boolean | null> {
   try {
     const value = JSON.stringify({
       owner: COHORT_OWNER,
@@ -107,7 +121,7 @@ async function acquireCohortLock(now: number, leaseMs: number): Promise<boolean 
     });
     const result = await db.execute(sql`
       INSERT INTO app_settings (key, value, updated_at)
-      VALUES (${COHORT_LOCK_KEY}, ${value}::jsonb, now())
+      VALUES (${key}, ${value}::jsonb, now())
       ON CONFLICT (key) DO UPDATE
         SET value = EXCLUDED.value, updated_at = now()
         WHERE COALESCE((app_settings.value ->> 'expiresAt')::bigint, 0) - ${COHORT_DUE_TOLERANCE_MS} <= ${now}
@@ -124,13 +138,13 @@ async function acquireCohortLock(now: number, leaseMs: number): Promise<boolean 
 }
 
 /** Nhả khoá khi lượt chạy lỗi để tick sau còn thử lại; chỉ nhả khoá của mình. */
-async function releaseCohortLock(): Promise<void> {
+async function releaseCohortLock(key = COHORT_LOCK_KEY): Promise<void> {
   try {
     await db.execute(sql`
       UPDATE app_settings
       SET value = jsonb_build_object('owner', ${COHORT_OWNER}, 'releasedAt', now()),
           updated_at = now()
-      WHERE key = ${COHORT_LOCK_KEY}
+      WHERE key = ${key}
         AND value ->> 'owner' = ${COHORT_OWNER}
     `);
   } catch {
@@ -178,6 +192,60 @@ function setupFor(row: RadarRow): SetupLevels | null {
   if (isBullishBias(row.bias)) return buildSetup("BULLISH", row.price, (row.price * row.atrPct) / 100);
   if (isBearishBias(row.bias)) return buildSetup("BEARISH", row.price, (row.price * row.atrPct) / 100);
   return null;
+}
+
+export interface SignalBatchOutcome {
+  /** Số tín hiệu bias mới thực sự ghi vào ledger. */
+  signals: number;
+  /** Số alert row gửi thành công. */
+  rowAlerts: number;
+}
+
+/**
+ * RADAR-TG: ghi bias mới + gửi alert row.
+ *
+ * Alert KHÔNG còn nằm trong `if (fresh.length > 0)`: một setup đẹp trên coin
+ * đã bullish từ trước vẫn phải được báo, nên cohort nào cũng gọi dispatch.
+ * Chống trùng do dedupe `symbol|bias|ngày` + cooldown/symbol trong alerts.ts
+ * lo, nên gọi mỗi lượt không sinh tin lặp.
+ */
+export async function recordSignalBatch(params: {
+  candidates: RadarSignalRecord[];
+  existing: RadarSignalRecord[];
+  now: number;
+  rows: RadarRow[];
+  market: RadarMarketContext;
+  /** `radar_bias_log.id` theo symbol — gắn vào alert để đo outcome sau này. */
+  biasLogIds?: Map<string, number>;
+  /** Cho phép inject khi test; production dùng impl mặc định. */
+  deps?: {
+    write?: typeof writeSignals;
+    dispatch?: typeof dispatchRadarAlerts;
+  };
+}): Promise<SignalBatchOutcome> {
+  const write = params.deps?.write ?? writeSignals;
+  const dispatch = params.deps?.dispatch ?? dispatchRadarAlerts;
+  const fresh = params.candidates.filter((signal) =>
+    shouldRecordSignal(signal.prevBias, signal.bias)
+  );
+
+  if (fresh.length > 0) {
+    const cutoff = params.now - KEEP_DAYS * 86_400_000;
+    const kept = params.existing
+      .filter((signal) => {
+        const at = new Date(signal.at).getTime();
+        return Number.isFinite(at) && at >= cutoff;
+      })
+      .concat(fresh)
+      .slice(-MAX_SIGNALS);
+    await write(kept);
+  }
+
+  const rowAlerts = await (params.biasLogIds
+    ? dispatch(params.rows, params.market, { biasLogIds: params.biasLogIds })
+    : dispatch(params.rows, params.market)
+  ).catch(() => 0);
+  return { signals: fresh.length, rowAlerts };
 }
 
 async function readSignals(): Promise<RadarSignalRecord[]> {
@@ -232,12 +300,18 @@ async function writeSignals(signals: RadarSignalRecord[]): Promise<void> {
  * N lượt chạy).
  */
 export async function recordAllRadarCohorts(
-  options: { intervalMinutes?: number } = {}
+  options: { intervalMinutes?: number; mode?: CohortMode | string } = {}
 ): Promise<CohortRunResult> {
-  const intervalMinutes = cohortIntervalMinutes(options.intervalMinutes);
+  const mode = normalizeCohortMode(options.mode);
+  const fast = mode === "fast";
+  const intervalMinutes = fast
+    ? fastCohortIntervalMinutes(options.intervalMinutes ?? FAST_LANE_INTERVAL_MINUTES)
+    : cohortIntervalMinutes(options.intervalMinutes);
+  const lockKey = fast ? FAST_COHORT_LOCK_KEY : COHORT_LOCK_KEY;
   const empty = (skipped: CohortSkipReason): CohortRunResult => ({
     ran: false,
     skipped,
+    mode,
     intervalMinutes,
     signals: 0,
     clusterEvents: 0,
@@ -251,27 +325,58 @@ export async function recordAllRadarCohorts(
   if (intervalMinutes <= 0) return empty("disabled");
 
   const now = Date.now();
-  const lock = await acquireCohortLock(now, cohortLeaseMs(intervalMinutes));
+  // Fast lane 3 phút: khoá ngắn đúng bằng nhịp (sàn 1 phút) thay vì sàn 10
+  // phút của cohort đầy đủ, và là khoá riêng nên hai làn chạy song song.
+  const leaseMs = fast
+    ? Math.max(1, intervalMinutes) * 60_000
+    : cohortLeaseMs(intervalMinutes);
+  const lock = await acquireCohortLock(now, leaseMs, lockKey);
   if (lock === null) return empty("error");
   if (!lock) return empty("locked");
 
   let snapshots;
   try {
+    const query = { limit: 30, sort: "composite" as const, ...(fast ? { fast: true } : {}) };
     snapshots = await Promise.all([
-      getRadarSnapshot({ side: "gainer", limit: 30, sort: "composite" }),
-      getRadarSnapshot({ side: "loser", limit: 30, sort: "composite" }),
-      getRadarSnapshot({ side: "unusual", limit: 30, sort: "composite" }),
+      getRadarSnapshot({ side: "gainer", ...query }),
+      getRadarSnapshot({ side: "loser", ...query }),
+      getRadarSnapshot({ side: "unusual", ...query }),
     ]);
   } catch (error) {
     console.warn(
       "[RADAR-TRACK] Không lấy được snapshot chuẩn cho cohort:",
       error instanceof Error ? error.message : String(error)
     );
-    await releaseCohortLock();
+    await releaseCohortLock(lockKey);
     return empty("error");
   }
 
   const [gainer, loser, unusual] = snapshots;
+
+  // Fast lane: chỉ alert URGENT, không ghi ledger/cluster/bias log — cohort
+  // đầy đủ vẫn là nơi lưu dữ liệu đo và gửi ACTIONABLE/WATCH.
+  if (fast) {
+    const rowsBySymbol = new Map<string, RadarRow>();
+    for (const snapshot of snapshots) {
+      for (const row of snapshot.rows) {
+        if (!rowsBySymbol.has(row.symbol)) rowsBySymbol.set(row.symbol, row);
+      }
+    }
+    const alerts = await dispatchRadarAlerts([...rowsBySymbol.values()], gainer.market, {
+      lane: "fast",
+    }).catch(() => 0);
+    return {
+      ran: true,
+      skipped: null,
+      mode,
+      intervalMinutes,
+      signals: 0,
+      clusterEvents: 0,
+      biasRows: 0,
+      alerts,
+      at: new Date().toISOString(),
+    };
+  }
 
   // Cluster history + cảnh báo cấp cụm độc lập với việc có signal mới hay không.
   const clusterEvents = await recordClusterSnapshots(snapshots).catch(() => []);
@@ -366,33 +471,33 @@ export async function recordAllRadarCohorts(
 
   if (candidates.length > 0) {
     try {
-      // Chỉ ghi khi bias đổi so với lần chấm trước (hoặc lần đầu thấy). Không còn
-      // khoá theo ngày, nên lật đi lật lại trong ngày vẫn đủ dòng.
-      const fresh = candidates.filter((signal) =>
-        shouldRecordSignal(signal.prevBias, signal.bias)
-      );
-
-      if (fresh.length > 0) {
-        const cutoff = now - KEEP_DAYS * 86_400_000;
-        const kept = existing
-          .filter((s) => {
-            const at = new Date(s.at).getTime();
-            return Number.isFinite(at) && at >= cutoff;
-          })
-          .concat(fresh)
-          .slice(-MAX_SIGNALS);
-        await writeSignals(kept);
-        signals = fresh.length;
-        rowAlerts = await dispatchRadarAlerts(plan.map((entry) => entry.row), gainer.market).catch(
-          () => 0
-        );
+      // Ledger: chỉ ghi khi bias đổi so với lần chấm trước (hoặc lần đầu thấy),
+      // không khoá theo ngày nên lật đi lật lại trong ngày vẫn đủ dòng. Alert:
+      // chạy MỖI lượt cohort — dedupe/cooldown chống trùng (RADAR-TG/W1).
+      // Alert → biasLogId: một symbol có thể xuất hiện ở cả gainer/loser; lấy
+      // row log đầu tiên của symbol làm mốc đo (đủ để join outcome 1h/4h/24h).
+      const biasLogIds = new Map<string, number>();
+      for (const [key, id] of biasLog.idsBySymbolSide) {
+        const symbol = key.slice(0, Math.max(0, key.indexOf("|")));
+        if (symbol && !biasLogIds.has(symbol)) biasLogIds.set(symbol, id);
       }
+
+      const outcome = await recordSignalBatch({
+        candidates,
+        existing,
+        now,
+        rows: plan.map((entry) => entry.row),
+        market: gainer.market,
+        biasLogIds,
+      });
+      signals = outcome.signals;
+      rowAlerts = outcome.rowAlerts;
     } catch (error) {
       console.warn(
         "[RADAR-TRACK] Không ghi được signals:",
         error instanceof Error ? error.message : String(error)
       );
-      await releaseCohortLock();
+      await releaseCohortLock(lockKey);
       return empty("error");
     }
   }
@@ -400,6 +505,7 @@ export async function recordAllRadarCohorts(
   return {
     ran: true,
     skipped: null,
+    mode,
     intervalMinutes,
     signals,
     clusterEvents: clusterEvents.length,

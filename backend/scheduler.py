@@ -43,11 +43,20 @@ CATALYST_JOBS = (
 # `radar.config.schedulerCohortMinutes` (fallback SCHEDULER_RADAR_COHORT_MINUTES).
 RADAR_COHORT_JOB_ID = "radar_cohort"
 
+# RADAR-TG P3: fast lane 3 phút — universe ~30 symbol, chỉ alert URGENT.
+# Khoá DB riêng ở Next.js nên không chặn cohort đầy đủ 30 phút.
+RADAR_FAST_JOB_ID = "radar_fast"
+
 # RADAR-BIAS-LOG: job riêng tính outcome 1h/4h/24h/3d/7d cho radar_bias_log.
 # Nhịp đọc từ `radar.config.schedulerBiasOutcomeMinutes` (fallback
 # SCHEDULER_RADAR_BIAS_OUTCOME_MINUTES). Idempotent: endpoint chỉ thêm outcome
 # cho horizon đã đủ tuổi và chưa có dòng, nên chạy trùng không nhân bản dữ liệu.
 RADAR_BIAS_OUTCOME_JOB_ID = "radar_bias_outcomes"
+
+# RADAR-TG P2: drain outbox alert radar (Telegram/webhook) mỗi phút. Tách khỏi
+# cohort vì retry cần nhịp riêng (backoff 30s → 2m → 10m); endpoint idempotent,
+# chỉ gửi dòng PENDING tới hạn.
+RADAR_OUTBOX_JOB_ID = "radar_alert_outbox"
 
 
 def _as_bool(value, fallback: bool) -> bool:
@@ -217,6 +226,9 @@ class DataRefreshScheduler:
         # RADAR-06-SCHED: catalyst jobs không gắn cứng theo env ở đây nữa — nhịp
         # đọc từ `app_settings.radar.config` (DB > env SCHEDULER_CATALYST_*) và
         # được reschedule khi cấu hình đổi, nên đổi trên Admin không cần restart.
+        # RADAR-TG P2: outbox drain độc lập cấu hình catalyst/cohort.
+        self._apply_radar_outbox_job()
+
         self.scheduler.start()
 
         # Áp nhịp hiện hành ngay khi scheduler chạy, rồi poll DB mỗi 30 giây.
@@ -268,6 +280,7 @@ class DataRefreshScheduler:
                 'catalyst_config_watch',
                 RADAR_COHORT_JOB_ID,
                 RADAR_BIAS_OUTCOME_JOB_ID,
+                RADAR_OUTBOX_JOB_ID,
             ):
                 try:
                     self.scheduler.remove_job(job_id)
@@ -338,6 +351,7 @@ class DataRefreshScheduler:
             print(f"Catalyst scheduler applied - '{scope}' every {minutes} minutes")
         self._apply_radar_cohort_job(intervals.get("cohort", 0))
         self._apply_radar_bias_outcome_job(intervals.get("biasOutcomes", 0))
+        self._apply_radar_fast_job(settings.scheduler_radar_fast_minutes)
 
     def _apply_radar_cohort_job(self, minutes: int) -> None:
         """Thêm/gỡ job cohort/ledger/alert theo nhịp mới (0 = tắt).
@@ -398,6 +412,61 @@ class DataRefreshScheduler:
             next_run_time=datetime.now(self.vietnam_tz) + timedelta(seconds=120),
         )
         print(f"Radar bias outcome scheduler applied - every {minutes} minutes")
+
+    def _apply_radar_fast_job(self, minutes: int) -> None:
+        """Fast lane 3 phút: cohort universe nhỏ, chỉ alert URGENT.
+
+        Job riêng để nhịp alert sớm không kéo theo ledger/bias log. 0 = tắt;
+        khoá riêng trong Next.js cho phép chạy song song cohort đầy đủ.
+        """
+        if not self.scheduler:
+            return
+        minutes = max(0, int(minutes or 0))
+        if minutes <= 0:
+            if self.scheduler.get_job(RADAR_FAST_JOB_ID):
+                self.scheduler.remove_job(RADAR_FAST_JOB_ID)
+                print(f"Radar fast job '{RADAR_FAST_JOB_ID}' removed (disabled)")
+            return
+        self.scheduler.add_job(
+            self._run_radar_cohort,
+            trigger='interval',
+            minutes=minutes,
+            id=RADAR_FAST_JOB_ID,
+            name=f'Radar fast lane every {minutes}m',
+            args=[minutes, "fast"],
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+            next_run_time=datetime.now(self.vietnam_tz) + timedelta(seconds=30),
+        )
+        print(f"Radar fast lane scheduler applied - every {minutes} minutes")
+
+    def _apply_radar_outbox_job(self) -> None:
+        """Thêm/gỡ job drain outbox alert radar theo `SCHEDULER_RADAR_OUTBOX_MINUTES`.
+
+        Drain cũng chạy ngay trong lượt cohort; job riêng tồn tại để retry đúng
+        backoff (30s/2m/10m) thay vì chờ cohort kế tiếp.
+        """
+        if not self.scheduler:
+            return
+        minutes = int(settings.scheduler_radar_outbox_minutes or 0)
+        if minutes <= 0:
+            if self.scheduler.get_job(RADAR_OUTBOX_JOB_ID):
+                self.scheduler.remove_job(RADAR_OUTBOX_JOB_ID)
+                print(f"Radar outbox job '{RADAR_OUTBOX_JOB_ID}' removed (disabled)")
+            return
+        self.scheduler.add_job(
+            self._run_radar_outbox,
+            trigger='interval',
+            minutes=minutes,
+            id=RADAR_OUTBOX_JOB_ID,
+            name=f'Radar alert outbox drain every {minutes}m',
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+            next_run_time=datetime.now(self.vietnam_tz) + timedelta(seconds=30),
+        )
+        print(f"Radar outbox scheduler applied - every {minutes} minutes")
 
     async def refresh_catalyst_jobs(self, force: bool = False) -> bool:
         """Đọc radar.config và reschedule job khi nhịp đổi.
@@ -461,9 +530,14 @@ class DataRefreshScheduler:
             try:
                 print("Attempting Next.js API refresh (localhost:3000)...")
                 async with httpx.AsyncClient() as client:
+                    # SCHEDULER-AUTH: Next yêu cầu X-Scheduler-Token khi
+                    # SCHEDULER_REFRESH_TOKEN đã set (cùng giá trị trong .env).
+                    refresh_token = (settings.scheduler_refresh_token or "").strip()
+                    headers = {"X-Scheduler-Token": refresh_token} if refresh_token else {}
                     response = await client.post(
                         "http://localhost:3000/api/refresh",
                         json={"jobName": job_id},
+                        headers=headers,
                         timeout=timeout
                     )
                     if response.status_code == 200:
@@ -665,7 +739,7 @@ class DataRefreshScheduler:
             logger.error("Catalyst sync (%s) failed: %s", scope, error_message)
             print(f"Catalyst sync ({scope}) failed: {error_message}")
 
-    async def _run_radar_cohort(self, minutes: int):
+    async def _run_radar_cohort(self, minutes: int, mode: str = "full"):
         """Run radar cohort/ledger/alert via POST /api/market/radar/cohort.
 
         Đây là đường duy nhất sinh cohort/ledger/alert (request radar không còn
@@ -686,7 +760,7 @@ class DataRefreshScheduler:
                     headers["X-Scheduler-Token"] = token
                 response = await client.post(
                     "http://localhost:3000/api/market/radar/cohort",
-                    json={"intervalMinutes": minutes},
+                    json={"intervalMinutes": minutes, "mode": mode},
                     headers=headers,
                     timeout=timeout,
                 )
@@ -769,6 +843,50 @@ class DataRefreshScheduler:
         if error_message:
             logger.error("Radar bias outcomes (%sm) failed: %s", minutes, error_message)
             print(f"Radar bias outcomes failed: {error_message}")
+
+    async def _run_radar_outbox(self):
+        """Drain outbox alert radar qua POST /api/market/radar/outbox."""
+        started_at = datetime.now(self.vietnam_tz)
+        timeout = max(30, settings.scheduler_radar_outbox_timeout)
+        error_message = None
+
+        try:
+            async with httpx.AsyncClient() as client:
+                headers = {}
+                token = (settings.scheduler_catalyst_token or "").strip()
+                if token:
+                    headers["X-Scheduler-Token"] = token
+                response = await client.post(
+                    "http://localhost:3000/api/market/radar/outbox",
+                    json={},
+                    headers=headers,
+                    timeout=timeout,
+                )
+                if response.status_code == 200:
+                    data = response.json().get('data', {}) or {}
+                    logger.info(
+                        "Radar outbox in %ds: due=%s sent=%s retried=%s failed=%s suppressed=%s",
+                        int((datetime.now(self.vietnam_tz) - started_at).total_seconds()),
+                        data.get('due'),
+                        data.get('sent'),
+                        data.get('retried'),
+                        data.get('failed'),
+                        data.get('suppressed'),
+                    )
+                else:
+                    error_message = (
+                        f"Radar outbox API returned status {response.status_code}: {response.text}"
+                    )
+        except ConnectError as e:
+            error_message = f"Radar outbox API connection failed: {e}"
+        except TimeoutException as e:
+            error_message = f"Radar outbox API timeout: {e}"
+        except Exception as e:
+            error_message = f"Radar outbox API error: {e}"
+
+        if error_message:
+            logger.error("Radar outbox failed: %s", error_message)
+            print(f"Radar outbox failed: {error_message}")
 
     async def _run_p3_execution(self):
         """Run the P3 historical execution loop via the Next.js API."""

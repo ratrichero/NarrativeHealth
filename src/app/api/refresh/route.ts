@@ -50,6 +50,13 @@ import { runSnapshotGeneration, type NarrativeMembershipData } from "@/lib/p6/sn
 import { SNAPSHOT_V1_VERSION } from "@/lib/p6/snapshot/types";
 import type { CoinSnapshotInput } from "@/lib/p6/snapshot/types";
 import { runtimeGuardResponse } from "@/lib/env/route-guard";
+import { authorizeSchedulerRequest, schedulerUnauthorized } from "@/lib/env/scheduler-token";
+import {
+  buildDerivativeDegradedMessage,
+  evaluateDerivativeCoverage,
+  shouldSkipPublishing,
+  summarizeCoverage,
+} from "@/lib/p6/ingestion/source-degradation";
 
 // Business timezone constant (must match utils.ts)
 const BUSINESS_TIMEZONE = "Asia/Ho_Chi_Minh";
@@ -111,6 +118,16 @@ export async function POST(request: NextRequest) {
   // (đăng bài thật). Chỉ chạy ở production + hostname được allowlist.
   const blocked = runtimeGuardResponse(request, "scheduler");
   if (blocked) return blocked;
+
+  // SCHEDULER-AUTH: guard chỉ kiểm Host — trên host production, bất kỳ ai gọi
+  // được endpoint cũng chạy được pipeline 6–17 phút. Chấp nhận đúng 3 nguồn:
+  // token FastAPI (SCHEDULER_REFRESH_TOKEN), admin session (nút Refresh Data),
+  // hoặc APP_ENV=development (DB dev/test trên loopback, guard đã kiểm).
+  // Không có ngoại lệ loopback ở lớp token: `Host: localhost` do client tự đặt.
+  const auth = await authorizeSchedulerRequest(request);
+  if (!auth.ok) {
+    return schedulerUnauthorized(auth);
+  }
 
   const startTime = Date.now();
   const now = new Date();
@@ -268,6 +285,22 @@ export async function POST(request: NextRequest) {
       }
     }
     console.log(`[P6-PERF-03] Coin processing: ${coinsProcessed}/${activeCoins.length} succeeded in ${coinProcessingDuration}s (concurrency=${COIN_CONCURRENCY})`);
+
+    // DATA-QUALITY GATE (per run): nếu coin có futures symbol nhưng không
+    // coin nào lấy được OI/funding, derivative 50 chỉ là fallback của sự cố
+    // nguồn — không phải trạng thái trung tính thật. Ghi cờ degraded vào
+    // source_status + scheduler_logs và (khi nguồn chết hoàn toàn) bỏ Square
+    // pipeline thay vì đăng bài dựa trên dữ liệu suy giảm.
+    const derivativeCoverage = evaluateDerivativeCoverage(
+      coinResults.map((result) => ({
+        symbol: result.symbol,
+        futuresConfigured: result.futuresConfigured,
+        futuresOk: result.futuresOk,
+      }))
+    );
+    if (derivativeCoverage.degraded) {
+      console.warn(`[DATA-QUALITY] ${buildDerivativeDegradedMessage(derivativeCoverage)}`);
+    }
 
     // Calculate narrative health scores
     const activeNarratives = await db
@@ -500,7 +533,6 @@ export async function POST(request: NextRequest) {
     // NOTE: Only global refresh updates global source status
     // Coin/narrative refresh do NOT overwrite global status to avoid confusion
     const globalBinanceSpotOk = activeCoins.some(c => c.binanceSpotSymbol);
-    const globalBinanceFuturesOk = activeCoins.some(c => c.binanceFuturesSymbol);
     const globalCoingeckoOk = activeCoins.some(c => c.coingeckoId);
 
     await db.delete(sourceStatus).where(
@@ -515,16 +547,27 @@ export async function POST(request: NextRequest) {
       recordsCollected: coinsProcessed,
     });
 
+    // Nguồn futures: trước đây status chỉ dựa việc coin *có cấu hình* symbol
+    // → luôn OK dù không lấy được OI/funding nào. Nay dùng coverage thật.
+    const futuresStatus = derivativeCoverage.blocked
+      ? "FAILED"
+      : derivativeCoverage.degraded
+        ? "PARTIAL"
+        : "OK";
+
     await db.delete(sourceStatus).where(
       and(eq(sourceStatus.source, "binance_futures"), sql`${sourceStatus.coinId} IS NULL`)
     );
     await db.insert(sourceStatus).values({
       source: "binance_futures",
       coinId: null,
-      status: globalBinanceFuturesOk ? "OK" : "FAILED",
+      status: futuresStatus,
       lastAttempt: new Date(),
-      lastSuccess: globalBinanceFuturesOk ? new Date() : null,
-      recordsCollected: coinsProcessed,
+      lastSuccess: futuresStatus === "OK" ? new Date() : null,
+      recordsCollected: derivativeCoverage.ok,
+      errorMessage: derivativeCoverage.degraded
+        ? buildDerivativeDegradedMessage(derivativeCoverage)
+        : null,
     });
 
     await db.delete(sourceStatus).where(
@@ -554,6 +597,7 @@ export async function POST(request: NextRequest) {
             businessDate: today,
             note: "Indicator tracking moved into per-coin processor (P6-PERF-03)",
           },
+          dataQuality: summarizeCoverage(derivativeCoverage),
         },
       })
       .where(eq(schedulerLogs.id, logEntry.id));
@@ -723,19 +767,27 @@ export async function POST(request: NextRequest) {
     }
 
     // Binance Square content pipeline (non-blocking side effect)
-    // Fires after refresh completes; failures do NOT affect refresh status
-    try {
-      const { runSquarePipeline } = await import("@/lib/square/production");
-      const squareResult = await runSquarePipeline();
-      console.log(
-        `Square pipeline: evaluated=${squareResult.evaluated} opportunities=${squareResult.opportunities} published=${squareResult.published} suppressed=${squareResult.suppressed}`
+    // Fires after refresh completes; failures do NOT affect refresh status.
+    // DATA-QUALITY GATE: nguồn derivative chết hoàn toàn (0/N coin có OI) thì
+    // mọi health score đều đang dựa trên fallback 50 — bỏ lượt đăng này.
+    if (shouldSkipPublishing(derivativeCoverage)) {
+      console.warn(
+        `[DATA-QUALITY] Bỏ qua Square pipeline cho ${today}: ${buildDerivativeDegradedMessage(derivativeCoverage)}`
       );
-      if (squareResult.errors.length > 0) {
-        console.warn("Square pipeline errors:", squareResult.errors);
+    } else {
+      try {
+        const { runSquarePipeline } = await import("@/lib/square/production");
+        const squareResult = await runSquarePipeline();
+        console.log(
+          `Square pipeline: evaluated=${squareResult.evaluated} opportunities=${squareResult.opportunities} published=${squareResult.published} suppressed=${squareResult.suppressed}`
+        );
+        if (squareResult.errors.length > 0) {
+          console.warn("Square pipeline errors:", squareResult.errors);
+        }
+      } catch (squareError) {
+        // Square pipeline failure must not break the refresh
+        console.error("Square pipeline error (non-blocking):", squareError);
       }
-    } catch (squareError) {
-      // Square pipeline failure must not break the refresh
-      console.error("Square pipeline error (non-blocking):", squareError);
     }
 
     // -----------------------------------------------------------------------
@@ -796,6 +848,7 @@ export async function POST(request: NextRequest) {
         message: `Refresh completed`,
         coinsProcessed,
         duration: `${duration}s`,
+        dataQuality: summarizeCoverage(derivativeCoverage),
         errors: errors.length > 0 ? errors : undefined,
       },
     });

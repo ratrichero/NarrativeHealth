@@ -36,6 +36,10 @@ import { indicatorService } from "@/lib/services/indicator.service";
 import { ruleEngineService } from "@/lib/services/rule-engine.service";
 import { eventRiskService } from "@/lib/services/event-risk.service";
 import { evaluateKlineObservationQualityBatch } from "@/lib/p6/ingestion/kline-quality-batch-hook";
+import {
+  annotateDerivativeDetail,
+  appendDegradedSource,
+} from "@/lib/p6/ingestion/source-degradation";
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -76,6 +80,10 @@ export interface CoinProcessorResult {
   hasKlines: boolean;
   /** Number of klines processed */
   klineCount: number;
+  /** Coin có `binance_futures_symbol` (nguồn derivative được kỳ vọng). */
+  futuresConfigured: boolean;
+  /** Coin thực sự lấy được OI/funding trong lượt này. */
+  futuresOk: boolean;
   /** Error message if failed */
   error?: string;
 }
@@ -335,6 +343,16 @@ export async function processSingleCoin(
       console.log(`No Binance Futures symbol configured for ${coin.symbol}`);
     }
 
+    // ── DATA-QUALITY GATE (per coin) ──
+    // Futures symbol có trong cấu hình/exchangeInfo nhưng không lấy được
+    // OI/funding: feature engine vẫn trả derivative 50 (NEUTRAL_SCORE) và
+    // `no_futures: true`, trông y hệt một coin thật sự không có futures. Gắn
+    // cờ `degraded` vào detail + marker trong `missing_sources` để row không
+    // còn bị đọc như dữ liệu trung tính hợp lệ. Gate theo lượt (coverage) nằm
+    // ở /api/refresh.
+    const futuresConfigured = Boolean(coin.binanceFuturesSymbol);
+    const derivativeDegraded = futuresConfigured && !binanceFuturesOk;
+
     // ── CoinGecko FDV ──
     if (coin.coingeckoId && ctx.coingeckoData.has(coin.coingeckoId)) {
       const cgData = ctx.coingeckoData.get(coin.coingeckoId)!;
@@ -472,12 +490,12 @@ export async function processSingleCoin(
           volumeScore: featureResult.volume_score,
           momentumScore: featureResult.momentum_score,
           trendDetail: featureResult.trend_detail,
-          derivativeDetail: featureResult.derivative_detail,
+          derivativeDetail: annotateDerivativeDetail(featureResult.derivative_detail, derivativeDegraded),
           volumeDetail: featureResult.volume_detail,
           momentumDetail: featureResult.momentum_detail,
           confidenceScore: featureResult.confidence_score,
           dataCompleteness: featureResult.data_completeness,
-          missingSources: featureResult.missing_sources,
+          missingSources: appendDegradedSource(featureResult.missing_sources, derivativeDegraded),
           sourceProvenance: provenance as any,
           calculatedAt: new Date(),
         })
@@ -490,12 +508,12 @@ export async function processSingleCoin(
             volumeScore: featureResult.volume_score,
             momentumScore: featureResult.momentum_score,
             trendDetail: featureResult.trend_detail,
-            derivativeDetail: featureResult.derivative_detail,
+            derivativeDetail: annotateDerivativeDetail(featureResult.derivative_detail, derivativeDegraded),
             volumeDetail: featureResult.volume_detail,
             momentumDetail: featureResult.momentum_detail,
             confidenceScore: featureResult.confidence_score,
             dataCompleteness: featureResult.data_completeness,
-            missingSources: featureResult.missing_sources,
+            missingSources: appendDegradedSource(featureResult.missing_sources, derivativeDegraded),
             sourceProvenance: provenance as any,
             calculatedAt: new Date(),
           },
@@ -616,6 +634,8 @@ export async function processSingleCoin(
       symbol: coin.symbol,
       hasKlines: klines.length > 0,
       klineCount: klines.length,
+      futuresConfigured,
+      futuresOk: binanceFuturesOk,
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error";
@@ -626,6 +646,8 @@ export async function processSingleCoin(
       symbol: coin.symbol,
       hasKlines: false,
       klineCount: 0,
+      futuresConfigured: Boolean(coin.binanceFuturesSymbol),
+      futuresOk: false,
       error: msg,
     };
   }

@@ -22,9 +22,10 @@ thành bug, và (c) biết chính xác điều kiện nào thì được coi là
 **P1** = sai ngữ nghĩa/scoring · **P2** = capability đã hứa nhưng chưa có · **P3** = backlog,
 tài liệu, dọn dẹp.
 
-Tổng: **15 việc**. Trạng thái cuối đợt 2026-11-21: **13 DONE** (W2, W3, W4, W5, W6, W7, W8,
-W10, W11, W12, W13, W14, W15) · **2 WAITING** (W1 → 2026-11-24; W9 → 2026-11-22 và 2026-11-26).
-Riêng W15 còn một bước owner phải làm trên VPS (thêm env + restart), không phải việc code.
+Tổng: **18 việc**. Trạng thái cuối đợt 2026-11-23: **16 DONE** (W2, W3, W4, W5, W6, W7,
+W8, W10, W11, W12, W13, W14, W15, W16, W17, W18) · **2 WAITING** (W1 → 2026-11-24; W9 → 2026-11-22 và
+2026-11-26). Riêng W15 và W16 còn bước owner trên VPS (env + restart) — xem
+`docs/VPS_ENV_CHECKLIST.md`.
 Ngoài ra: 6 nhóm out-of-scope có chủ đích (§5) và 6 điểm lệch tài liệu (§6, D1–D4 đã sửa).
 
 ---
@@ -88,6 +89,56 @@ Ngoài ra: 6 nhóm out-of-scope có chủ đích (§5) và 6 điểm lệch tài
   cho development **chỉ khi** `DATABASE_URL` là DB dev/test trên loopback; DB production từ xa vẫn
   read-only và `publish` vẫn cần production thật. Test: `runtime-guard.test.ts` (development
   writes + `isLocalDevDatabaseUrl`).
+
+### W16 · ENV-GUARD alert, heartbeat scheduler và token `/api/refresh` — ĐÓNG code (2026-11-23)
+
+- **Trạng thái:** DONE phần code/test — còn env + restart trên VPS
+- **Vấn đề:** (a) 403 của guard chỉ `console.warn` → pipeline ngừng ghi mà không ai biết;
+  (b) không có cảnh báo khi scheduler không chạy thành công nhiều giờ;
+  (c) `/api/refresh` chỉ có guard theo Host — nút Refresh trên trang chủ công khai khiến bất kỳ ai
+  cũng chạy được pipeline trên host production.
+- **Đã làm:** `src/lib/env/guard-alerts.ts` (cảnh báo + cooldown `ENV_GUARD_ALERT_COOLDOWN_MINUTES`,
+  nối vào `guardBlockedResponse`); `src/lib/ops/heartbeat.ts` + `scheduler-heartbeat.ts`
+  (`GET /api/health` trả `scheduler`, cảnh báo dedupe `ops.scheduler.stall.alert`, ngưỡng
+  `SCHEDULER_STALL_HOURS`/`SCHEDULER_INTERVAL_HOURS`); `src/lib/env/scheduler-token.ts` +
+  `POST /api/refresh` yêu cầu token/admin session/development (không có ngoại lệ loopback vì
+  `Host` do client gửi); FastAPI gửi `X-Scheduler-Token`; `/api/square/movers` cũng fail-closed
+  khi thiếu `SCHEDULER_MOVERS_TOKEN`;
+  `RefreshButton` chỉ hiện với admin (`/api/auth/admin`).
+- **Còn lại (owner):** set `PRODUCTION_ALLOWED_HOSTS`, `SCHEDULER_REFRESH_TOKEN`,
+  `SCHEDULER_MOVERS_TOKEN`, `ALERT_WEBHOOK_URL` (hoặc Telegram) + restart Next & FastAPI —
+  theo `docs/VPS_ENV_CHECKLIST.md`.
+- **Test:** `src/lib/env/__tests__/guard-alerts.test.ts`, `src/lib/ops/__tests__/heartbeat.test.ts`.
+
+### W17 · Data-quality gate cho nguồn derivative — ĐÓNG (2026-11-23)
+
+- **Trạng thái:** DONE — code + test
+- **Vấn đề:** futures fetch lỗi → `derivative_score = 50` + `no_futures: true`, không phân biệt
+  được với coin thật sự không có futures; `source_status` của `binance_futures` vẫn `OK` chỉ vì
+  coin *có cấu hình* symbol.
+- **Đã làm:** `src/lib/p6/ingestion/source-degradation.ts` (coverage thật, ngưỡng
+  `DERIVATIVE_DEGRADED_MIN_COVERAGE` mặc định 0.5); `coin-processor` gắn
+  `derivative_detail.degraded` + `binance_futures:degraded` trong `missing_sources`;
+  `/api/refresh` ghi `dataQuality` vào scheduler log, đổi `source_status` sang `PARTIAL`/`FAILED`
+  kèm lý do, và bỏ Square pipeline khi coverage = 0.
+- **Test:** `src/lib/p6/ingestion/__tests__/source-degradation.test.ts` (11 test).
+- **Chưa kiểm live:** chưa ép Binance trả rỗng trên sandbox để xem một lượt refresh thật ghi
+  `PARTIAL`/bỏ publish.
+
+### W18 · SCHEDULER-AUTH cho 6 route ghi còn chỉ dựa vào ENV-GUARD — ĐÓNG (2026-11-23)
+
+- **Trạng thái:** DONE — code + test
+- **Vấn đề:** `/api/refresh` đã có token từ W16, nhưng `/api/refresh/coin/[id]`,
+  `/api/refresh/narrative/[id]`, `/api/refresh/cleanup`, `/api/catalyst/sync`,
+  `/api/market/radar/cohort`, `/api/market/radar/bias-outcomes` vẫn chỉ có ENV-GUARD theo Host
+  (header do client gửi). Ba route catalyst/radar có `SCHEDULER_CATALYST_TOKEN` nhưng opt-in:
+  chưa set token thì cho qua, và không chấp nhận admin session.
+- **Đã làm:** cả sáu route gọi `authorizeSchedulerRequest()` như `/api/refresh` — token
+  `SCHEDULER_REFRESH_TOKEN` (refresh) / `SCHEDULER_CATALYST_TOKEN` (catalyst, cohort,
+  bias-outcomes), admin session, hoặc `APP_ENV=development`; còn lại 401 fail-closed, bỏ nhánh
+  “chưa set token → cho qua”. Không thêm env mới (FastAPI đã gửi cả hai token).
+- **Test:** `src/app/api/__tests__/scheduler-auth-write-routes.test.ts` — 6 route × 3 case
+  (thiếu token, token sai, chưa set token kể cả `Host: localhost`) đều 401 và không ghi DB.
 
 ---
 
@@ -227,6 +278,20 @@ Ngoài ra: 6 nhóm out-of-scope có chủ đích (§5) và 6 điểm lệch tài
   (PART K cấm “fix” test cho PASS). Con số **15 / 393 / 28** thay hai số cũ không khớp nhau
   (**12 test/6 suite** ở P3-13 và **16 failures** ở P4 master spec). Chi tiết: PART N + N.1 của
   `docs/P3_Upgrade/P3_12_UI_UX_INTEGRATION.md`.
+- **CI (2026-11-24):** `.github/workflows/ci.yml` chạy `tsc`, `eslint .`, jest toàn repo;
+  riêng 6 suite trên nằm ở job `p3-debt` với `continue-on-error: true` (hiện log mọi push/PR,
+  không chặn merge).
+- **Cập nhật 2026-11-24 (preparation):** `preparation` **không còn cần Postgres** — `@/db` được mock
+  bằng fixture cố định cho `feature_versions`/`rule_versions`, membership coverage/snapshot/members
+  (digest hợp lệ), coins/coin_metrics/health_scores/narrative_health; chain drizzle giả hỗ trợ
+  `select/from/where/orderBy/limit` + thenable. Suite **20/20 pass** trong CI không có DB.
+  Sửa kèm 1 assertion sai sẵn (`provenance.snapshotId` là **number** — id của
+  `narrative_membership_snapshots`, không phải string); kernel không đổi.
+- **Số nợ đo lại 2026-11-24 (6 suite trên):** **6 suite / 100 test — 14 fail / 86 pass**; 5 suite còn
+  đỏ (`membership`, `oi-source-filter`, `p3-10e-29-remediation`, `persistence`, `rotation`), toàn bộ
+  là mock/fixture drift, không cần DB/mạng. Trước lần này: 25 fail / 75 pass (11 fail thuộc
+  `preparation`). Trả nợ còn lại = task riêng sửa fixture/mock, sau đó bỏ `continue-on-error` và
+  đưa 5 suite về job `test`.
 
 ### W12 · P6-08 Historical Comparison — ĐÓNG (đã FROZEN)
 

@@ -4,6 +4,7 @@ import {
   type GuardDecision,
   type GuardKind,
 } from "./runtime-guard";
+import { notifyGuardDenied } from "./guard-alerts";
 
 /**
  * Trả 403 read-only khi guard từ chối, hoặc null khi được phép. Dùng ở đầu
@@ -22,6 +23,14 @@ export function guardBlockedResponse(decision: GuardDecision): NextResponse {
   console.warn(
     `[ENV-GUARD] blocked (${decision.code}) host=${decision.hostname ?? "-"} mode=${decision.mode}`
   );
+  // Báo qua alert-delivery (cooldown theo mã lỗi + host). Best-effort: một
+  // webhook chậm/lỗi không được làm chậm hay đổi response 403.
+  void notifyGuardDenied(decision).catch((error) => {
+    console.warn(
+      "[ENV-GUARD] không gửi được cảnh báo:",
+      error instanceof Error ? error.message : String(error)
+    );
+  });
   return NextResponse.json(
     {
       success: false,

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     scheduler_minute: int = 0
     scheduler_interval_hours: int = 0  # Run every X hours (0 = use daily time)
     scheduler_timeout: int = 600  # Timeout in seconds (default 10 minutes)
+    # Token server-to-server cho POST /api/refresh (Next.js đọc env
+    # SCHEDULER_REFRESH_TOKEN). Để trống = không gửi header.
+    scheduler_refresh_token: str = ""
     
     # P3 Historical Execution Loop (P3-15)
     # Triggers POST /api/admin/p3/execute (Next.js) on the same schedule.
@@ -62,11 +65,24 @@ class Settings(BaseSettings):
     scheduler_radar_cohort_minutes: int = 30
     scheduler_radar_cohort_timeout: int = 300
 
+    # RADAR-TG P3: fast lane 3 phút (POST cohort với mode=fast) — universe ~30
+    # symbol thanh khoản nhất, chỉ gửi tier URGENT, khoá DB riêng. 0 = tắt.
+    # Nhịp được Next.js kẹp 1–5 phút; không phụ thuộc radar.config để có thể
+    # bật/tắt bằng env khi sự cố.
+    scheduler_radar_fast_minutes: int = 3
+    scheduler_radar_fast_timeout: int = 120
+
     # RADAR-BIAS-LOG: job tính outcome 1h/4h/24h/3d/7d cho `radar_bias_log`
     # (POST /api/market/radar/bias-outcomes). Nhịp runtime ưu tiên
     # `app_settings.radar.config.schedulerBiasOutcomeMinutes`; env chỉ là fallback.
     scheduler_radar_bias_outcome_minutes: int = 10
     scheduler_radar_bias_outcome_timeout: int = 300
+
+    # RADAR-TG P2: drain outbox alert radar (POST /api/market/radar/outbox).
+    # Mỗi phút để alert/retry đi sát; 0 = tắt job (outbox vẫn được drain ngay
+    # trong lượt cohort). Job chạy độc lập công tắc catalyst.
+    scheduler_radar_outbox_minutes: int = 1
+    scheduler_radar_outbox_timeout: int = 60
 
     class Config:
         env_file = ".env"

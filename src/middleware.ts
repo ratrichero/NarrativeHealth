@@ -132,6 +132,9 @@ export async function middleware(request: NextRequest) {
   // ACC-MGMT: register xong là dùng được ngay, không qua email verification).
   const isPublicAuthPage =
     pathname === "/login" || pathname === "/register";
+  // Telegram webhook tự xác thực bằng secret token riêng (RADAR-TG P4), nên
+  // không được chặn bởi lớp user-auth toàn cục.
+  const isTelegramWebhook = pathname === "/api/telegram/webhook";
   const isStatic =
     pathname.startsWith("/_next") ||
     pathname === "/favicon.ico" ||
@@ -143,6 +146,7 @@ export async function middleware(request: NextRequest) {
     !isPublicAuthPage &&
     !isAdminLogin &&
     !isAuthApi &&
+    !isTelegramWebhook &&
     !isStatic
   ) {
     if (await userAuthEnabled()) {

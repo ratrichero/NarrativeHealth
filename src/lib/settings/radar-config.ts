@@ -12,6 +12,12 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { appSettings } from "@/db/schema";
+import {
+  RADAR_TELEGRAM_TARGETS_ENV,
+  coerceRadarTelegramTargets,
+  parseRadarTelegramTargets,
+  type RadarTelegramTarget,
+} from "./radar-telegram-targets";
 
 export const RADAR_CONFIG_KEY = "radar.config";
 export const RADAR_CONFIG_CACHE_MS = 10_000;
@@ -27,6 +33,8 @@ export interface RadarRuntimeConfig {
   unusualCandidates: number;
   // Alert radar (RADAR-03/06)
   alertWebhookUrl: string | null;
+  /** Kênh Telegram tĩnh (DB > env); subscriber /start được ghép thêm khi gửi. */
+  telegramTargets: RadarTelegramTarget[];
   alertMinScore: number;
   alertMinEntry: number;
   alertMaxImpulseHours: number;
@@ -56,7 +64,7 @@ export interface RadarConfigField {
   label: string;
   hint: string;
   group: RadarConfigGroup;
-  type: "int" | "float" | "bool" | "url";
+  type: "int" | "float" | "bool" | "url" | "targets";
   min?: number;
   max?: number;
   step?: number;
@@ -144,6 +152,14 @@ export const RADAR_CONFIG_FIELDS: RadarConfigField[] = [
     hint: "URL http(s) nhận JSON {text}; để trống = tắt alert.",
     group: "alert",
     type: "url",
+  },
+  {
+    key: "telegramTargets",
+    env: RADAR_TELEGRAM_TARGETS_ENV,
+    label: "Kênh Telegram",
+    hint: "Mảng JSON [{chatId, threadId?, label?, minScore?}]. Mỗi kênh/topic có ngưỡng score riêng; để trống = chỉ còn subscriber /start và webhook.",
+    group: "alert",
+    type: "targets",
   },
   {
     key: "alertMinScore",
@@ -352,6 +368,7 @@ export function envRadarConfig(env: NodeJS.ProcessEnv = process.env): RadarRunti
     enrichPerSide: num("RADAR_ENRICH_PER_SIDE", 10),
     unusualCandidates: num("RADAR_UNUSUAL_CANDIDATES", 12),
     alertWebhookUrl: env.RADAR_ALERT_WEBHOOK_URL?.trim() || null,
+    telegramTargets: parseRadarTelegramTargets(env[RADAR_TELEGRAM_TARGETS_ENV]),
     alertMinScore: num("RADAR_ALERT_MIN_SCORE", 75),
     alertMinEntry: num("RADAR_ALERT_MIN_ENTRY", 50),
     alertMaxImpulseHours: num("RADAR_ALERT_MAX_IMPULSE_HOURS", 12),
@@ -395,6 +412,15 @@ export function coerceFieldValue(
     if (raw === "true" || raw === "1" || raw === 1) return true;
     if (raw === "false" || raw === "0" || raw === 0) return false;
     throw new RadarConfigError(`${spec.label}: phải là bật/tắt.`);
+  }
+  if (spec.type === "targets") {
+    try {
+      return coerceRadarTelegramTargets(raw, spec.label);
+    } catch (error) {
+      throw new RadarConfigError(
+        error instanceof Error ? error.message : `${spec.label}: giá trị không hợp lệ.`
+      );
+    }
   }
   if (spec.type === "url") {
     if (raw === null || raw === undefined || raw === "") return null;

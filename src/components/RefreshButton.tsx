@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Button } from "./ui/Button";
 import { RefreshCw } from "lucide-react";
+import { useIsAdmin } from "@/lib/hooks/use-is-admin";
 
 interface RefreshButtonProps {
   onRefreshComplete?: () => void;
@@ -11,6 +12,10 @@ interface RefreshButtonProps {
 export function RefreshButton({ onRefreshComplete }: RefreshButtonProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  // POST /api/refresh giờ yêu cầu admin session hoặc X-Scheduler-Token; nút
+  // nằm trên trang chủ công khai nên chỉ hiện với admin đã đăng nhập.
+  // Quyết định admin tập trung ở hook useIsAdmin (một chỗ duy nhất).
+  const isAdmin = useIsAdmin();
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -36,6 +41,8 @@ export function RefreshButton({ onRefreshComplete }: RefreshButtonProps) {
       setTimeout(() => setMessage(null), 5000);
     }
   };
+
+  if (!isAdmin) return null;
 
   return (
     <div className="flex items-center gap-3">

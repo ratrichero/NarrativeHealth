@@ -11,6 +11,7 @@ import { ConfidenceBadge } from "./ConfidenceBadge";
 import { WatchlistDialog } from "./WatchlistDialog";
 import { HealthSparkline } from "./ui/health-sparkline";
 import { narrativeUrl } from "@/lib/seo-urls";
+import { useIsAdmin } from "@/lib/hooks/use-is-admin";
 import { TrendingUp, Users, RefreshCw, Star, AlertTriangle } from "lucide-react";
 import type { NarrativeSummary } from "@/types";
 import type { HealthTimeline } from "@/lib/types/health-timeline";
@@ -60,6 +61,9 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
   const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
   const [selectedCoin, setSelectedCoin] = useState<{ id: number; symbol: string; name: string } | null>(null);
   const queryClient = useQueryClient();
+  // POST /api/refresh/narrative/:id chỉ cho admin session hoặc scheduler token;
+  // ẩn nút với user thường để không hiện hành động sẽ nhận 401.
+  const isAdmin = useIsAdmin();
 
   // Fetch health timeline for top coin if available
   const { data: healthTimeline } = useQuery({
@@ -134,16 +138,18 @@ export function NarrativeCard({ narrative }: NarrativeCardProps) {
                   <span>⚖️</span> {narrative.weightingMethod === 'market_cap' ? 'MC' : 'Equal'}
                 </span>
               )}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleRefresh}
-                disabled={isRefreshing || refreshMutation.isPending}
-                title="Refresh data for this narrative"
-                className="hover:bg-slate-700 h-8 w-8 p-0"
-              >
-                <RefreshCw className={`h-4 w-4 text-cyan-400 ${isRefreshing || refreshMutation.isPending ? 'animate-spin' : ''}`} />
-              </Button>
+              {isAdmin && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || refreshMutation.isPending}
+                  title="Refresh data for this narrative"
+                  className="hover:bg-slate-700 h-8 w-8 p-0"
+                >
+                  <RefreshCw className={`h-4 w-4 text-cyan-400 ${isRefreshing || refreshMutation.isPending ? 'animate-spin' : ''}`} />
+                </Button>
+              )}
             </div>
           </div>
 

@@ -1,5 +1,355 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
+## Ngày cập nhật: 2026-11-24
+
+## SCHEDULER-AUTH — `GET /api/refresh/status` chỉ trả trạng thái tối thiểu (2026-11-24)
+
+Sau khi bỏ ghi DB ở endpoint này (read-only), phần đọc vẫn public và trả `errorMessage`,
+`details`, `recordsProcessed`, `latestJob.id` của job gần nhất — lỗi nội bộ (host DB, stack,
+payload) lộ ra ngoài cho bất kỳ ai gọi được URL.
+
+- Rà soát: **không có monitor/script nào trong repo gọi `/api/refresh/status`** (chỉ docs curl tay và
+  test) → không cần giữ chữ ký cũ cho consumer tự động.
+- Giữ endpoint public (uptime/verify) nhưng response chỉ còn
+  `{ isRefreshing, status, latestJob: { jobName }, startedAt, completedAt, duration }`;
+  `errorMessage`, `details`, `recordsProcessed` và `latestJob.id` **không trả nữa**. Admin vẫn xem
+  log đầy đủ ở trang Admin (scheduler logs).
+- **Test** (`src/app/api/refresh/__tests__/status-readonly.test.ts`): job stale → FAILED mà không
+  `update/insert/delete`; response không chứa `errorMessage`/`details`/`recordsProcessed` (kể cả
+  khi chúng có giá trị nhạy cảm); job COMPLETED có lỗi cũ cũng không lộ; chưa có log → IDLE đúng
+  bộ trường tối thiểu.
+
+Không cần migration; FastAPI không đọc các trường bị bỏ.
+
+## RADAR-TG P3-fix — WATCH trở lại Telegram ở cohort đầy đủ (2026-11-24)
+
+Chính sách RADAR-TG P3 cho WATCH chỉ đi webhook ở cohort đầy đủ (để tránh spam Telegram) làm mất
+các alert WATCH khỏi Telegram so với hành vi trước khi phân tầng — mọi row đủ ngưỡng trước đây đều
+đi cả webhook lẫn Telegram. Nay:
+
+- `alertDeliveryPolicy()`: lane `full` → URGENT/ACTIONABLE/WATCH đều `{ webhook: true, telegram: true }`;
+  lane `fast` không đổi (chỉ URGENT). Dedupe/cooldown/outbox không đổi.
+- **Test**: `fast-lane.test.ts` (WATCH × full = 2 kênh, fast = không kênh), `alerts.test.ts`
+  (dispatch full: WATCH có delivery webhook + telegram, tổng 6 delivery cho 3 tier).
+- Hệ quả: kênh Telegram nhận thêm alert tier WATCH khi cohort đầy đủ chạy; muốn giảm nhiễu thì
+  siết `minScore` alert hoặc `minScore` riêng của từng target.
+
+Không cần migration.
+
+## RADAR-TG P4-fix — `/settings reset` xoá ngưỡng riêng (2026-11-24)
+
+`/settings <0–100>` đặt `min_score` cho từng chat/topic nhưng trước đây không có đường quay lại
+ngưỡng alert chung. Nay:
+
+- `/settings reset` (hoặc `/settings auto`, không phân biệt hoa/thường) xoá `min_score` của đúng
+  `(chat_id, thread_id)` → `clearRadarSubscriberMinScore` set `NULL`, các alert sau dùng ngưỡng
+  chung. `/settings <0–100>` không đổi hành vi.
+- Trả lời xác nhận kèm chat/topic: đã xoá → "Đã xoá ngưỡng riêng … quay lại ngưỡng alert
+  chung"; chưa từng đặt ngưỡng → báo đang dùng ngưỡng chung, **không ghi DB**; chat chưa đăng ký →
+  nhắc `/start`, không tạo dòng.
+- `/settings` (xem trạng thái) thêm dòng hướng dẫn `Xoá ngưỡng riêng: /settings reset`.
+- **Test** (`telegram-bot.test.ts`): reset đúng chat/topic khi có ngưỡng, `auto` khi không có
+  ngưỡng (không ghi DB), và reset khi chưa đăng ký.
+
+Không cần migration.
+
+## RADAR-CONFIG — kênh Telegram vào cấu hình runtime (2026-11-24)
+
+`RADAR_TELEGRAM_TARGETS` trước đây chỉ đọc env, đổi kênh/topic/ngưỡng phải restart. Nay danh sách
+kênh là field `telegramTargets` của `radar.config` (Admin → Radar & Catalyst), cùng quy tắc
+DB > env > default như mọi tham số radar khác:
+
+- Kiểu field mới `targets` trong `RADAR_CONFIG_FIELDS`; lưu mảng đã chuẩn hoá
+  `{ chatId, threadId?, label?, minScore? }`, tối đa 50 kênh. Trùng chat+topic bị gộp; entry hỏng
+  khi admin lưu bị từ chối thay vì bỏ im lặng.
+- `RADAR_TELEGRAM_TARGETS` vẫn là fallback (JSON array hoặc `chatId[:threadId]`) và parser cũ giữ
+  nguyên hành vi; bỏ ghim field trong Admin là quay lại env.
+- Alert row và cluster alert đọc `telegramTargets` từ snapshot runtime (`peekRadarRuntimeConfig()`)
+  sau khi await bản async, nên sửa trên Admin áp dụng ngay (cache 10 giây). Subscriber `/start`
+  vẫn được ghép thêm; target tĩnh thắng khi trùng chat+topic.
+- Admin hiển thị field dưới dạng JSON trong group "Alert radar"; ô trống = xoá hết kênh tĩnh
+  (subscriber và webhook không đổi).
+- **Test**: env fallback/parse, DB thay toàn bộ env (kể cả mảng rỗng), coerce/validate target,
+  payload Admin so sánh env không phụ thuộc thứ tự, và các test alert cũ vẫn xanh.
+
+Không cần migration (giá trị nằm trong `app_settings.radar.config`).
+
+## RADAR-TG P2-fix3 — cluster alert đi qua outbox (2026-11-23)
+
+Alert cấp cụm trước đây gửi webhook trực tiếp và chỉ ghi dedupe khi thành công, nên một lần 5xx là
+mất tin. Nay đi chung outbox với alert row:
+
+- `dispatchClusterAlerts` dựng delivery rồi `enqueueRadarOutbox` TRƯỚC khi gửi; dedupe
+  `radar.alerts.clusters.sent` chỉ ghi sau khi enqueue thành công; drain ngay trong lượt cohort,
+  lỗi tạm thời để lại `PENDING` cho job `radar_alert_outbox` retry/backoff.
+- Kênh: webhook (payload cũ `text/clusterId/clusterLabel/event/side/at/url` giữ nguyên) + Telegram
+  HTML cho target env và subscriber (dùng chung `buildRadarTelegramTargets`), kèm nút deep link
+  `/radar?side=…&cluster=…`.
+- Hàm thuần mới: `buildClusterAlertText`, `buildClusterAlertHtml`, `buildClusterAlertButtons`,
+  `buildClusterWebhookPayload`, `buildClusterDeliveries` — test không cần DB/network.
+- Gỡ dedupe khi `FAILED` áp cho cả hai store (`radar.alerts.sent` và
+  `radar.alerts.clusters.sent`); dòng FAILED được enqueue hồi sinh như alert row.
+- **Test**: payload text/webhook giữ shape cũ, HTML escape + deep link, deliveries webhook/telegram
+  đúng `alertKey`/`chatId`/`threadId`, chọn kênh theo cấu hình; outbox cluster retry giữ payload và
+  gỡ dedupe ở lần thứ 4.
+
+Không cần migration.
+
+## RADAR-TG P2-fix2 — lease claim outbox phủ hết batch (2026-11-23)
+
+Lease cố định 60 giây trong claim outbox ngắn hơn thời gian xấu nhất của batch 20 dòng (20 ×
+timeout gửi 8s = 160s+), nên worker thứ hai có thể nhặt lại dòng cuối batch và gửi trùng.
+
+- `radarOutboxLeaseMs(limit)` = `max(60s, limit × 10s)` (10s/dòng gồm gửi + count cap +
+  mark); batch mặc định 20 → **200 giây**. `drain` truyền lease này vào `claimDue`, và claim set
+  `next_attempt_at = now + lease` thay vì `interval '60 seconds'`.
+- Hai worker chạy chồng vẫn an toàn: `FOR UPDATE SKIP LOCKED` giữ mỗi dòng một worker, còn lease
+  dài hơn tổng batch nên worker B không nhặt lại dòng đang được A gửi. Process chết giữa chừng thì
+  dòng PENDING chỉ được nhặt lại sau khi lease hết (chấp nhận chậm thay vì gửi trùng).
+- **Test** (`alert-outbox.test.ts`): lease batch 20 = 200s ≥ 20 × timeout 8s; sàn 60s cho batch
+  nhỏ; drain truyền đúng lease; mô phỏng hai worker — B không claim/gửi trong lease của A, chỉ nhặt
+  lại sau khi lease hết.
+
+Không cần migration hay đổi cấu hình.
+
+## RADAR-TG P2-fix — alert FAILED không còn bị dedupe chặn 7 ngày (2026-11-23)
+
+`radar.alerts.sent` được ghi ngay khi enqueue, nên alert thất bại hết 4 lần thử bị chặn tới 7
+ngày dù chưa từng tới tay người nhận.
+
+- **Drain** (`alert-outbox.ts`): khi chuyển `FAILED`, kiểm tra còn delivery `PENDING`/`SENT` khác
+  cho cùng `alert_key` không. Không còn → gọi `releaseDedupe(alertKey)` để gỡ đúng entry
+  `radar.alerts.sent` (SQL lọc theo `key`); còn kênh khác đã gửi/đang chờ → giữ dedupe để không gửi
+  lặp kênh thành công. Lỗi DB khi kiểm tra/gỡ thì bỏ qua (an toàn hơn gửi trùng).
+- **Enqueue**: dòng trùng `(alert_key, channel, target_key)` ở trạng thái `FAILED` được upsert hồi
+  sinh thành `PENDING` (attempts 0, payload mới, `sent_at`/`last_error` xoá) — nếu chỉ gỡ dedupe thì
+  unique key của dòng FAILED vẫn chặn alert quay lại. `PENDING`/`SENT`/`SUPPRESSED` giữ nguyên
+  (`setWhere status = 'FAILED'`).
+- Không cần migration; dedupe vẫn là lớp chống trùng thứ nhất, cooldown theo symbol cũng được gỡ
+  cùng entry nên lượt cohort kế tiếp có thể báo lại.
+- **Test** (`alert-outbox.test.ts`): lần thứ 4 thất bại không còn kênh active → gỡ dedupe đúng
+  alertKey; còn kênh active → giữ; lỗi kiểm tra → vẫn FAILED nhưng không gỡ; retry/SENT không đụng
+  dedupe; enqueue chỉ upsert FAILED → PENDING.
+
+## RADAR-TG Phase 3 — fast lane 3 phút + tier quyết định kênh/nhịp (2026-11-23)
+
+Alert URGENT trước đây phải chờ nhịp cohort 30 phút. Thêm làn phụ 3 phút quét universe nhỏ và
+để tier quyết định kênh/nhịp, không thêm bảng hay job đo mới.
+
+- **Fast lane** (`src/lib/market/fast-lane.ts`): `fastCohortIntervalMinutes()` mặc định 3, 0 = tắt,
+  kẹp 1–5 phút; `selectFastUniverse()` lấy top 30 symbol theo quoteVolume (không sửa mảng vào).
+- **Snapshot** (`radar.ts`): `RadarQuery.fast` → universe ~30 symbol, enrich 10 row/side, cluster
+  universe 30, cache key riêng `…|fast` (TTL snapshot vẫn 60s nên lượt 3 phút có dữ liệu mới).
+- **Cohort** (`track-record.ts`): `recordAllRadarCohorts({ mode })` với `mode="fast"` dùng khoá
+  riêng `radar.cohort.fast.lock` và lease bằng đúng nhịp (sàn 1 phút) thay vì sàn 10 phút của cohort
+  đầy đủ; fast lane chỉ fetch 3 snapshot nhỏ rồi `dispatchRadarAlerts(..., { lane: "fast" })` —
+  không ghi ledger/cluster/bias log và không gửi ACTIONABLE/WATCH.
+- **Tier → kênh/nhịp** (`alertDeliveryPolicy()`): URGENT đi cả fast lane lẫn cohort đầy đủ, webhook
+  + Telegram; ACTIONABLE chỉ cohort đầy đủ, webhook + Telegram; WATCH chỉ cohort đầy đủ và chỉ
+  webhook (không spam Telegram); tier không rõ giữ hành vi cũ ở cohort đầy đủ. Dedupe/cooldown và
+  outbox không đổi. *(Đổi 2026-11-24: WATCH đi cả Telegram ở cohort đầy đủ — xem entry
+  RADAR-TG P3-fix.)*
+- **API**: `POST /api/market/radar/cohort` nhận thêm `{ mode: "fast" }` (mặc định `full`);
+  response thêm `mode`.
+- **Scheduler** (`backend/scheduler.py`, `backend/config.py`): job `radar_fast` gọi cohort
+  `mode=fast` mỗi `SCHEDULER_RADAR_FAST_MINUTES` (mặc định 3, 0 = tắt, timeout
+  `SCHEDULER_RADAR_FAST_TIMEOUT=120`); lượt đầu sau (re)start 30 giây.
+- **Test**: `src/lib/market/__tests__/fast-lane.test.ts` — nhịp/kẹp 1–5, mode, top‑30 universe,
+  ngưỡng tier 85/70/3h, 75/50/12h, 65, và bảng policy URGENT/ACTIONABLE/WATCH × fast/full.
+
+**Deploy**: không cần migration; thêm env `SCHEDULER_RADAR_FAST_MINUTES` (và timeout nếu muốn),
+restart FastAPI để job fast lane được đăng ký. Tắt nhanh bằng `SCHEDULER_RADAR_FAST_MINUTES=0`.
+
+## RADAR-TG Phase 4 — bot tự phục vụ: /start, /settings, /stop (2026-11-23)
+
+Kênh/group của người dùng tự đăng ký nhận cảnh báo thay vì chỉ các target tĩnh trong env.
+
+- **Bảng `radar_subscribers`** (`src/db/schema.ts` + `drizzle/migrations/0040_radar_subscribers.sql`):
+  `(chat_id, thread_id)` unique, `status ACTIVE|STOPPED`, `chat_type`, `title`, `telegram_user_id`,
+  `min_score` (null = ngưỡng chung). Thread 0 = chat không có topic.
+- **Bot** (`src/lib/radar/bot.ts`): `/start` upsert ACTIVE, `/stop` → STOPPED, `/settings` đọc trạng
+  thái/ngưỡng, `/settings <0–100>` đặt `min_score` riêng cho đúng chat/topic (chỉ số nguyên,
+  validate trước khi ghi; chat chưa đăng ký thì nhắc `/start`, không tự bật lại kênh đã `/stop`).
+  Hiểu `/start@BotName`; chỉ ba lệnh này được xử lý.
+- **Webhook** `POST /api/telegram/webhook`: bắt buộc header
+  `X-Telegram-Bot-Api-Secret-Token` khớp `TELEGRAM_WEBHOOK_SECRET` (timing-safe, fail-closed khi
+  chưa set), luôn 200 sau khi secret hợp lệ để Telegram không retry lặp lệnh. Middleware user-auth
+  được miễn trừ path này (secret là lớp xác thực riêng).
+- **Rate limit theo chat**: sliding window trong bộ nhớ
+  (`TELEGRAM_BOT_RATE_LIMIT_PER_MINUTE`, mặc định 5/phút); vượt hạn mức thì bỏ lệnh, không ghi DB.
+  Alert thật không đi qua limiter này mà qua outbox/retry.
+- **Fan-out**: `dispatchRadarAlerts` gộp target env `RADAR_TELEGRAM_TARGETS` với mọi subscriber
+  `ACTIVE` (dedupe chat+topic); `minScore` của subscriber siết riêng từng kênh. Lỗi đọc subscriber
+  chỉ bỏ lượt đó, target tĩnh vẫn chạy.
+- **Test**: `src/lib/radar/__tests__/telegram-bot.test.ts` — secret đúng/sai/thiếu/fail-closed,
+  rate limit 3 lệnh/phút + cô lập theo chat + mở lại sau cửa sổ, `/start` ghi đúng chat/topic,
+  `/stop` `/settings`, vượt limit không ghi DB/không trả lời, lệnh lạ bị bỏ qua.
+- **Cần làm trên VPS**: chạy migration `0040`; set `TELEGRAM_WEBHOOK_SECRET` rồi gọi `setWebhook`
+  kèm `secret_token` cùng giá trị; restart Next (bot đọc env qua token của alert-delivery).
+
+## RADAR-ALERT-METRICS — đo hiệu quả alert trên outcome sẵn có (2026-11-23)
+
+Alert đã gửi nhưng không biết có "đúng" không, cũng không biết kênh nào đang kẹt. Bổ sung đo lường
+trên đúng hai bảng đã có (`radar_alert_outbox`, `radar_bias_log`/`radar_bias_outcome`) — không tạo
+bảng hay job đo thứ hai.
+
+- **Gắn alert với tín hiệu**: `radar_alert_outbox.bias_log_id` + `tier` (migration
+  `0039_radar_alert_metrics.sql`). `recordBiasSnapshot()` trả `idsBySymbolSide`; cohort truyền
+  `biasLogIds` vào `dispatchRadarAlerts` để mọi dòng outbox (webhook + từng chat) cùng trỏ một row
+  log. Alert cũ trước deploy không có id → thống kê vào nhóm `UNKNOWN`.
+- **Tier là dữ liệu**: `classifyAlertTier(row)` (URGENT ≥85/≥70 và impulse ≤3h + catalyst hoặc cụm
+  ≥3 coin; ACTIONABLE ≥75/≥50, impulse ≤12h; WATCH ≥65) — dùng cho thống kê, không đổi ngưỡng gửi.
+- **Outcome 1h/4h/24h**: job `recordBiasOutcomes` hiện có tính thêm `atr_multiple` (MFE/ATR của row
+  log) và `invalidation_hit` (long: low ≤ invalidation, short: high ≥ invalidation, chỉ trong cửa sổ
+  horizon). Outcome cũ đã ghi trước deploy giữ `null` — số liệu mới chỉ có từ lượt tính kế tiếp.
+- **Thống kê**: `readRadarAlertStats(7)` → `sent/failed/suppressed/pending` theo tier và
+  **p95 detection→delivery** (`sent_at − bias_log.logged_at`, fallback `created_at`). Hàm thuần
+  `summarizeRadarAlertStats()` để test; `alertPercentile()` nội suy tuyến tính.
+  - `GET /api/admin/radar/alert-stats` (admin session) trả đầy đủ.
+  - `GET /api/health` trả thêm `radar.stats` (7 ngày) cạnh trạng thái outbox.
+- **Test**: `src/lib/market/__tests__/alert-metrics.test.ts` — tier (kể cả thiếu xác nhận → tụt
+  ACTIONABLE), ATR multiple, invalidation theo chiều + cửa sổ horizon, đếm theo tier và p95
+  (bỏ delta âm/thiếu mốc).
+- **Cần làm trên VPS**: chạy migration `0039_radar_alert_metrics.sql` cùng `0038` trước khi deploy;
+  không cần restart riêng — job outcome/outbox đã có sẵn.
+
+## RADAR-TG Phase 2 — outbox cho alert radar: retry, 429, cap, health (2026-11-23)
+
+P1 gửi thẳng trong `dispatchRadarAlerts`, nên Telegram 429/5xx hay webhook sập một lần là alert mất;
+dedupe cũng chỉ ghi khi gửi thành công. P2 đảo thứ tự thành **enqueue → gửi → retry**.
+
+- **Bảng `radar_alert_outbox`** (`src/db/schema.ts` + `drizzle/migrations/0038_radar_alert_outbox.sql`):
+  mỗi dòng = một `(alert_key, channel, target_key)`, `payload` jsonb, `status`
+  `PENDING|SENT|FAILED|SUPPRESSED`, `attempts`, `next_attempt_at`, `last_error`, `sent_at`. Unique
+  `(alert_key, channel, target_key)` nên lượt cohort sau không tạo trùng; job chết giữa chừng vẫn
+  còn dòng PENDING.
+- **`src/lib/market/alert-outbox.ts`**: `enqueueRadarOutbox()` ghi trước khi gửi;
+  `drainRadarAlertOutbox()` gửi dòng tới hạn, backoff **30s → 2m → 10m**, tối đa **4 lần** rồi
+  `FAILED`; khi Telegram trả **429** thì dùng `parameters.retry_after` (kẹp 1 giờ) làm
+  `next_attempt_at` thay vì backoff thường. Lỗi mạng/throw cũng đi đường retry, không làm hỏng lượt.
+- **Cap tin/ngày/kênh**: `RADAR_ALERT_DAILY_CAP` (mặc định 12, 0 = không giới hạn), đếm dòng `SENT`
+  theo `target_key` trong ngày; kênh đã đủ cap thì dòng chuyển   `SUPPRESSED`, không gọi kênh gửi. Cap áp riêng cho từng chat/topic và cho webhook.
+- **Không gửi trùng khi hai worker chạy cùng lúc**: claim dùng
+  `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)` và lease 60s qua `next_attempt_at`.
+  Process chết giữa lượt thì lease hết hạn và dòng PENDING được nhặt lại (không có trạng thái treo).
+- **`dispatchRadarAlerts`**: dựng delivery cho webhook + từng Telegram target, ghi outbox, chỉ ghi
+  dedupe sau khi enqueue thành công, rồi drain ngay trong lượt cohort (alert thường vẫn đi tức thì).
+  Payload webhook vẫn đúng shape cũ.
+- **Drain theo nhịp riêng**: `POST /api/market/radar/outbox` (SCHEDULER-AUTH như cohort) + job FastAPI
+  `radar_alert_outbox` mỗi phút (`SCHEDULER_RADAR_OUTBOX_MINUTES`, 0 = tắt) để retry đúng backoff
+  thay vì chờ cohort kế tiếp.
+- **`GET /api/health`** trả thêm `radar`: `pending`, `failed`, `sentToday`, `suppressedToday`,
+  `oldestPendingAt`, `lastSentAt`, `lastError` (`checked:false` nếu bảng chưa migrate).
+- **Test**: `src/lib/market/__tests__/alert-outbox.test.ts` — 429 dùng đúng `retry_after`,
+  backoff 30s/2m/10m, lần 4 → FAILED, cap → SUPPRESSED không gọi kênh, cap 0 = không giới hạn.
+- **Cần làm trên VPS**: chạy migration `0038_radar_alert_outbox.sql` trước khi deploy code, và
+  restart FastAPI để nhận job drain.
+
+## RADAR-TG Phase 1 — Telegram native cho alert radar, bỏ gate bias-vừa-lật (2026-11-23)
+
+Hai điểm nghẽn của Radar: alert chỉ đi qua **một** webhook (muốn Telegram phải dựng bridge riêng),
+và `dispatchRadarAlerts()` nằm trong `if (fresh.length > 0)` — chỉ báo khi bias **vừa đổi**, nên
+setup đẹp trên coin đã bullish từ trước không bao giờ tới người dùng.
+
+- **Adapter Telegram dùng lại được** (`src/lib/services/alert-delivery.service.ts`):
+  `sendTelegramMessage({ chatId, threadId, html, buttons })` — `parse_mode: HTML`,
+  `message_thread_id` cho topic trong group forum, `link_preview_options.is_disabled`, inline URL
+  buttons. `dispatchCustomText` (digest/guard/heartbeat) giữ nguyên chữ ký và vẫn gửi text thuần.
+- **Nhiều đích, cấu hình linh hoạt** (`src/lib/market/alerts.ts`): env `RADAR_TELEGRAM_TARGETS`
+  nhận JSON array hoặc danh sách gọn `chatId[:threadId]`. Mỗi target có `label` (để đọc log) và
+  `minScore` riêng (kênh công khai siết hơn DM admin). Entry hỏng bị bỏ qua, trùng chat+topic bị gộp;
+  thiếu `TELEGRAM_BOT_TOKEN` hoặc danh sách rỗng = không gửi Telegram. `RADAR_PUBLIC_URL` dựng deep
+  link `/radar?symbol=…` cho nút “Mở Radar” (thiếu thì bỏ nút, không hardcode domain).
+- **Tin HTML đủ để quyết định**: hướng/score/entry quality, giá + 24h + impulse, cluster/regime,
+  1–3 catalyst có link, **vùng entry + mức vô hiệu tham chiếu** (ATR, cùng công thức trang chi tiết),
+  giờ ICT. Ticker/label/fact được escape.
+- **Giữ tương thích webhook cũ**: payload tách thành `buildRadarWebhookPayload()` với đúng 7 field cũ
+  (`text, symbol, bias, score, price, at, url`) + `catalyst/facts` như trước; `url` vẫn tương đối.
+  Webhook và Telegram là hai kênh song song — cấu hình kênh nào chạy kênh đó.
+- **Bỏ gate bias-vừa-lật**: `recordSignalBatch()` (export từ `track-record.ts`) tách “ghi ledger”
+  khỏi “gửi alert”. Ledger vẫn chỉ ghi khi bias đổi; alert chạy **mỗi lượt cohort** và dedupe
+  `symbol|bias|ngày` + cooldown/symbol sẵn có chống trùng. Lỗi dispatch vẫn bị nuốt (alert không
+  làm hỏng cohort).
+- **Test**: `src/lib/services/__tests__/alert-delivery-telegram.test.ts` (payload Telegram: HTML,
+  topic, nút, lỗi 429/network); `src/lib/market/__tests__/alerts.test.ts` (parse nhiều target, HTML
+  entry/invalidation + escape + giờ ICT, payload webhook cũ);
+  `src/lib/market/__tests__/signal-batch.test.ts` (không lật bias vẫn dispatch, ledger không ghi).
+- **Chưa làm (đúng lộ trình P2–P4)**: outbox/retry + tôn trọng 429, cap/ngày + digest ACTIONABLE,
+  fast lane 3 phút, phân tầng URGENT/ACTIONABLE/WATCH, bot `/start`–`/stop`. Cluster alert vẫn chỉ
+  đi webhook.
+
+## SCHEDULER-AUTH cho 6 route ghi còn chỉ dựa vào ENV-GUARD (2026-11-23)
+
+`/api/refresh` đã có token từ W16, nhưng sáu route ghi khác vẫn chỉ chặn theo Host qua
+`runtimeGuardResponse` — mà `Host` do client gửi, nên trên host production bất kỳ ai cũng gọi được:
+
+- `POST /api/refresh/coin/[id]`, `POST /api/refresh/narrative/[id]`, `POST /api/refresh/cleanup`
+  (ghi `health_scores`, `recommendations`, `scheduler_logs`; refresh coin/narrative còn gọi Binance
+  và ghi `source_status`).
+- `POST /api/catalyst/sync`, `POST /api/market/radar/cohort`, `POST /api/market/radar/bias-outcomes`
+  (trước đây có token `SCHEDULER_CATALYST_TOKEN` nhưng **opt-in**: chưa set token thì cho qua kèm
+  warning, và không chấp nhận admin session).
+
+Cả sáu route nay gọi `authorizeSchedulerRequest()` như `/api/refresh`: `X-Scheduler-Token` khớp
+`SCHEDULER_REFRESH_TOKEN` (nhóm refresh) hoặc `SCHEDULER_CATALYST_TOKEN` (nhóm catalyst/radar),
+hoặc admin session cookie, hoặc `APP_ENV=development`; còn lại **401 fail-closed** (không còn
+nhánh “chưa set token thì cho qua”, không có ngoại lệ loopback). Token đã có sẵn trong FastAPI
+(`scheduler_refresh_token` / `scheduler_catalyst_token`), không thêm env mới.
+
+- Test: `src/app/api/__tests__/scheduler-auth-write-routes.test.ts` — mỗi route: thiếu token → 401
+  `UNAUTHORIZED`, token sai → 401, chưa set token (kể cả `Host: localhost`) → 401, và không có lệnh
+  `select/insert/update/delete` nào chạm DB.
+
+## Data-quality gate cho nguồn derivative (2026-11-23)
+
+Khi fetch futures metrics thất bại, feature engine ghi `derivative_score = 50` với
+`no_futures: true` — giống hệt một coin thật sự không có futures. Vì vậy một sự cố nguồn
+(Binance 451, mất OI/funding toàn bộ) vẫn được dùng để tính health score, recommendation
+và có thể đăng bài Square như dữ liệu trung tính hợp lệ.
+
+- Module thuần `src/lib/p6/ingestion/source-degradation.ts`: so số coin **có** futures symbol với
+  số coin **thực sự** lấy được OI/funding. `coverage < DERIVATIVE_DEGRADED_MIN_COVERAGE`
+  (mặc định 0.5) → `degraded`; `coverage = 0` → `blocked`.
+- `coin-processor`: mỗi row feature ghi `derivative_detail.degraded` và thêm marker
+  `binance_futures:degraded` vào `missing_sources`, nên không còn bị đọc như trung tính thật.
+- `/api/refresh`: ghi `dataQuality` vào `scheduler_logs.details`, đổi `source_status` của
+  `binance_futures` sang `PARTIAL`/`FAILED` kèm `error_message` (trước đây luôn `OK` chỉ vì coin
+  *có cấu hình* symbol), và **bỏ Square pipeline** khi `blocked` (0/N) thay vì đăng bài dựa trên
+  fallback 50.
+- Test: `src/lib/p6/ingestion/__tests__/source-degradation.test.ts` — 40 coin đều `no_futures` dù
+  có symbol → blocked; coverage thiếu một phần → degraded nhưng vẫn publish; coin spot-only không
+  bị tính thiếu.
+
+## Cảnh báo ENV-GUARD 403, heartbeat scheduler và token cho /api/refresh (2026-11-23)
+
+Ba lỗ hổng vận hành sau khi ENV-GUARD-01 lên production:
+
+1. **Guard chặn mà không ai biết.** `guardBlockedResponse` chỉ `console.warn`, nên VPS thiếu
+   `PRODUCTION_ALLOWED_HOSTS` sẽ 403 mọi lượt refresh/scheduler trong im lặng. Thêm
+   `src/lib/env/guard-alerts.ts`: gửi cảnh báo qua alert-delivery sẵn có (Telegram/webhook/email),
+   cooldown theo (mã lỗi, hostname) — `ENV_GUARD_ALERT_COOLDOWN_MINUTES` (mặc định 60 phút).
+   Side-effect là best-effort, không làm chậm/không đổi response 403.
+2. **Scheduler chết âm thầm.** `GET /api/health` giờ trả thêm `scheduler` (lượt refresh/scheduler
+   `COMPLETED` gần nhất từ `scheduler_logs`, `stalled`, `hoursSince`, `stallHours`). Khi quá hạn,
+   cảnh báo được đẩy qua cùng kênh alert, dedupe trong `app_settings`
+   (`ops.scheduler.stall.alert`) với cooldown `SCHEDULER_STALL_ALERT_COOLDOWN_HOURS` (mặc định 6h).
+   Ngưỡng: `SCHEDULER_STALL_HOURS`, hoặc suy ra từ `SCHEDULER_INTERVAL_HOURS` (1.5 nhịp + 1h, tối
+   thiểu 3h), mặc định 26h cho nhịp 1 lần/ngày. Chỉ tính job scheduler — refresh tay không che cron chết.
+3. **`/api/refresh` không có xác thực.** Trước đây chỉ có ENV-GUARD theo Host, và nút “Refresh Data”
+   nằm trên trang chủ công khai → bất kỳ ai cũng chạy được pipeline 6–17 phút trên host production.
+   Thêm `src/lib/env/scheduler-token.ts`: chấp nhận `X-Scheduler-Token` khớp
+   `SCHEDULER_REFRESH_TOKEN` (FastAPI gửi qua `scheduler_refresh_token`), hoặc admin session cookie,
+   hoặc `APP_ENV=development`; còn lại 401. Không có ngoại lệ loopback vì `Host: localhost` do
+   client tự đặt — cho qua theo hostname sẽ mở lại đúng lỗ hổng cần đóng. Áp cùng cơ chế cho
+   `/api/square/movers` với `SCHEDULER_MOVERS_TOKEN` (trước đó token là opt-in → nay fail-closed
+   ngoài development). `RefreshButton` ẩn với người không phải admin (hỏi `/api/auth/admin`).
+
+Kèm `docs/VPS_ENV_CHECKLIST.md` (các bước set `PRODUCTION_ALLOWED_HOSTS`, token, kênh cảnh báo,
+restart, 3 lệnh kiểm tra an toàn và rollback). Test: `src/lib/env/__tests__/guard-alerts.test.ts`,
+`src/lib/ops/__tests__/heartbeat.test.ts`.
+
+---
+
 ## Ngày cập nhật: 2026-11-22
 
 ## Sửa trộn mốc cluster base của radar (W7 follow-up, 2026-11-22)

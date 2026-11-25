@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { timingSafeEqual } from "node:crypto";
 import { triggerMoversPipeline } from "@/lib/square/movers/trigger";
 import { runtimeGuardResponse } from "@/lib/env/route-guard";
+import {
+  authorizeSchedulerRequest,
+  schedulerUnauthorized,
+  SCHEDULER_MOVERS_TOKEN_VAR,
+} from "@/lib/env/scheduler-token";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 800; // 6 bài × stagger 90s cần runtime dài
@@ -15,19 +19,12 @@ export const maxDuration = 800; // 6 bài × stagger 90s cần runtime dài
 // 2 lớp chặn trên endpoint này:
 //   1. Reject query params dryRun/trigger → manual bắt buộc qua /api/admin/….
 //      (khóa spam dry-run làm burn LLM quota từ bên ngoài)
-//   2. Token chung SCHEDULER_MOVERS_TOKEN (opt-in): nếu set ở Next thì yêu cầu
-//      header X-Scheduler-Token khớp (timing-safe). FastAPI gửi header này khi
-//      settings.scheduler_movers_token được set. Chưa set → cho qua với warning
-//      (cùng posture với /api/refresh) để cron không bị vỡ sau deploy.
+//   2. SCHEDULER-AUTH: X-Scheduler-Token khớp SCHEDULER_MOVERS_TOKEN (FastAPI
+//      gửi khi settings.scheduler_movers_token được set), hoặc admin session.
+//      Chưa set token → 401 (fail-closed) thay vì chạy như trước, vì
+//      `Host: localhost` do client tự đặt nên guard không đủ chặn.
 //
 // Response luôn 200 với `ok` boolean — scheduler log đọc result từ body.
-
-function tokenMatches(expected: string, got: string | null): boolean {
-  if (!got) return false;
-  const a = Buffer.from(expected, "utf8");
-  const b = Buffer.from(got, "utf8");
-  return a.length === b.length && timingSafeEqual(a, b);
-}
 
 export async function POST(request: NextRequest) {
   // ENV-GUARD-01: endpoint này đăng bài thật lên Binance Square. Chặn trước
@@ -49,21 +46,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Lớp 2 — token chung (opt-in). Chưa config thì vẫn chạy như cũ nhưng cảnh báo.
-  const expected = process.env.SCHEDULER_MOVERS_TOKEN?.trim();
-  if (expected && expected.length > 0) {
-    const got = request.headers.get("x-scheduler-token");
-    if (!tokenMatches(expected, got)) {
-      console.warn("[SQ-MOVERS] POST rejected: missing/invalid X-Scheduler-Token");
-      return NextResponse.json(
-        { success: false, error: "Unauthorized — invalid scheduler token." },
-        { status: 401 }
-      );
-    }
-  } else {
-    console.warn(
-      "[SQ-MOVERS] SCHEDULER_MOVERS_TOKEN chưa set — POST /api/square/movers chưa được xác thực. Đặt token ở cả .env Next và FastAPI (scheduler_movers_token) để khóa endpoint."
-    );
+  // Lớp 2 — SCHEDULER-AUTH (fail-closed ngoài development).
+  const auth = await authorizeSchedulerRequest(request, SCHEDULER_MOVERS_TOKEN_VAR);
+  if (!auth.ok) {
+    console.warn("[SQ-MOVERS] POST rejected: missing/invalid scheduler credentials");
+    return schedulerUnauthorized(auth);
   }
 
   return triggerMoversPipeline({ dryRun: false, trigger: "SCHEDULED" });

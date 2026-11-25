@@ -31,6 +31,11 @@ import {
 import { buildSetup, type SetupLevels } from "@/lib/market/setup";
 import { shouldExplainCatalyst } from "@/lib/catalyst/matching";
 import { isEligibleTicker, listingAgeDays } from "@/lib/market/universe";
+import {
+  FAST_LANE_PER_SIDE,
+  FAST_LANE_UNIVERSE_SIZE,
+  selectFastUniverse,
+} from "@/lib/market/fast-lane";
 import { buildDemoSnapshot, getDemoDetail } from "@/lib/market/demo";
 import { peekRadarRuntimeConfig, readRadarRuntimeConfig } from "@/lib/settings/radar-config";
 import {
@@ -994,7 +999,11 @@ async function loadClusterBase(
   return buildClusterBase(candidates, { absChangeRanks, btcCloses });
 }
 
-async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarSnapshot> {
+async function buildSnapshot(
+  side: MoverSide,
+  minVolume: number,
+  fast = false
+): Promise<RadarSnapshot> {
   // Bias lần chấm trước (6 giờ, cache 60s) để scoring giữ nhãn ổn định.
   const [tickers, info, system, spotMap, btcTrend, prevBiasMap] = await Promise.all([
     fetchFuturesTickers(),
@@ -1009,7 +1018,14 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
   // giây): base phải được khoá theo đúng bộ ticker đã dùng để tính universe.
   const tickerEpoch = futuresTickerEpoch();
 
-  const eligible = tickers.filter((t) => isEligibleTicker(t, info.get(t.symbol), minVolume));
+  // RADAR-TG P3: fast lane chỉ quét ~30 symbol thanh khoản nhất để kịp nhịp 3
+  // phút; cohort đầy đủ vẫn dùng toàn bộ universe hợp lệ.
+  const eligible = fast
+    ? selectFastUniverse(
+        tickers.filter((t) => isEligibleTicker(t, info.get(t.symbol), minVolume)),
+        FAST_LANE_UNIVERSE_SIZE
+      )
+    : tickers.filter((t) => isEligibleTicker(t, info.get(t.symbol), minVolume));
 
   if (eligible.length < 10) {
     throw new Error("Binance trả quá ít symbol hợp lệ — thử lại sau.");
@@ -1034,13 +1050,15 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
   );
 
   const tuning = radarTuning();
+  const perSide = fast ? FAST_LANE_PER_SIDE : tuning.perSide;
+  const unusualCount = fast ? FAST_LANE_PER_SIDE : tuning.unusual;
   let chosen: FuturesTicker[] = [];
-  if (side === "gainer") chosen = byChangeDesc.slice(0, tuning.perSide);
-  else if (side === "loser") chosen = byChangeAsc.slice(0, tuning.perSide);
+  if (side === "gainer") chosen = byChangeDesc.slice(0, perSide);
+  else if (side === "loser") chosen = byChangeAsc.slice(0, perSide);
   else {
     const taken = new Set([
-      ...byChangeDesc.slice(0, tuning.perSide).map((t) => t.symbol),
-      ...byChangeAsc.slice(0, tuning.perSide).map((t) => t.symbol),
+      ...byChangeDesc.slice(0, perSide).map((t) => t.symbol),
+      ...byChangeAsc.slice(0, perSide).map((t) => t.symbol),
     ]);
     const pool = eligible
       .filter(
@@ -1050,11 +1068,15 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
           !taken.has(t.symbol)
       )
       .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
-      .slice(0, tuning.unusual);
+      .slice(0, unusualCount);
     chosen = pool;
   }
 
-  const clusterUniverse = selectClusterUniverse(eligible, minVolume);
+  const clusterUniverse = selectClusterUniverse(
+    eligible,
+    minVolume,
+    fast ? FAST_LANE_UNIVERSE_SIZE : tuning.universe
+  );
   const enriched = await mapLimit(chosen, 8, (ticker) =>
     enrichTicker(
       ticker,
@@ -1130,6 +1152,8 @@ export interface RadarQuery {
   minVolume?: number;
   excludeSystem?: boolean;
   sort?: RadarSort;
+  /** RADAR-TG P3: snapshot universe nhỏ (~30 symbol) cho fast lane 3 phút. */
+  fast?: boolean;
   /** `?cluster=<id>` — ghim đúng cụm vào snapshot kể cả ngoài top 6 của panel. */
   cluster?: string;
 }
@@ -1180,11 +1204,12 @@ export async function getRadarSnapshot(query: RadarQuery = {}): Promise<RadarSna
   // Nạp config runtime (DB > env) trước khi snapshot dùng tuning sync.
   await readRadarRuntimeConfig();
 
-  const key = `${side}|${minVolume}`;
+  const fast = query.fast === true;
+  const key = `${side}|${minVolume}|${fast ? "fast" : "full"}`;
   const { promise, cached } = snapshotCache.lookup(key, () =>
     withSnapshotBuild(
       { side, minVolume },
-      () => buildSnapshot(side, minVolume),
+      () => buildSnapshot(side, minVolume, fast),
       (snapshot) => ({ rows: snapshot.rows.length, clusters: snapshot.clusters?.length ?? 0 })
     )
   );

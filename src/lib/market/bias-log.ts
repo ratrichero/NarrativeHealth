@@ -16,6 +16,9 @@ import { fetchBinanceFuturesKlines } from "@/lib/collectors/binance";
 import {
   HORIZONS,
   evaluateSignal,
+  horizonHours,
+  isBearishBias,
+  isBullishBias,
   type HorizonId,
   type RadarSignalRecord,
 } from "@/lib/market/ledger";
@@ -187,6 +190,8 @@ export interface BiasLogResult {
   rows: number;
   /** Số row có bias khác lần chấm trước. */
   changed: number;
+  /** id row log theo `symbol|side` — alert dùng để gắn biasLogId. */
+  idsBySymbolSide: Map<string, number>;
 }
 
 /**
@@ -200,7 +205,8 @@ export async function recordBiasSnapshot(
   inputs: BiasSnapshotInput[],
   at = new Date()
 ): Promise<BiasLogResult> {
-  if (process.env.RADAR_DEMO === "1") return { inserted: 0, rows: 0, changed: 0 };
+  if (process.env.RADAR_DEMO === "1")
+    return { inserted: 0, rows: 0, changed: 0, idsBySymbolSide: new Map() };
 
   let prev = new Map<string, string>();
   try {
@@ -214,23 +220,35 @@ export async function recordBiasSnapshot(
   }
 
   const rows = buildBiasLogRows(inputs, at, prev).slice(0, MAX_ROWS_PER_RUN);
-  if (rows.length === 0) return { inserted: 0, rows: 0, changed: 0 };
+  if (rows.length === 0)
+    return { inserted: 0, rows: 0, changed: 0, idsBySymbolSide: new Map() };
 
   try {
-    const inserted = await db.insert(radarBiasLog).values(rows).onConflictDoNothing().returning({
-      id: radarBiasLog.id,
-    });
+    const inserted = await db
+      .insert(radarBiasLog)
+      .values(rows)
+      .onConflictDoNothing()
+      .returning({
+        id: radarBiasLog.id,
+        symbol: radarBiasLog.symbol,
+        side: radarBiasLog.side,
+      });
+    const idsBySymbolSide = new Map<string, number>();
+    for (const row of inserted) {
+      idsBySymbolSide.set(biasLogKey(row.symbol, row.side), row.id);
+    }
     return {
       inserted: inserted.length,
       rows: rows.length,
       changed: rows.filter((row) => row.biasChanged === true).length,
+      idsBySymbolSide,
     };
   } catch (error) {
     console.warn(
       "[RADAR-BIAS-LOG] Không ghi được radar_bias_log:",
       error instanceof Error ? error.message : String(error)
     );
-    return { inserted: 0, rows: rows.length, changed: 0 };
+    return { inserted: 0, rows: rows.length, changed: 0, idsBySymbolSide: new Map() };
   }
 }
 
@@ -242,7 +260,52 @@ interface DueLogRow {
   price: number;
   logged_at: unknown;
   btc_price: number | null;
+  atr_pct: number | null;
+  invalidation_price: number | null;
   horizons: string[] | null;
+}
+
+/**
+ * MFE tính theo đơn vị ATR của row log — "giá đi được bao nhiêu ATR".
+ * Thiếu ATR/0 thì trả null thay vì bịa số.
+ */
+export function atrMultipleFor(
+  mfePct: number | null | undefined,
+  atrPct: number | null | undefined
+): number | null {
+  if (mfePct === null || mfePct === undefined) return null;
+  if (atrPct === null || atrPct === undefined) return null;
+  if (!Number.isFinite(mfePct) || !Number.isFinite(atrPct) || atrPct <= 0) return null;
+  return Math.round((mfePct / atrPct) * 100) / 100;
+}
+
+/**
+ * Giá trong [fromMs, untilMs] có chạm `invalidation_price` của row log không.
+ * Long: low ≤ invalidation; short: high ≥ invalidation. Không có giá/không có
+ * nến/không rõ chiều → null (không đoán).
+ */
+export function invalidationTouched(
+  candles: ReadonlyArray<{ openTime: number; high: unknown; low: unknown }>,
+  fromMs: number,
+  untilMs: number,
+  invalidationPrice: number | null | undefined,
+  bias: string
+): boolean | null {
+  if (invalidationPrice === null || invalidationPrice === undefined) return null;
+  if (!Number.isFinite(invalidationPrice) || invalidationPrice <= 0) return null;
+  const bullish = isBullishBias(bias as Bias);
+  if (!bullish && !isBearishBias(bias as Bias)) return null;
+
+  const window = candles.filter(
+    (candle) => candle.openTime >= fromMs && candle.openTime <= untilMs
+  );
+  if (window.length === 0) return null;
+
+  return window.some((candle) =>
+    bullish
+      ? Number(candle.low) <= invalidationPrice
+      : Number(candle.high) >= invalidationPrice
+  );
 }
 
 export interface BiasOutcomeResult {
@@ -281,6 +344,7 @@ export async function recordBiasOutcomes(now = Date.now()): Promise<BiasOutcomeR
   // tới hạn khi còn horizon thiếu (mỗi horizon được ghi đúng một lần).
   const result = await db.execute(sql`
     SELECT l.id, l.symbol, l.side, l.bias, l.price, l.logged_at, l.btc_price,
+           l.atr_pct, l.invalidation_price,
            COALESCE(o.horizons, '{}') AS horizons
     FROM radar_bias_log l
     LEFT JOIN LATERAL (
@@ -361,9 +425,11 @@ export async function recordBiasOutcomes(now = Date.now()): Promise<BiasOutcomeR
       btcCandles,
       now
     );
+    const loggedAtMs = timeOf(row.logged_at);
     for (const horizon of missing) {
       const measured = tracked.horizons[horizon];
       if (!measured || measured.pending) continue;
+      const untilMs = loggedAtMs + horizonHours(horizon) * 3_600_000;
       outcomes.push({
         logId: Number(row.id),
         horizon,
@@ -374,6 +440,16 @@ export async function recordBiasOutcomes(now = Date.now()): Promise<BiasOutcomeR
         mfePct: measured.mfePct,
         maePct: measured.maePct,
         win: measured.win,
+        // RADAR-ALERT-METRICS: cùng row outcome sẵn có, thêm đơn vị ATR và
+        // invalidation — không tạo bảng đo thứ hai.
+        atrMultiple: atrMultipleFor(measured.mfePct, row.atr_pct),
+        invalidationHit: invalidationTouched(
+          candlesBySymbol.get(row.symbol) ?? [],
+          loggedAtMs,
+          untilMs,
+          row.invalidation_price,
+          row.bias
+        ),
       });
     }
   }

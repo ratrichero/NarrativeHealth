@@ -17,6 +17,7 @@ import { narrativeUrl } from "@/lib/seo-urls";
 import { HealthTimeline } from "@/components/health-timeline";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { P6IntelligencePanel } from "@/components/P6IntelligencePanel";
+import { useIsAdmin } from "@/lib/hooks/use-is-admin";
 import { ArrowLeft, AlertCircle, ExternalLink, RefreshCw, TrendingUp, TrendingDown, Minus, Star } from "lucide-react";
 import {
   LineChart,
@@ -247,6 +248,9 @@ export default function CoinDetailPage() {
   const params = useParams();
   const id = params.id as string;
   const queryClient = useQueryClient();
+  // POST /api/refresh/coin/:id chỉ cho admin session hoặc scheduler token;
+  // user thường bấm sẽ nhận 401 nên ẩn nút cho tới khi biết chắc là admin.
+  const isAdmin = useIsAdmin();
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>("4h");
   const [chartMode, setChartMode] = useState<"area" | "candlestick">("area");
   const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
@@ -378,15 +382,17 @@ export default function CoinDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-4">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => refreshMutation.mutate()}
-            disabled={refreshMutation.isPending}
-          >
-            <RefreshCw className={`h-4 w-4 mr-2 ${refreshMutation.isPending ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">Refresh</span>
-          </Button>
+          {isAdmin && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => refreshMutation.mutate()}
+              disabled={refreshMutation.isPending}
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshMutation.isPending ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Refresh</span>
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="sm"

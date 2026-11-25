@@ -139,6 +139,76 @@ describe("buildRadarConfigPayload", () => {
     expect(payload.unpin).toEqual(["clusterMaxSize"]);
   });
 
+  it("targets: ghim khi khác env, bỏ ghim khi trùng env (không phụ thuộc thứ tự)", () => {
+    const fields: RadarConfigField[] = [
+      ...mockFields,
+      {
+        key: "telegramTargets",
+        env: "RADAR_TELEGRAM_TARGETS",
+        label: "Kênh Telegram",
+        hint: "",
+        group: "alert",
+        type: "targets",
+      },
+    ];
+    const envTargets = [
+      { chatId: "-1001", label: "public" },
+      { chatId: "-1002", threadId: 42, minScore: 80 },
+    ];
+    const stored = { ...mockPayload.stored, telegramTargets: envTargets };
+    const env = { ...mockPayload.env, telegramTargets: envTargets };
+    const sameDifferentOrder = JSON.stringify([...envTargets].reverse());
+
+    const unchanged = buildRadarConfigPayload(
+      fields,
+      {
+        clusterMaxSize: "12",
+        alertWebhookUrl: "",
+        telegramTargets: sameDifferentOrder,
+      },
+      env,
+      stored
+    );
+    expect(unchanged.values).toEqual({ clusterMaxSize: 12 });
+    expect(unchanged.unpin).toEqual(["telegramTargets"]);
+
+    const changed = buildRadarConfigPayload(
+      fields,
+      {
+        clusterMaxSize: "12",
+        alertWebhookUrl: "",
+        telegramTargets: JSON.stringify([{ chatId: "-1003", minScore: 90 }]),
+      },
+      env,
+      stored
+    );
+    expect(changed.values.telegramTargets).toEqual([
+      { chatId: "-1003", minScore: 90 },
+    ]);
+  });
+
+  it("targets: JSON hỏng bị chặn trước khi gọi API", () => {
+    const fields: RadarConfigField[] = [
+      ...mockFields,
+      {
+        key: "telegramTargets",
+        env: "RADAR_TELEGRAM_TARGETS",
+        label: "Kênh Telegram",
+        hint: "",
+        group: "alert",
+        type: "targets",
+      },
+    ];
+    expect(() =>
+      buildRadarConfigPayload(
+        fields,
+        { clusterMaxSize: "8", alertWebhookUrl: "", telegramTargets: "[not json" },
+        mockPayload.env,
+        {}
+      )
+    ).toThrow(/JSON không hợp lệ/);
+  });
+
   it("ô số rỗng bị chặn trước khi gọi API", () => {
     expect(() =>
       buildRadarConfigPayload(

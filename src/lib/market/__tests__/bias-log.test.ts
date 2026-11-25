@@ -5,6 +5,9 @@ import {
   dueHorizons,
 } from "@/lib/market/bias-log";
 
+// buildBiasLogRows/dueHorizons là hàm thuần — không cần DATABASE_URL cho test.
+jest.mock("@/db", () => ({ db: {} }));
+
 const AT = new Date("2026-11-19T02:00:00.000Z");
 
 function row(overrides: Partial<RadarRow> = {}): RadarRow {

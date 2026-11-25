@@ -15,19 +15,28 @@ export interface RadarConfigField {
   label: string;
   hint: string;
   group: "cluster" | "alert" | "catalyst" | "scheduler";
-  type: "int" | "float" | "bool" | "url";
+  type: "int" | "float" | "bool" | "url" | "targets";
   min?: number;
   max?: number;
   step?: number;
 }
 
+interface RadarTelegramTarget {
+  chatId: string;
+  threadId?: number;
+  label?: string;
+  minScore?: number;
+}
+
+type ConfigValue = number | boolean | string | null | RadarTelegramTarget[];
+
 interface RadarConfigPayload {
-  config: Record<string, number | boolean | string | null>;
+  config: Record<string, ConfigValue>;
   applied: string[];
-  stored: Record<string, number | boolean | string | null>;
+  stored: Record<string, ConfigValue>;
   updatedAt: string | null;
   updatedBy: string | null;
-  env: Record<string, number | boolean | string | null>;
+  env: Record<string, ConfigValue>;
   fields: RadarConfigField[];
   groups: Array<{ id: string; label: string; hint: string }>;
 }
@@ -171,24 +180,63 @@ function toDraft(payload: RadarConfigPayload): Record<string, DraftValue> {
   const draft: Record<string, DraftValue> = {};
   for (const field of payload.fields) {
     const value = payload.config[field.key];
-    draft[field.key] = field.type === "bool" ? Boolean(value) : value === null ? "" : String(value);
+    if (field.type === "targets") {
+      draft[field.key] = JSON.stringify(value ?? [], null, 2);
+    } else {
+      draft[field.key] =
+        field.type === "bool" ? Boolean(value) : value === null ? "" : String(value);
+    }
   }
   return draft;
 }
 
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
+  if (Array.isArray(value)) return `${value.length} kênh`;
   if (typeof value === "boolean") return value ? "bật" : "tắt";
   return String(value);
 }
 
 function draftValueFor(field: RadarConfigField, value: unknown): DraftValue {
   if (field.type === "bool") return Boolean(value);
+  if (field.type === "targets") return JSON.stringify(value ?? [], null, 2);
   return value === null || value === undefined ? "" : String(value);
+}
+
+/** Parse JSON từ textarea; chỉ kiểm tra shape mảng — server chuẩn hoá/validate. */
+function parseTargetsDraft(field: RadarConfigField, raw: DraftValue): RadarTelegramTarget[] {
+  const text = String(raw ?? "").trim();
+  if (!text) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`${field.label}: JSON không hợp lệ.`);
+  }
+  if (!Array.isArray(parsed)) throw new Error(`${field.label}: phải là mảng target.`);
+  return parsed as RadarTelegramTarget[];
+}
+
+/** Chuẩn hoá để so với env không phụ thuộc thứ tự kênh/thứ tự field. */
+function canonicalTargets(value: unknown): string {
+  const targets = Array.isArray(value) ? (value as RadarTelegramTarget[]) : [];
+  return JSON.stringify(
+    [...targets]
+      .sort((a, b) =>
+        `${a.chatId}:${a.threadId ?? ""}`.localeCompare(`${b.chatId}:${b.threadId ?? ""}`)
+      )
+      .map((target) => ({
+        chatId: String(target.chatId ?? ""),
+        ...(target.threadId !== undefined ? { threadId: target.threadId } : {}),
+        ...(target.label ? { label: target.label } : {}),
+        ...(target.minScore !== undefined ? { minScore: target.minScore } : {}),
+      }))
+  );
 }
 
 function sameAsEnv(field: RadarConfigField, value: unknown, envValue: unknown): boolean {
   if (field.type === "bool") return Boolean(value) === Boolean(envValue);
+  if (field.type === "targets") return canonicalTargets(value) === canonicalTargets(envValue);
   if (field.type === "url") return String(value ?? "").trim() === String(envValue ?? "").trim();
   return Number(value) === Number(envValue);
 }
@@ -202,8 +250,8 @@ function sameAsEnv(field: RadarConfigField, value: unknown, envValue: unknown): 
 export function buildRadarConfigPayload(
   fields: RadarConfigField[],
   draft: Record<string, DraftValue>,
-  env: Record<string, number | boolean | string | null>,
-  stored: Record<string, number | boolean | string | null>,
+  env: Record<string, ConfigValue>,
+  stored: Record<string, ConfigValue>,
   unpinned: string[] = []
 ): { values: Record<string, unknown>; unpin: string[] } {
   const pinned = new Set(Object.keys(stored));
@@ -212,9 +260,11 @@ export function buildRadarConfigPayload(
 
   for (const field of fields) {
     const raw = draft[field.key];
-    let value: number | boolean | string;
+    let value: ConfigValue;
     if (field.type === "bool") {
       value = Boolean(raw);
+    } else if (field.type === "targets") {
+      value = parseTargetsDraft(field, raw);
     } else if (field.type === "url") {
       value = String(raw ?? "").trim();
     } else {
@@ -526,6 +576,15 @@ export function RadarConfigSection() {
                       />
                       {Boolean(value) ? "Bật" : "Tắt"}
                     </span>
+                  ) : field.type === "targets" ? (
+                    <textarea
+                      value={String(value)}
+                      rows={6}
+                      spellCheck={false}
+                      placeholder='[{"chatId":"-100111","label":"public"}]'
+                      onChange={(e) => updateDraft(field, e.target.value)}
+                      className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-slate-100 placeholder:text-slate-600"
+                    />
                   ) : field.type === "url" ? (
                     <input
                       type="url"

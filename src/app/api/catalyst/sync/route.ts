@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { timingSafeEqual } from "node:crypto";
 import { parseCatalystSyncScope, syncCatalysts } from "@/lib/catalyst/sync";
 import { readRadarRuntimeConfig } from "@/lib/settings/radar-config";
 import { runtimeGuardResponse } from "@/lib/env/route-guard";
+import {
+  authorizeSchedulerRequest,
+  schedulerUnauthorized,
+  SCHEDULER_CATALYST_TOKEN_VAR,
+} from "@/lib/env/scheduler-token";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
@@ -19,40 +23,24 @@ export const maxDuration = 180;
 // /api/admin/* bằng admin session fail-closed, scheduler không có cookie.
 // Endpoint này giữ posture giống /api/square/movers và /api/refresh:
 //   * chỉ localhost gọi (Next bind qua pm2, nginx không expose path này),
-//   * token chung opt-in SCHEDULER_CATALYST_TOKEN: set ở Next thì bắt buộc
-//     header X-Scheduler-Token khớp (timing-safe); chưa set → cho qua kèm
-//     warning để cron không vỡ ngay sau deploy.
+//   * SCHEDULER-AUTH giống /api/refresh: header X-Scheduler-Token khớp
+//     SCHEDULER_CATALYST_TOKEN, hoặc admin session, hoặc APP_ENV=development.
+//     Chưa set token → 401 (fail-closed) thay vì chạy; guard không đủ vì nó
+//     tin header Host do client gửi.
 //
 // Không query param, không dry-run: mọi thao tác tay đi qua
 // POST /api/admin/catalyst/sync. Response 200 với summary từng nguồn để
 // scheduler log đọc được nguồn nào lỗi.
-
-function tokenMatches(expected: string, got: string | null): boolean {
-  if (!got) return false;
-  const a = Buffer.from(expected, "utf8");
-  const b = Buffer.from(got, "utf8");
-  return a.length === b.length && timingSafeEqual(a, b);
-}
 
 export async function POST(request: NextRequest) {
   // ENV-GUARD-01: job scheduler ghi DB production — local mặc định read-only.
   const blocked = runtimeGuardResponse(request, "scheduler");
   if (blocked) return blocked;
 
-  const expected = process.env.SCHEDULER_CATALYST_TOKEN?.trim();
-  if (expected && expected.length > 0) {
-    const got = request.headers.get("x-scheduler-token");
-    if (!tokenMatches(expected, got)) {
-      console.warn("[CATALYST] POST /api/catalyst/sync rejected: missing/invalid X-Scheduler-Token");
-      return NextResponse.json(
-        { success: false, error: "Unauthorized — invalid scheduler token." },
-        { status: 401 }
-      );
-    }
-  } else {
-    console.warn(
-      "[CATALYST] SCHEDULER_CATALYST_TOKEN chưa set — POST /api/catalyst/sync chưa được xác thực. Đặt token ở cả .env Next và FastAPI (scheduler_catalyst_token)."
-    );
+  const auth = await authorizeSchedulerRequest(request, SCHEDULER_CATALYST_TOKEN_VAR);
+  if (!auth.ok) {
+    console.warn("[CATALYST] POST /api/catalyst/sync rejected: missing/invalid scheduler credentials");
+    return schedulerUnauthorized(auth);
   }
 
   const body = await request.json().catch(() => ({}));

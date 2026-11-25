@@ -1799,6 +1799,10 @@ export const radarBiasOutcome = pgTable(
     mfePct: real("mfe_pct"),
     maePct: real("mae_pct"),
     win: boolean("win"),
+    // RADAR-ALERT-METRICS: MFE tính theo ATR của row log (`mfe_pct / atr_pct`).
+    atrMultiple: real("atr_multiple"),
+    // Giá trong horizon có chạm `invalidation_price` của row log không.
+    invalidationHit: boolean("invalidation_hit"),
   },
   (table) => [
     unique("radar_bias_outcome_log_horizon_unique").on(table.logId, table.horizon),
@@ -1810,3 +1814,70 @@ export type RadarBiasLogRow = typeof radarBiasLog.$inferSelect;
 export type NewRadarBiasLog = typeof radarBiasLog.$inferInsert;
 export type RadarBiasOutcomeRow = typeof radarBiasOutcome.$inferSelect;
 export type NewRadarBiasOutcome = typeof radarBiasOutcome.$inferInsert;
+
+// ==================== RADAR_ALERT_OUTBOX (RADAR-TG P2) ====================
+// Mỗi (alert, kênh, đích) là một dòng. Ghi PENDING TRƯỚC khi gửi để alert
+// không mất khi Telegram/webhook lỗi tạm thời; job drain thử lại theo backoff
+// (tôn trọng `retry_after` của 429) và cap số tin/ngày/kênh.
+//   status: PENDING | SENT | FAILED | SUPPRESSED (vượt cap)
+//   target_key: "webhook" hoặc "telegram:<chatId>:<threadId?>"
+export const radarAlertOutbox = pgTable(
+  "radar_alert_outbox",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    alertKey: varchar("alert_key", { length: 160 }).notNull(),
+    channel: varchar("channel", { length: 16 }).notNull(),
+    targetKey: varchar("target_key", { length: 160 }).notNull(),
+    // RADAR-ALERT-METRICS: alert gắn row radar_bias_log để đo outcome sau 1h/4h/24h
+    // (ATR đi được, có chạm invalidation) mà không tạo hệ đo thứ hai.
+    biasLogId: bigint("bias_log_id", { mode: "number" }),
+    tier: varchar("tier", { length: 12 }),
+    payload: jsonb("payload").notNull(),
+    status: varchar("status", { length: 12 }).notNull().default("PENDING"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("radar_alert_outbox_key_target_unique").on(
+      table.alertKey,
+      table.channel,
+      table.targetKey
+    ),
+    index("radar_alert_outbox_due_idx").on(table.status, table.nextAttemptAt),
+    index("radar_alert_outbox_sent_idx").on(table.targetKey, table.sentAt),
+  ]
+);
+
+export type RadarAlertOutboxRow = typeof radarAlertOutbox.$inferSelect;
+export type NewRadarAlertOutbox = typeof radarAlertOutbox.$inferInsert;
+
+// ==================== RADAR_SUBSCRIBERS (RADAR-TG P4) ====================
+// Bot tự phục vụ: chat/group/kênh của người dùng gửi /start để đăng ký nhận
+// cảnh báo Radar, /stop để tắt, /settings để xem. thread_id = 0 khi chat không
+// có topic (unique (chat_id, thread_id) vẫn chặn đăng ký trùng).
+export const radarSubscribers = pgTable(
+  "radar_subscribers",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    chatId: varchar("chat_id", { length: 32 }).notNull(),
+    threadId: integer("thread_id").notNull().default(0),
+    chatType: varchar("chat_type", { length: 20 }),
+    title: varchar("title", { length: 200 }),
+    telegramUserId: varchar("telegram_user_id", { length: 32 }),
+    status: varchar("status", { length: 12 }).notNull().default("ACTIVE"),
+    /** Ngưỡng score riêng của chat; null = dùng ngưỡng alert chung. */
+    minScore: integer("min_score"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("radar_subscribers_chat_thread_unique").on(table.chatId, table.threadId),
+    index("radar_subscribers_status_idx").on(table.status),
+  ]
+);
+
+export type RadarSubscriberRow = typeof radarSubscribers.$inferSelect;
+export type NewRadarSubscriber = typeof radarSubscribers.$inferInsert;

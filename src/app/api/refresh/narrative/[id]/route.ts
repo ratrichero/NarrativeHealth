@@ -30,6 +30,7 @@ import { runFeatureEngine, calculateHealthScore, getRecommendationSignal, genera
 import { getHealthStatus, getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
 import { ruleVersionService } from "@/lib/services/rule-version.service";
 import { runtimeGuardResponse } from "@/lib/env/route-guard";
+import { authorizeSchedulerRequest, schedulerUnauthorized } from "@/lib/env/scheduler-token";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -90,6 +91,15 @@ export async function POST(
   // ENV-GUARD-01: ghi DB production — local mặc định read-only.
   const blocked = runtimeGuardResponse(request, "write");
   if (blocked) return blocked;
+
+  // SCHEDULER-AUTH: guard chỉ kiểm Host. Refresh narrative ghi DB production
+  // nên phải có token scheduler (SCHEDULER_REFRESH_TOKEN), admin session, hoặc
+  // APP_ENV=development — không có ngoại lệ loopback.
+  const auth = await authorizeSchedulerRequest(request);
+  if (!auth.ok) {
+    console.warn("[REFRESH-NARRATIVE] POST rejected: missing/invalid scheduler credentials");
+    return schedulerUnauthorized(auth);
+  }
 
   const { id } = await params;
   const narrativeId = parseInt(id);
