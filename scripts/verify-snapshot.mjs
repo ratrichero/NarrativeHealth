@@ -166,16 +166,18 @@ async function main() {
       continue;
     }
 
-    // Dùng đúng phiên bản băm mà API công bố đã sinh hash; in ra để người đọc
-    // biết mình đang kiểm theo luật nào.
-    const schemaVersion = bundle.hashRules?.schemaVersion ?? 1;
+    // Dùng đúng phiên bản băm mà API công bố đã sinh hash CHO DÒNG NÀY. Ưu tiên
+    // `schemaVersion` của chính bundle (dòng chốt trước v2 được băm bằng `v1|`);
+    // `hashRules.schemaVersion` là luật của bản chốt mới nên không dùng thẳng.
+    const schemaVersion =
+      bundle.schemaVersion ?? listed.schemaVersion ?? bundle.hashRules?.schemaVersion ?? 1;
     const capturedAt =
       bundle.payload && typeof bundle.payload === "object"
         ? bundle.payload.snapshot?.capturedAt
         : undefined;
 
-    // 0. v2: payload phải mang `snapshot.capturedAt`; thiếu nghĩa là field đã bị
-    // bỏ khỏi payload (hoặc dòng cũ trước khi bump schema).
+    // 0. v2: payload phải mang `snapshot.capturedAt`. Dòng v1 hợp lệ thì không
+    // đòi field này — đó là khác biệt giữa "dòng cũ" và "dòng bị sửa".
     if (schemaVersion >= 2 && typeof capturedAt !== "string") {
       fail(
         day,
@@ -248,10 +250,17 @@ async function main() {
   for (const note of notes) console.warn(`[ghi chú] ${note}`);
 
   if (!anchors.size && !anchoredHead) {
-    console.warn(
-      "[cảnh báo] Không có head neo ngoài (--head hoặc --anchor-file). Phần payload hash vẫn kiểm được,\n" +
-        "nhưng KHÔNG chứng minh được lịch sử chưa bị viết lại: dùng head đã gửi tới kênh alert/log scheduler."
-    );
+    const message =
+      "Không có head neo ngoài (--head hoặc --anchor-file). Phần payload hash vẫn kiểm được, " +
+      "nhưng KHÔNG chứng minh được lịch sử chưa bị viết lại: dùng head đã gửi tới kênh alert/log scheduler.";
+    // `--require-anchor` cho lượt kiểm KHÔNG chạy trên máy chủ: nếu không đối
+    // chiếu được với bản đã in ra ngoài thì lượt kiểm đó không chứng minh gì
+    // thêm, nên phải fail thay vì chỉ cảnh báo.
+    if (flags["require-anchor"] === true || flags["require-anchor"] === "true") {
+      fail("(toàn bộ)", message);
+    } else {
+      console.warn(`[cảnh báo] ${message}`);
+    }
   }
 
   if (failures.length > 0) {

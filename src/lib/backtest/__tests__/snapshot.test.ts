@@ -7,8 +7,11 @@ import {
   closedDaysBefore,
   canonicalJson,
   computeHeadHash,
+  evaluateSnapshotFreshness,
+  payloadSchemaVersion,
   sha256Hex,
   snapshotPayloadHash,
+  snapshotPayloadHashAtVersion,
   snapshotPayloadMatches,
 } from "@/lib/backtest/snapshot";
 
@@ -33,14 +36,15 @@ describe("SNAPSHOT-02 — payload canonical + hash", () => {
   });
 
   it("snapshotPayloadMatches chỉ đúng khi payload còn nguyên", () => {
+    const sealed = buildSnapshotPayload(payloadA, { capturedAt: "2026-11-20T23:59:00.000Z" });
     const entry = buildSnapshotEntry({
       day: "2026-11-20",
-      payloadHash: snapshotPayloadHash(payloadA),
+      payloadHash: snapshotPayloadHash(sealed),
       metricsVersion: "track-record-v11",
       prevHead: SNAPSHOT_GENESIS_HASH,
     });
-    expect(snapshotPayloadMatches(entry, payloadA)).toBe(true);
-    expect(snapshotPayloadMatches(entry, { ...payloadA, b: 3 })).toBe(false);
+    expect(snapshotPayloadMatches(entry, sealed)).toBe(true);
+    expect(snapshotPayloadMatches(entry, { ...sealed, b: 3 })).toBe(false);
   });
 });
 
@@ -68,6 +72,73 @@ describe("SNAPSHOT-02 — dấu chụp nằm trong payload", () => {
     expect(snapshotPayloadHash(payloadB)).toBe(
       sha256Hex(`v${SNAPSHOT_SCHEMA_VERSION}|${canonicalJson(payloadB)}`)
     );
+  });
+});
+
+describe("SNAPSHOT-02 — phân biệt dòng v1 với payload bị sửa", () => {
+  const legacyPayload = { totalRNet: 1.5, trades: 2 };
+  const legacyHash = snapshotPayloadHashAtVersion(legacyPayload, 1);
+  const legacyEntry = buildSnapshotEntry({
+    day: "2026-11-19",
+    payloadHash: legacyHash,
+    metricsVersion: "track-record-v10",
+    prevHead: SNAPSHOT_GENESIS_HASH,
+    schemaVersion: 1,
+  });
+
+  it("payload không có capturedAt → luật băm v1", () => {
+    expect(payloadSchemaVersion(legacyPayload)).toBe(1);
+    expect(payloadSchemaVersion(buildSnapshotPayload({ a: 1 }, { capturedAt: "2026-11-24T00:00:00Z" }))).toBe(2);
+    expect(payloadSchemaVersion(null)).toBe(1);
+  });
+
+  it("dòng v1 verify đúng bằng luật v1, không bị báo là đã bị sửa", () => {
+    // Đây là hồi quy: băm bằng hằng số SNAPSHOT_SCHEMA_VERSION (v2) làm mọi dòng
+    // cũ lệch hash → health/verify báo nhầm "payload đã bị sửa".
+    expect(legacyEntry.schemaVersion).toBe(1);
+    expect(snapshotPayloadMatches(legacyEntry, legacyPayload)).toBe(true);
+    expect(snapshotPayloadMatches(legacyEntry, { ...legacyPayload, totalRNet: 9 })).toBe(false);
+  });
+
+  it("payload v2 bị sửa vẫn lệch dù luật băm đọc từ payload", () => {
+    const sealed = buildSnapshotPayload(payloadB, { capturedAt: "2026-11-24T00:00:00Z" });
+    const entry = buildSnapshotEntry({
+      day: "2026-11-24",
+      payloadHash: snapshotPayloadHash(sealed),
+      metricsVersion: "track-record-v11",
+      prevHead: SNAPSHOT_GENESIS_HASH,
+    });
+    expect(snapshotPayloadMatches(entry, sealed)).toBe(true);
+    expect(snapshotPayloadMatches(entry, { ...sealed, totalRNet: -1 })).toBe(false);
+    // Bỏ dấu chụp cũng là sửa — kể cả khi rơi về luật v1.
+    const { snapshot: _seal, ...withoutSeal } = sealed;
+    expect(snapshotPayloadMatches(entry, withoutSeal)).toBe(false);
+  });
+});
+
+describe("WATCHDOG-SNAPSHOT — độ trễ bản chụp", () => {
+  it("bản chụp của hôm qua → không tụt lại", () => {
+    expect(
+      evaluateSnapshotFreshness({ tipDay: "2026-11-23", today: "2026-11-24" })
+    ).toMatchObject({ expectedDay: "2026-11-23", ageDays: 0, stale: false });
+  });
+
+  it("trễ hơn ngưỡng 1 ngày → stale, báo đúng số ngày", () => {
+    expect(
+      evaluateSnapshotFreshness({ tipDay: "2026-11-20", today: "2026-11-24" })
+    ).toMatchObject({ expectedDay: "2026-11-23", ageDays: 3, stale: true });
+    // Đúng ngưỡng thì chưa báo.
+    expect(
+      evaluateSnapshotFreshness({ tipDay: "2026-11-22", today: "2026-11-24" })
+    ).toMatchObject({ ageDays: 1, stale: false });
+  });
+
+  it("chưa từng chốt → chưa có gì để đo, không phải tụt lại", () => {
+    expect(evaluateSnapshotFreshness({ tipDay: null, today: "2026-11-24" })).toMatchObject({
+      tipDay: null,
+      ageDays: null,
+      stale: false,
+    });
   });
 });
 

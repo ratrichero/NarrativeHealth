@@ -4,6 +4,59 @@
 
 ---
 
+## Ngày cập nhật: 2026-11-26
+
+---
+
+## SNAPSHOT-02 tiếp — phân biệt dòng cũ với payload bị sửa, watchdog, neo thứ hai (2026-11-26)
+
+Đợt này xử lý các điểm còn hở sau khi chốt SNAPSHOT-02 (`2860e71`). Không đổi API
+công khai theo hướng phá vỡ: mọi field mới là cộng thêm.
+
+- **Dòng chốt trước v2 không còn bị báo nhầm là bị sửa.** Bản trước băm MỌI payload
+  bằng tiền tố `v2|`, nên một dòng chốt theo luật v1 (payload trần, không có
+  `snapshot.capturedAt`) luôn "lệch hash" — health và `verify-snapshot` sẽ báo
+  `fail` đúng vào lúc cần phân biệt dòng cũ với dòng bị sửa tay. Thêm
+  `payloadSchemaVersion(payload)` (v1/v2 đọc từ chính payload) và
+  `snapshotPayloadHashAtVersion`; `snapshotPayloadMatches` băm theo phiên bản của
+  dòng. Sửa payload vẫn lệch (hash đã lưu sinh từ nội dung gốc), kể cả khi kẻ sửa
+  xoá luôn dấu chụp để "hạ" payload về v1.
+- **`schemaVersion` theo từng dòng.** `SnapshotEntry` mang `schemaVersion`; GET list
+  trả kèm, GET `/snapshots/<ngày>` trả `data.schemaVersion` (luật băm của chính
+  dòng). `scripts/verify-snapshot.mjs` dùng số này thay cho `hashRules.schemaVersion`
+  (luật của bản chốt mới) nên kiểm được cả hai thế hệ trong cùng một lượt.
+- **WATCHDOG-SNAPSHOT.** Check `snapshot-freshness` trong `/api/health/track-record`
+  chỉ đọc MỘT dòng mới nhất và đo `ngày đã đóng gần nhất − ngày bản chụp mới nhất`,
+  ngưỡng 1 ngày. Vì sao cần riêng: gap chỉ được tính trong lượt `/api/refresh`, nên
+  khi refresh chết thì không lượt nào chạy gap và mọi thứ vẫn im lặng cho tới khi có
+  người mở web. Hàm thuần `evaluateSnapshotFreshness` + `readSnapshotFreshness`.
+- **SNAPSHOT-CONFIG.** Check `snapshot-config` báo khi bản chụp mới nhất dùng luật
+  băm cũ, hoặc `metricsVersion` khác code hiện tại — hai trường hợp làm việc so số
+  giữa hai mốc sai nghĩa. Đây là `warn`, không phải lỗi dữ liệu.
+- **Neo thứ hai (file append-only).** `SNAPSHOT_ANCHOR_FILE` (tuỳ chọn): mỗi lượt
+  chốt ghi thêm một dòng `[SNAPSHOT-ANCHOR] day=… payloadHash=… head=…` vào file
+  ngoài DB. Cùng định dạng với log/tin nhắn nên `verify-snapshot.mjs --anchor-file`
+  đọc thẳng; lỗi ghi file không chặn việc chốt (`fileAnchor: "error"` trong outcome).
+- **Verify ngoài VPS.** `--require-anchor` biến "không có head neo ngoài" từ cảnh
+  báo thành lỗi (exit 1): lượt kiểm chạy ngoài máy chủ mà không đối chiếu được với
+  bản đã in ra ngoài thì không chứng minh thêm gì.
+- **Băng thông GET list.** `?verify=none` bỏ bước băm lại payload từng dòng (mỗi
+  dòng là full JSON track record); response ghi `verification.skipped = true` và
+  `verify: "none"` để không ai đọc `ok: true` như "đã kiểm xong". Mặc định vẫn là
+  `all`.
+- **Test:** `snapshot.test.ts` (v1/v2 + freshness), `snapshot-postgres.test.ts`
+  (dòng v1 chèn thẳng vào PGlite vẫn `payloadMatches: true`), `snapshot-anchor.test.ts`
+  (file neo, lỗi ghi file), `verify-snapshot.test.ts` (chuỗi v1, `--require-anchor`),
+  `health/track-record/__tests__/route.test.ts` (watchdog + config).
+- **Chưa làm được trong đợt này (cần môi trường thật):** chạy migration 0040/0041 và
+  lượt chốt đầu trên production, đặt `SCHEDULER_CATALYST_TOKEN`/`SNAPSHOT_ANCHOR_FILE`
+  trên VPS, xác nhận bảng chụp rỗng trước khi migrate, và các phép đo preset/fill-aware
+  cần dữ liệu `top_recommendation_picks`. Runbook: `docs/SNAPSHOT-02_FIRST_SEAL_RUNBOOK.md`.
+
+---
+
+---
+
 ## TRACK-01 FORWARD-01 — tách bằng chứng forward khỏi lịch sử backfill (2026-11-22)
 
 Track record công khai trước đây trộn lẫn pick do hệ thống tạo đúng ngày với pick cũ

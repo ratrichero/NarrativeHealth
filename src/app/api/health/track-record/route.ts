@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { preflightTrackRecordSchema } from "@/lib/db/preflight";
 import { readTrackRecord } from "@/lib/backtest/track-record-read";
-import { listSnapshotGaps, readSnapshotDayStatus } from "@/lib/backtest/snapshot-store";
+import { SNAPSHOT_SCHEMA_VERSION } from "@/lib/backtest/snapshot";
+import {
+  listSnapshotGaps,
+  readSnapshotDayStatus,
+  readSnapshotEntries,
+  readSnapshotFreshness,
+} from "@/lib/backtest/snapshot-store";
 import { getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -176,6 +182,79 @@ export async function GET() {
       id: "snapshot",
       status: "fail",
       detail: `Không đọc được bản chụp (đã chạy migration 0040 + 0041?): ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+
+  // WATCHDOG-SNAPSHOT: bản chụp mới nhất đã trễ bao nhiêu ngày. Check `snapshot`
+  // ở trên chỉ nói về hôm qua và gap chỉ chạy trong lượt refresh — nếu cả
+  // refresh chết thì không lượt nào tính gap. Phép đo này chỉ đọc một dòng nên
+  // uptime monitor gọi được liên tục, và nó phải nói ra trước khi có người mở web.
+  try {
+    const latest = await readSnapshotFreshness({ today });
+    if (latest.stale) {
+      checks.push({
+        id: "snapshot-freshness",
+        status: "warn",
+        detail: `Bản chụp mới nhất là ${latest.tipDay}, trong khi ngày đã đóng gần nhất là ${latest.expectedDay} (${latest.ageDays} ngày, ngưỡng ${latest.maxAgeDays}) — refresh/chốt có thể đã ngừng chạy.`,
+      });
+    } else if (latest.tipDay === null) {
+      checks.push({
+        id: "snapshot-freshness",
+        status: "ok",
+        detail: "Chưa có bản chụp nào (deployment mới) — chưa có gì để đo độ trễ.",
+      });
+    } else {
+      checks.push({
+        id: "snapshot-freshness",
+        status: "ok",
+        detail: `Bản chụp mới nhất ${latest.tipDay}, cách ngày đã đóng gần nhất ${latest.ageDays} ngày (ngưỡng ${latest.maxAgeDays}).`,
+      });
+    }
+  } catch (error) {
+    checks.push({
+      id: "snapshot-freshness",
+      status: "warn",
+      detail: `Không đo được độ trễ bản chụp: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+
+  // SNAPSHOT-CONFIG: bản chụp sinh bởi bản code/luật băm cũ. Không phải lỗi dữ
+  // liệu (dòng v1 vẫn verify đúng bằng luật v1), nhưng so sánh số giữa hai
+  // metricsVersion hoặc đọc `capturedAt` từ dòng v1 sẽ sai. Báo để người vận
+  // hành biết trước khi so sánh.
+  try {
+    const recent = await readSnapshotEntries(1);
+    const newest = recent.length > 0 ? recent[recent.length - 1] : null;
+    if (!newest) {
+      checks.push({
+        id: "snapshot-config",
+        status: "ok",
+        detail: "Chưa có bản chụp nào để đối chiếu cấu hình.",
+      });
+    } else if (newest.schemaVersion < SNAPSHOT_SCHEMA_VERSION) {
+      checks.push({
+        id: "snapshot-config",
+        status: "warn",
+        detail: `Bản chụp mới nhất ${newest.day} theo luật băm v${newest.schemaVersion} (thiếu snapshot.capturedAt trong payload_hash); code hiện tại chốt v${SNAPSHOT_SCHEMA_VERSION} — verify phải dùng schemaVersion của từng dòng.`,
+      });
+    } else if (newest.metricsVersion !== payload.meta.metricsVersion) {
+      checks.push({
+        id: "snapshot-config",
+        status: "warn",
+        detail: `Bản chụp ${newest.day} ghi metricsVersion ${newest.metricsVersion}, code hiện tại ${payload.meta.metricsVersion} — số đã công bố sinh bởi bản code khác, đối chiếu trước khi so sánh.`,
+      });
+    } else {
+      checks.push({
+        id: "snapshot-config",
+        status: "ok",
+        detail: `Bản chụp ${newest.day}: luật băm v${newest.schemaVersion}, metricsVersion ${newest.metricsVersion} khớp code hiện tại.`,
+      });
+    }
+  } catch (error) {
+    checks.push({
+      id: "snapshot-config",
+      status: "warn",
+      detail: `Không đọc được bản chụp mới nhất: ${error instanceof Error ? error.message : String(error)}`,
     });
   }
 

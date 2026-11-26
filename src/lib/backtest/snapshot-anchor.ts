@@ -15,6 +15,7 @@
 // việc chốt (giống BT-08). Không bao giờ ném lỗi ra ngoài: chốt số quan trọng
 // hơn việc gửi tin.
 
+import { appendFile } from "node:fs/promises";
 import { dispatchCustomText } from "@/lib/services/alert-delivery.service";
 import type { SnapshotEntry } from "./snapshot";
 
@@ -54,6 +55,48 @@ export interface SnapshotAnchorOutcome {
   anchored: boolean;
   /** `disabled` khi tắt bằng env, `error` khi dispatch ném lỗi. */
   skipped: "disabled" | "error" | null;
+  /**
+   * Neo thứ hai: file append-only ngoài DB (`SNAPSHOT_ANCHOR_FILE`). Một kênh
+   * tin nhắn có thể bị xoá/sửa; một file trên đĩa khác hoặc được log-shipper
+   * mang đi là bản sao độc lập rẻ nhất. `not-configured` = chưa đặt env.
+   */
+  fileAnchor?: "appended" | "error" | "not-configured";
+}
+
+/**
+ * Neo thứ hai: mỗi lần chốt ghi THÊM một dòng JSON vào file ngoài DB.
+ *
+ * Định dạng dòng khớp với thứ `scripts/verify-snapshot.mjs --anchor-file` đọc
+ * được (day/payloadHash/head), nên file này dùng để đối chiếu được ngay. Ghi
+ * append nên không bao giờ ghi đè bản cũ; lỗi ghi không được làm hỏng việc chốt
+ * (DB đã có dòng, log đã có head).
+ */
+export function snapshotAnchorFile(): string | null {
+  const raw = process.env.SNAPSHOT_ANCHOR_FILE?.trim();
+  return raw ? raw : null;
+}
+
+export async function appendSnapshotAnchorLine(
+  entry: SnapshotEntry,
+  file: string | null = snapshotAnchorFile(),
+  append: typeof appendFile = appendFile
+): Promise<"appended" | "error" | "not-configured"> {
+  if (!file) return "not-configured";
+  // Cùng định dạng với dòng log neo, nên `verify-snapshot.mjs --anchor-file`
+  // đọc thẳng file này mà không cần parser riêng.
+  const line =
+    `${SNAPSHOT_ANCHOR_LOG_PREFIX} day=${entry.day} payloadHash=${entry.payloadHash} head=${entry.headHash}` +
+    ` metricsVersion=${entry.metricsVersion} createdAt=${entry.createdAt}\n`;
+  try {
+    await append(file, line, "utf8");
+    return "appended";
+  } catch (error) {
+    console.warn(
+      `${SNAPSHOT_ANCHOR_LOG_PREFIX} không ghi được neo file (${file}) — head vẫn còn trong log/DB:`,
+      error instanceof Error ? error.message : String(error)
+    );
+    return "error";
+  }
 }
 
 /**
@@ -70,12 +113,15 @@ export async function emitSnapshotAnchor(
   console.info(
     `${SNAPSHOT_ANCHOR_LOG_PREFIX} day=${entry.day} payloadHash=${entry.payloadHash} head=${entry.headHash}`
   );
+  // Neo file chạy TRƯỚC khi gửi tin: rẻ, không phụ thuộc mạng, và vẫn có tác
+  // dụng khi mọi kênh tin nhắn chết.
+  const fileAnchor = await appendSnapshotAnchorLine(entry);
 
   if (!snapshotAnchorEnabled()) {
     console.warn(
       `${SNAPSHOT_ANCHOR_LOG_PREFIX} SNAPSHOT_ANCHOR_ENABLED=0 — head chỉ còn trong log, không gửi ra kênh nào.`
     );
-    return { delivered: 0, anchored: false, skipped: "disabled" };
+    return { delivered: 0, anchored: false, skipped: "disabled", fileAnchor };
   }
 
   try {
@@ -87,17 +133,17 @@ export async function emitSnapshotAnchor(
       console.warn(
         `${SNAPSHOT_ANCHOR_LOG_PREFIX} không kênh nào nhận (Telegram/Webhook/Resend chưa cấu hình?) — head ngày ${entry.day} chỉ còn trong log.`
       );
-      return { delivered: 0, anchored: false, skipped: null };
+      return { delivered: 0, anchored: false, skipped: null, fileAnchor };
     }
     console.info(
       `${SNAPSHOT_ANCHOR_LOG_PREFIX} delivered=${delivered} day=${entry.day} head=${entry.headHash}`
     );
-    return { delivered, anchored: true, skipped: null };
+    return { delivered, anchored: true, skipped: null, fileAnchor };
   } catch (error) {
     console.warn(
       `${SNAPSHOT_ANCHOR_LOG_PREFIX} gửi neo lỗi (head vẫn còn trong log):`,
       error instanceof Error ? error.message : String(error)
     );
-    return { delivered: 0, anchored: false, skipped: "error" };
+    return { delivered: 0, anchored: false, skipped: "error", fileAnchor };
   }
 }

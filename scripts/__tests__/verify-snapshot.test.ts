@@ -19,6 +19,7 @@ import {
   buildSnapshotPayload,
   computeHeadHash,
   snapshotPayloadHash,
+  snapshotPayloadHashAtVersion,
 } from "@/lib/backtest/snapshot";
 
 jest.setTimeout(30_000);
@@ -36,6 +37,8 @@ interface DayFixture {
   payloadHash: string;
   prevHead: string;
   headHash: string;
+  /** Luật băm của dòng (1 = chốt trước SNAPSHOT-02, không có capturedAt). */
+  schemaVersion: number;
 }
 
 function fixture(day: string, payload: object, prevHead: string): DayFixture {
@@ -48,6 +51,23 @@ function fixture(day: string, payload: object, prevHead: string): DayFixture {
     payloadHash,
     prevHead,
     headHash: computeHeadHash({ day, payloadHash, prevHead }),
+    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+  };
+}
+
+/**
+ * Dòng chốt TRƯỚC SNAPSHOT-02: payload trần, băm bằng tiền tố `v1|`. Những dòng
+ * này hợp lệ — verify phải đọc `schemaVersion` của chính dòng, nếu băm bằng v2
+ * thì mọi dòng cũ bị báo nhầm là đã bị sửa.
+ */
+function legacyFixture(day: string, payload: object, prevHead: string): DayFixture {
+  const payloadHash = snapshotPayloadHashAtVersion(payload, 1);
+  return {
+    payload,
+    payloadHash,
+    prevHead,
+    headHash: computeHeadHash({ day, payloadHash, prevHead }),
+    schemaVersion: 1,
   };
 }
 
@@ -65,6 +85,7 @@ function entries() {
       headHash: fixture.headHash,
       metricsVersion: "track-record-v11",
       createdAt: `${day}T23:59:00.000Z`,
+      schemaVersion: fixture.schemaVersion,
     }));
 }
 
@@ -93,6 +114,7 @@ beforeAll(async () => {
           payloadHash: fixture.payloadHash,
           headHash: fixture.headHash,
           prevHead: fixture.prevHead,
+          schemaVersion: fixture.schemaVersion,
           metricsVersion: "track-record-v11",
           createdAt: `${day}T23:59:00.000Z`,
           payload: fixture.payload,
@@ -157,6 +179,18 @@ describe("scripts/verify-snapshot.mjs", () => {
     expect(result.stderr).toContain(days[DAY_TWO].payloadHash);
     // Ngày còn lại vẫn sạch — script không báo lây.
     expect(result.stdout).toContain(`OK ${DAY_ONE}`);
+  });
+
+  it("dòng chốt trước v2 (payload trần, băm v1) vẫn verify được → exit 0", async () => {
+    const legacy = legacyFixture(DAY_ONE, payloadOne, SNAPSHOT_GENESIS_HASH);
+    const two = fixture(DAY_TWO, payloadTwo, legacy.headHash);
+    days = { [DAY_ONE]: legacy, [DAY_TWO]: two };
+
+    const result = await verify();
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(`OK ${DAY_ONE}`);
+    expect(result.stdout).toContain("TẤT CẢ KHỚP");
   });
 
   it("payload bị bỏ snapshot.capturedAt → exit 1, nêu rõ field thiếu", async () => {
@@ -229,6 +263,19 @@ describe("scripts/verify-snapshot.mjs", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("--require-anchor mà không có neo ngoài → exit 1 (kiểm ngoài VPS phải đối chiếu được)", async () => {
+    const result = await verify(["--require-anchor"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Không có head neo ngoài");
+  });
+
+  it("--require-anchor + --head khớp → exit 0", async () => {
+    const result = await verify(["--require-anchor", "--head", days[DAY_TWO].headHash]);
+
+    expect(result.code).toBe(0);
   });
 
   it("ngày không có bản chụp (--day) → exit 1 với lỗi tải payload", async () => {

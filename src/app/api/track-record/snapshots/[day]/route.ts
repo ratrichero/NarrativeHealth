@@ -41,6 +41,7 @@ const CACHE_CONTROL = "public, max-age=31536000, immutable";
  */
 const hashRules = {
   algorithm: "sha256",
+  /** Luật băm của bản chốt MỚI; dòng cũ dùng `data.schemaVersion` của nó. */
   schemaVersion: SNAPSHOT_SCHEMA_VERSION,
   payloadHash: `sha256("v${SNAPSHOT_SCHEMA_VERSION}|" + canonicalJson(payload))`,
   headHash: `sha256("head-v1|" + day + "|" + payloadHash + "|" + prevHead)`,
@@ -105,6 +106,10 @@ export async function GET(
           payloadHash: bundle.entry.payloadHash,
           headHash: bundle.entry.headHash,
           prevHead: bundle.prevHead,
+          // Luật băm của CHÍNH dòng này: dòng chốt trước v2 không có
+          // `snapshot.capturedAt` và phải được băm bằng `v1|`. Client dùng số
+          // này thay cho `hashRules.schemaVersion` (luật của bản chốt mới).
+          schemaVersion: bundle.entry.schemaVersion,
           metricsVersion: bundle.entry.metricsVersion,
           createdAt: bundle.entry.createdAt,
           payload: bundle.payload,

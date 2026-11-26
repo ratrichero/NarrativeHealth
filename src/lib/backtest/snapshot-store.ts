@@ -14,9 +14,13 @@ import {
   closedDaysBefore,
   computeHeadHash,
   evaluateSnapshotDay,
+  evaluateSnapshotFreshness,
+  payloadSchemaVersion,
   snapshotPayloadHash,
+  snapshotPayloadMatches,
   type SnapshotDayDecision,
   type SnapshotEntry,
+  type SnapshotFreshness,
 } from "./snapshot";
 import { emitSnapshotAnchor, type SnapshotAnchorOutcome } from "./snapshot-anchor";
 
@@ -33,6 +37,9 @@ function toEntry(row: SnapshotRow): SnapshotEntry {
     metricsVersion: row.metricsVersion,
     createdAt:
       row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+    // Đọc từ payload, không lấy hằng số: dòng chốt trước v2 vẫn được verify
+    // bằng luật v1 thay vì bị báo nhầm là đã bị sửa.
+    schemaVersion: payloadSchemaVersion(row.payload),
   };
 }
 
@@ -233,6 +240,8 @@ export interface SnapshotDayStatus {
   entry: SnapshotEntry | null;
   /** Payload trong DB còn khớp `payload_hash`; null khi ngày chưa có bản chụp. */
   payloadMatches: boolean | null;
+  /** Luật băm của dòng này (1 = trước SNAPSHOT-02); null khi chưa có bản chụp. */
+  schemaVersion: number | null;
   /**
    * `head_hash` của ngày này khớp neo tính lại từ ngày trước (hoặc genesis).
    * null khi ngày chưa có bản chụp. Bắt được sửa tay cột head mà băm payload
@@ -255,7 +264,14 @@ export async function readSnapshotDayStatus(day: string): Promise<SnapshotDaySta
     .where(eq(trackRecordSnapshots.day, day))
     .limit(1);
   if (!row) {
-    return { day, entry: null, payloadMatches: null, headLinked: null, previousDay: null };
+    return {
+      day,
+      entry: null,
+      payloadMatches: null,
+      schemaVersion: null,
+      headLinked: null,
+      previousDay: null,
+    };
   }
 
   const [prev] = await db
@@ -271,13 +287,39 @@ export async function readSnapshotDayStatus(day: string): Promise<SnapshotDaySta
     prevHead: prev?.headHash ?? SNAPSHOT_GENESIS_HASH,
   });
 
+  const entry = toEntry(row);
   return {
     day: row.day,
-    entry: toEntry(row),
-    payloadMatches: snapshotPayloadHash(row.payload) === row.payloadHash,
+    entry,
+    payloadMatches: snapshotPayloadMatches(entry, row.payload),
+    schemaVersion: entry.schemaVersion,
     headLinked: expectedHead === row.headHash,
     previousDay: prev?.day ?? null,
   };
+}
+
+/**
+ * WATCHDOG-SNAPSHOT — đọc MỘT dòng mới nhất để đo độ trễ của bản chụp.
+ *
+ * Chỉ select `day` + rule băm: không kéo payload 90 ngày về như
+ * `readVerifiedSnapshotChain`. Dùng cho health vì đây là thứ uptime monitor gọi
+ * liên tục, và nó phải còn nói được khi refresh (nơi duy nhất chạy gap) đã chết.
+ */
+export async function readSnapshotFreshness(options: {
+  today: string;
+  /** Mặc định `SNAPSHOT_MAX_AGE_DAYS` (1 ngày). */
+  maxAgeDays?: number;
+}): Promise<SnapshotFreshness> {
+  const [row] = await db
+    .select({ day: trackRecordSnapshots.day, payload: trackRecordSnapshots.payload })
+    .from(trackRecordSnapshots)
+    .orderBy(desc(trackRecordSnapshots.day))
+    .limit(1);
+  return evaluateSnapshotFreshness({
+    tipDay: row?.day ?? null,
+    today: options.today,
+    maxAgeDays: options.maxAgeDays,
+  });
 }
 
 /**
@@ -334,6 +376,12 @@ export interface SnapshotVerification {
   checked: number;
   /** Ngày có payload trong DB không còn khớp `payload_hash` đã công bố. */
   mismatchedDays: string[];
+  /**
+   * true khi caller chọn bỏ bước băm lại (`?verify=none`) để tiết kiệm băng
+   * thông: danh sách hash vẫn đúng, nhưng lượt này KHÔNG chứng minh payload
+   * còn khớp. `ok` khi đó không được đọc như "đã kiểm xong".
+   */
+  skipped?: boolean;
 }
 
 export interface VerifiedSnapshotChain {
@@ -356,7 +404,7 @@ export async function readVerifiedSnapshotChain(
     .limit(clampLimit(limit));
 
   const mismatchedDays = rows
-    .filter((row) => snapshotPayloadHash(row.payload) !== row.payloadHash)
+    .filter((row) => !snapshotPayloadMatches(toEntry(row), row.payload))
     .map((row) => row.day);
   const entries = rows.map(toEntry).reverse();
 

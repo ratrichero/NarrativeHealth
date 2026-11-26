@@ -41,6 +41,7 @@ import {
   buildSnapshotPayload,
   computeHeadHash,
   snapshotPayloadHash,
+  snapshotPayloadHashAtVersion,
 } from "../snapshot";
 
 jest.setTimeout(30_000);
@@ -328,9 +329,37 @@ describe("SNAPSHOT-02 — bản chụp + neo head trên Postgres thật", () => 
       day: DAY_ONE,
       entry: null,
       payloadMatches: null,
+      schemaVersion: null,
       headLinked: null,
       previousDay: null,
     });
+  });
+
+  test("dòng chốt trước v2 (payload trần, hash v1) vẫn khớp — không báo nhầm là bị sửa", async () => {
+    // Đúng dạng dòng có thể còn trong bảng từ trước SNAPSHOT-02/0040: payload
+    // không mang `snapshot.capturedAt` và `payload_hash` sinh bằng `v1|`.
+    const legacyPayload = { totalRNet: 7.5, trades: 2 };
+    const legacyHash = snapshotPayloadHashAtVersion(legacyPayload, 1);
+    await client.query(
+      `INSERT INTO track_record_snapshots (day, payload_hash, head_hash, metrics_version, payload)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [
+        DAY_ONE,
+        legacyHash,
+        computeHeadHash({ day: DAY_ONE, payloadHash: legacyHash, prevHead: SNAPSHOT_GENESIS_HASH }),
+        "track-record-v10",
+        JSON.stringify(legacyPayload),
+      ]
+    );
+
+    const status = await readSnapshotDayStatus(DAY_ONE);
+    expect(status.schemaVersion).toBe(1);
+    expect(status.entry?.schemaVersion).toBe(1);
+    expect(status.payloadMatches).toBe(true);
+    expect(status.headLinked).toBe(true);
+
+    const chain = await readVerifiedSnapshotChain();
+    expect(chain.verification).toMatchObject({ ok: true, checked: 1, mismatchedDays: [] });
   });
 
   test("readSnapshotDayStatus: bản chụp sạch khớp payload + nối đúng head bản trước", async () => {

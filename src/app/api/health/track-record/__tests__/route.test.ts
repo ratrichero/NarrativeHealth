@@ -16,6 +16,8 @@ jest.mock("@/lib/backtest/track-record-read", () => ({
 jest.mock("@/lib/backtest/snapshot-store", () => ({
   listSnapshotGaps: jest.fn(),
   readSnapshotDayStatus: jest.fn(),
+  readSnapshotEntries: jest.fn(),
+  readSnapshotFreshness: jest.fn(),
 }));
 jest.mock("@/lib/utils", () => ({
   getBusinessDate: jest.fn(() => "2026-11-24"),
@@ -28,10 +30,13 @@ const { preflightTrackRecordSchema } = require("@/lib/db/preflight") as {
 const { readTrackRecord } = require("@/lib/backtest/track-record-read") as {
   readTrackRecord: jest.Mock<() => Promise<unknown>>;
 };
-const { listSnapshotGaps, readSnapshotDayStatus } = require("@/lib/backtest/snapshot-store") as {
-  listSnapshotGaps: jest.Mock<() => Promise<unknown>>;
-  readSnapshotDayStatus: jest.Mock<(day: string) => Promise<unknown>>;
-};
+const { listSnapshotGaps, readSnapshotDayStatus, readSnapshotEntries, readSnapshotFreshness } =
+  require("@/lib/backtest/snapshot-store") as {
+    listSnapshotGaps: jest.Mock<() => Promise<unknown>>;
+    readSnapshotDayStatus: jest.Mock<(day: string) => Promise<unknown>>;
+    readSnapshotEntries: jest.Mock<(limit?: number) => Promise<unknown>>;
+    readSnapshotFreshness: jest.Mock<(options: unknown) => Promise<unknown>>;
+  };
 
 import { GET } from "../route";
 
@@ -64,6 +69,23 @@ beforeEach(() => {
     previousDay: "2026-11-22",
   });
   listSnapshotGaps.mockResolvedValue({ missing: [], windowDays: 31, tip: "2026-11-23" });
+  readSnapshotFreshness.mockResolvedValue({
+    tipDay: "2026-11-23",
+    expectedDay: "2026-11-23",
+    ageDays: 0,
+    maxAgeDays: 1,
+    stale: false,
+  });
+  readSnapshotEntries.mockResolvedValue([
+    {
+      day: "2026-11-23",
+      payloadHash: "b".repeat(64),
+      headHash: "a".repeat(64),
+      metricsVersion: "track-record-v11",
+      createdAt: "2026-11-23T23:59:00.000Z",
+      schemaVersion: 2,
+    },
+  ]);
 });
 
 describe("GET /api/health/track-record — snapshot", () => {
@@ -150,6 +172,68 @@ describe("GET /api/health/track-record — snapshot", () => {
     expect(response.status).toBe(503);
     expect(snapshot?.status).toBe("fail");
     expect(snapshot?.detail).toContain("head_hash");
+  });
+
+  it("bản chụp mới nhất trễ quá ngưỡng → snapshot-freshness warn", async () => {
+    readSnapshotFreshness.mockResolvedValue({
+      tipDay: "2026-11-18",
+      expectedDay: "2026-11-23",
+      ageDays: 5,
+      maxAgeDays: 1,
+      stale: true,
+    });
+
+    const response = await GET();
+    const body = (await response.json()) as Body;
+    const freshness = body.checks.find((check) => check.id === "snapshot-freshness");
+
+    expect(response.status).toBe(200);
+    expect(freshness?.status).toBe("warn");
+    expect(freshness?.detail).toContain("2026-11-18");
+    expect(freshness?.detail).toContain("5 ngày");
+  });
+
+  it("bản chụp sinh bởi metricsVersion cũ → snapshot-config warn", async () => {
+    readSnapshotEntries.mockResolvedValue([
+      {
+        day: "2026-11-23",
+        payloadHash: "b".repeat(64),
+        headHash: "a".repeat(64),
+        metricsVersion: "track-record-v9",
+        createdAt: "2026-11-23T23:59:00.000Z",
+        schemaVersion: 2,
+      },
+    ]);
+
+    const response = await GET();
+    const body = (await response.json()) as Body;
+    const config = body.checks.find((check) => check.id === "snapshot-config");
+
+    expect(response.status).toBe(200);
+    expect(config?.status).toBe("warn");
+    expect(config?.detail).toContain("track-record-v9");
+    expect(config?.detail).toContain("track-record-v11");
+  });
+
+  it("dòng v1 cũ vẫn được nêu là luật băm cũ, không phải lỗi", async () => {
+    readSnapshotEntries.mockResolvedValue([
+      {
+        day: "2026-11-23",
+        payloadHash: "b".repeat(64),
+        headHash: "a".repeat(64),
+        metricsVersion: "track-record-v11",
+        createdAt: "2026-11-23T23:59:00.000Z",
+        schemaVersion: 1,
+      },
+    ]);
+
+    const response = await GET();
+    const body = (await response.json()) as Body;
+    const config = body.checks.find((check) => check.id === "snapshot-config");
+
+    expect(response.status).toBe(200);
+    expect(config?.status).toBe("warn");
+    expect(config?.detail).toContain("v1");
   });
 
   it("không đọc được bảng chụp (thiếu migration) → fail", async () => {

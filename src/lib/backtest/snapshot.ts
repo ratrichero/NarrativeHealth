@@ -56,9 +56,33 @@ export function sha256Hex(input: string): string {
   return createHash("sha256").update(input, "utf8").digest("hex");
 }
 
-/** Hash của payload đã chụp (không gồm metadata của chính bản chụp). */
+/**
+ * Phiên bản băm mà một payload tự khai.
+ *
+ * v2 gói `snapshot.capturedAt` vào payload; v1 (dòng chốt trước SNAPSHOT-02)
+ * không có field đó và được băm bằng tiền tố `v1|`. Phải đọc từ chính payload
+ * chứ không lấy `SNAPSHOT_SCHEMA_VERSION`: nếu lấy hằng số hiện tại thì mọi dòng
+ * cũ đều "lệch hash" và health/verify báo nhầm là dữ liệu bị sửa — đúng lúc
+ * cần phân biệt dòng cũ với dòng bị sửa tay.
+ */
+export function payloadSchemaVersion(payload: unknown): number {
+  if (payload && typeof payload === "object") {
+    const seal = (payload as { snapshot?: unknown }).snapshot;
+    if (seal && typeof seal === "object" && typeof (seal as SnapshotSeal).capturedAt === "string") {
+      return 2;
+    }
+  }
+  return 1;
+}
+
+/** Hash theo đúng phiên bản của payload (xem `payloadSchemaVersion`). */
+export function snapshotPayloadHashAtVersion(payload: unknown, version: number): string {
+  return sha256Hex(`v${version}|${canonicalJson(payload)}`);
+}
+
+/** Hash của payload đã chụp theo luật băm HIỆN TẠI (dùng khi chốt mới). */
 export function snapshotPayloadHash(payload: unknown): string {
-  return sha256Hex(`v${SNAPSHOT_SCHEMA_VERSION}|${canonicalJson(payload)}`);
+  return snapshotPayloadHashAtVersion(payload, SNAPSHOT_SCHEMA_VERSION);
 }
 
 export interface SnapshotHashInput {
@@ -76,6 +100,8 @@ export interface SnapshotEntry {
   headHash: string;
   metricsVersion: string;
   createdAt: string;
+  /** Luật băm đã dùng cho dòng này (1 = trước SNAPSHOT-02, 2 = có capturedAt). */
+  schemaVersion: number;
 }
 
 /**
@@ -92,7 +118,7 @@ export function computeHeadHash(input: {
 }
 
 export function buildSnapshotEntry(
-  input: SnapshotHashInput,
+  input: SnapshotHashInput & { schemaVersion?: number },
   options: { createdAt?: string } = {}
 ): SnapshotEntry {
   return {
@@ -101,12 +127,19 @@ export function buildSnapshotEntry(
     metricsVersion: input.metricsVersion,
     headHash: computeHeadHash(input),
     createdAt: options.createdAt ?? new Date().toISOString(),
+    schemaVersion: input.schemaVersion ?? SNAPSHOT_SCHEMA_VERSION,
   };
 }
 
-/** Payload đọc từ DB còn khớp `payload_hash` đã công bố hay không. */
+/**
+ * Payload đọc từ DB còn khớp `payload_hash` đã công bố hay không.
+ *
+ * Băm theo phiên bản payload TỰ KHAI, không theo hằng số hiện tại: dòng v1 vẫn
+ * verify đúng bằng luật v1, còn payload bị sửa thì vẫn lệch (hash đã lưu sinh
+ * từ nội dung gốc).
+ */
 export function snapshotPayloadMatches(entry: SnapshotEntry, payload: unknown): boolean {
-  return snapshotPayloadHash(payload) === entry.payloadHash;
+  return snapshotPayloadHashAtVersion(payload, payloadSchemaVersion(payload)) === entry.payloadHash;
 }
 
 /**
@@ -155,6 +188,62 @@ export function closedDaysBefore(today: string, count: number): string[] {
     days.push(shiftBusinessDay(today, -offset));
   }
   return days;
+}
+
+/** Số ngày giữa hai ngày nghiệp vụ (YYYY-MM-DD); null khi một bên không đọc được. */
+export function daysBetweenDays(from: string, to: string): number | null {
+  const a = /^\d{4}-\d{2}-\d{2}$/.test(from) ? Date.parse(`${from}T00:00:00Z`) : Number.NaN;
+  const b = /^\d{4}-\d{2}-\d{2}$/.test(to) ? Date.parse(`${to}T00:00:00Z`) : Number.NaN;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86_400_000);
+}
+
+/**
+ * WATCHDOG-SNAPSHOT — bản chụp mới nhất đã cũ bao nhiêu ngày so với ngày vừa đóng.
+ *
+ * Vì sao cần ngoài check `snapshot` của health: check đó nói chuyện của RIÊNG
+ * hôm qua (và gap chỉ được tính trong lượt refresh). Nếu cả refresh chết thì
+ * không lượt nào chạy gap, và mọi thứ vẫn "ok" cho tới khi ai đó mở web. Phép
+ * đo ở đây chỉ đọc một dòng mới nhất và không phụ thuộc refresh đã chạy.
+ *
+ * `maxAgeDays` = 1: ngày vừa đóng phải có bản chụp (job 07:10 ICT chốt hôm
+ * qua), trễ hơn 1 ngày là đáng báo. `stale` là `ageDays > maxAgeDays`.
+ */
+export interface SnapshotFreshness {
+  /** Ngày của bản chụp mới nhất; null = bảng chưa từng chốt. */
+  tipDay: string | null;
+  /** Ngày đã đóng gần nhất (hôm qua theo giờ nghiệp vụ). */
+  expectedDay: string;
+  /** `expectedDay − tipDay` theo ngày; null khi chưa có bản chụp nào. */
+  ageDays: number | null;
+  maxAgeDays: number;
+  stale: boolean;
+}
+
+export const SNAPSHOT_MAX_AGE_DAYS = 1;
+
+export function evaluateSnapshotFreshness(input: {
+  tipDay: string | null;
+  today: string;
+  maxAgeDays?: number;
+}): SnapshotFreshness {
+  const maxAgeDays =
+    Number.isFinite(input.maxAgeDays) && (input.maxAgeDays as number) >= 0
+      ? Math.floor(input.maxAgeDays as number)
+      : SNAPSHOT_MAX_AGE_DAYS;
+  const expectedDay = shiftBusinessDay(input.today, -1);
+  if (input.tipDay === null) {
+    // Deployment mới chưa chốt ngày nào: không phải "tụt lại" mà là chưa bắt đầu.
+    return { tipDay: null, expectedDay, ageDays: null, maxAgeDays, stale: false };
+  }
+  const ageDays = daysBetweenDays(input.tipDay, expectedDay);
+  return {
+    tipDay: input.tipDay,
+    expectedDay,
+    ageDays,
+    maxAgeDays,
+    stale: ageDays !== null && ageDays > maxAgeDays,
+  };
 }
 
 /**

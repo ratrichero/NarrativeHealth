@@ -328,6 +328,10 @@ curl -sS https://<domain>/api/health/track-record \
 | `fail` | "KHÔNG khớp payload_hash" | Payload trong DB bị sửa sau khi công bố — đối chiếu với `head` đã lưu, không tự sửa DB |
 | `fail` | "head_hash không nối đúng neo" | `head_hash` trong DB bị sửa — so với bản đã neo ngoài |
 | `fail` | "Không đọc được bản chụp (đã chạy migration…)" | Migration chưa xong — quay lại bước 1 |
+| `warn` | `snapshot-freshness`: "Bản chụp mới nhất là … trong khi ngày đã đóng gần nhất là …" | **Watchdog refresh chết**: bản chụp mới nhất đã trễ > 1 ngày. Check này chỉ đọc một dòng nên còn nói được khi cả `/api/refresh` (nơi duy nhất tính gap) đã ngừng chạy — xem log refresh + job FastAPI |
+| `ok` | `snapshot-freshness`: "Chưa có bản chụp nào (deployment mới)" | Chưa chốt lần nào — không phải tụt lại; bước 3 sẽ tạo bản đầu tiên |
+| `warn` | `snapshot-config`: "Bản chụp … theo luật băm v1 …" | Dòng cũ trước SNAPSHOT-02. Vẫn verify đúng bằng luật v1 (`schemaVersion` từng dòng), nhưng `snapshot.capturedAt` không nằm trong hash của dòng đó |
+| `warn` | `snapshot-config`: "ghi metricsVersion … code hiện tại …" | Bản chụp sinh bởi bản code cũ — đối chiếu trước khi so số giữa hai mốc |
 
 Endpoint health trả **503** khi có bất kỳ check `fail`; `warn` vẫn `200` để
 monitor phân biệt "hỏng" với "cần xem". Lưu ý hai điều dễ đọc sai: (1) bản chụp
@@ -354,6 +358,33 @@ ETAG=$(curl -sS -D - -o /dev/null https://<domain>/api/track-record/snapshots/20
 curl -sS -o /dev/null -w '%{http_code}\n' \
   -H "If-None-Match: $ETAG" https://<domain>/api/track-record/snapshots/2026-11-23
 ```
+
+### 5b. Kiểm NGOÀI VPS (bắt buộc có neo ngoài)
+
+Chạy `verify-snapshot` trên máy khác (hoặc CI) mới chứng minh được endpoint công
+khai trả đúng thứ đã công bố — chạy trên chính VPS vẫn có thể đọc một bản DB đã
+bị sửa. Khi chạy ngoài, dùng `--require-anchor`: nếu không đối chiếu được với
+`head` đã in ra ngoài thì lượt kiểm **thoát 1** thay vì chỉ cảnh báo.
+
+```bash
+# Dùng file neo append-only (SNAPSHOT_ANCHOR_FILE trên VPS, copy về máy kiểm)
+node scripts/verify-snapshot.mjs \
+  --base-url https://<domain> \
+  --anchor-file snapshot-anchors.log \
+  --require-anchor --days 25
+
+# Hoặc head in trong log/tin nhắn neo
+node scripts/verify-snapshot.mjs \
+  --base-url https://<domain> --head <head> --require-anchor --days 25
+```
+
+Neo thứ hai: đặt `SNAPSHOT_ANCHOR_FILE` trên VPS (xem `.env.example`). Mỗi lượt
+chốt ghi thêm một dòng `[SNAPSHOT-ANCHOR] day=… payloadHash=… head=…` vào file,
+cùng định dạng với log và tin nhắn — file này đọc được bằng `--anchor-file`.
+
+Lượt kiểm chỉ cần danh sách hash/head (không cần băm lại payload) dùng
+`GET /api/track-record/snapshots?verify=none`: bỏ bước kéo payload từng dòng,
+response ghi `verification.skipped = true` để không ai đọc nhầm là "đã kiểm xong".
 
 ---
 
