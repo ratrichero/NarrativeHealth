@@ -3,6 +3,7 @@
 
 import { describe, expect, it, jest } from "@jest/globals";
 import { db } from "@/db";
+import { deliverTelegramMessage } from "@/lib/services/alert-delivery.service";
 import {
   DEFAULT_RADAR_ALERT_DAILY_CAP,
   RADAR_ALERT_OUTBOX_BACKOFF_SECONDS,
@@ -14,12 +15,19 @@ import {
   enqueueRadarOutbox,
   isOverDailyCap,
   nextRadarOutboxAttempt,
+  productionDeps,
   radarAlertDailyCap,
   radarOutboxLeaseMs,
   type RadarOutboxDeps,
   type RadarOutboxRow,
   type RadarOutboxSendResult,
 } from "@/lib/market/alert-outbox";
+
+// productionDeps().send thật sẽ gọi adapter này — mock để soi đúng tham số,
+// không cần mạng và không phụ thuộc default timeout của alert-delivery.
+jest.mock("@/lib/services/alert-delivery.service", () => ({
+  deliverTelegramMessage: jest.fn(),
+}));
 
 jest.mock("@/db", () => {
   const returning = jest.fn(async () => [{ id: 1 }]);
@@ -172,6 +180,30 @@ describe("retry backoff + tôn trọng retry_after", () => {
 
     expect(result.retried).toBe(1);
     expect(events[0]).toMatchObject({ type: "retry", error: "fetch failed" });
+  });
+});
+
+describe("ngân sách gửi của outbox", () => {
+  it("gửi Telegram phải truyền RADAR_OUTBOX_SEND_TIMEOUT_MS, không để rơi về default 8000ms", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    try {
+      const deliver = jest.mocked(deliverTelegramMessage);
+      deliver.mockResolvedValue({ ok: true, status: 200 });
+
+      const result = await productionDeps().send(row({ channel: "telegram" }));
+
+      expect(deliver).toHaveBeenCalledTimes(1);
+      expect(deliver).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: "test-token",
+          chatId: "-100",
+          timeoutMs: RADAR_OUTBOX_SEND_TIMEOUT_MS,
+        })
+      );
+      expect(result).toEqual({ ok: true });
+    } finally {
+      delete process.env.TELEGRAM_BOT_TOKEN;
+    }
   });
 });
 

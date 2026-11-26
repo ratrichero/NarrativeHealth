@@ -34,7 +34,12 @@ export const RADAR_ALERT_OUTBOX_BACKOFF_SECONDS = [30, 120, 600] as const;
 /** Số dòng xử lý mỗi lượt drain — giữ request scheduler ngắn. */
 export const RADAR_ALERT_OUTBOX_BATCH = 20;
 
-/** Timeout gửi mỗi dòng (khớp AbortSignal trong `productionDeps.send`). */
+/**
+ * Timeout gửi mỗi dòng, là đơn vị để `radarOutboxLeaseMs` tính lease.
+ * Truyền xuống `deliverTelegramMessage` và dùng cho `AbortSignal` của webhook, để
+ * alert-delivery không rơi về default 8000ms của riêng nó (default đó dành cho
+ * alert vận hành: guard/heartbeat/digest, không thuộc ngân sách outbox).
+ */
 export const RADAR_OUTBOX_SEND_TIMEOUT_MS = 8_000;
 /** Ngân sách mỗi dòng: gửi (tối đa 8s) + countSentToday + mark, dư cho mạng chậm. */
 export const RADAR_OUTBOX_ROW_BUDGET_MS = 10_000;
@@ -208,7 +213,11 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function productionDeps(): RadarOutboxDeps {
+/**
+ * Deps thật (DB + kênh gửi). Xuất để test khoá ngân sách gửi của outbox;
+ * `drainRadarAlertOutbox` vẫn cho inject deps để test luồng retry/cap.
+ */
+export function productionDeps(): RadarOutboxDeps {
   return {
     claimDue: async (now, limit, leaseMs) => {
       // Lease = next_attempt_at, phủ hết batch (mỗi dòng tối đa 8s timeout).
@@ -285,6 +294,9 @@ function productionDeps(): RadarOutboxDeps {
         html: payload.html,
         text: payload.text,
         buttons: payload.buttons,
+        // Ngân sách của outbox, không phải default của alert-delivery: lease được
+        // tính từ chính hằng số này nên timeout gửi phải bám theo nó.
+        timeoutMs: RADAR_OUTBOX_SEND_TIMEOUT_MS,
       });
       return {
         ok: result.ok,
