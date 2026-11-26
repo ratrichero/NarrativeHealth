@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Loader2, RefreshCw, RotateCcw, Save, Send, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { RadarBiasReviewCard } from "@/components/admin/RadarBiasReviewCard";
 
 export interface RadarConfigField {
   key: string;
@@ -468,6 +469,8 @@ export function RadarConfigSection() {
       ) : null}
 
       <RadarMetricsCard />
+
+      <RadarBiasReviewCard />
 
       {groups.map((group) => (
         <div key={group.id} className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">

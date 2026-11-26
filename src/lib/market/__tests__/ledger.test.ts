@@ -251,6 +251,7 @@ describe("compareCatalystOutcomes", () => {
           firstEvent: null,
           win: returnPct > 0,
           pending: false,
+          entryFilled: null,
         },
       },
     };
@@ -354,6 +355,7 @@ describe("aggregateHorizon", () => {
           firstEvent: returnPct > 2 ? "tp" : returnPct < -2 ? "sl" : null,
           win,
           pending: false,
+          entryFilled: null,
         },
       },
     };
@@ -495,6 +497,7 @@ describe("tách nhóm theo bucket minVolume", () => {
           firstEvent: null,
           win: returnPct > 0,
           pending: false,
+          entryFilled: null,
         },
       },
       ...overrides,

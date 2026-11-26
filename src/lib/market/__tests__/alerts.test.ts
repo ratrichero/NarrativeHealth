@@ -3,12 +3,17 @@ import {
   buildRadarAlertText,
   catalystAlertKey,
   clusterAlertKey,
+  entryZoneState,
+  isInvalidated,
   selectAlertCandidates,
   selectAlertRows,
   selectClusterAlertEvents,
   selectCooldownRows,
+  selectStateAlerts,
+  stateAlertKey,
   type AlertOptions,
   type SentAlert,
+  type StateAlertInput,
 } from "@/lib/market/alerts";
 import type { ClusterEvent } from "@/lib/market/cluster-history";
 import type { RadarRow, RadarMarketContext } from "@/lib/market/radar";
@@ -256,5 +261,49 @@ describe("buildRadarAlertText", () => {
     const text = buildRadarAlertText(row({ symbol: "ALT" }), market, []);
     expect(text).toContain("[Radar] LONG watch $ALT");
     expect(text).not.toContain("Catalyst");
+  });
+});
+
+describe("cảnh báo trạng thái (vô hiệu / vùng entry)", () => {
+  function state(overrides: Partial<StateAlertInput>): StateAlertInput {
+    return {
+      symbol: "BREV",
+      side: "gainer",
+      bias: "continuation",
+      price: 100,
+      invalidationPrice: 95,
+      invalidationNote: "đóng 1h dưới EMA20",
+      setup: { entryLow: 99, entryHigh: 101 },
+      prevAt: "2026-11-20T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("nhãn tăng chỉ vô hiệu khi giá đóng xuống dưới mốc", () => {
+    expect(isInvalidated(state({ price: 96 }))).toBe(false);
+    expect(isInvalidated(state({ price: 95 }))).toBe(true);
+  });
+
+  it("nhãn giảm vô hiệu khi giá vượt lên trên mốc", () => {
+    const input = state({ bias: "exhaustion", invalidationPrice: 105, price: 104 });
+    expect(isInvalidated(input)).toBe(false);
+    expect(isInvalidated({ ...input, price: 106 })).toBe(true);
+  });
+
+  it("vùng entry: vào vùng, bỏ lỡ, còn chờ", () => {
+    expect(entryZoneState(state({ price: 100 }))).toBe("in-zone");
+    expect(entryZoneState(state({ price: 102.5 }))).toBe("missed");
+    expect(entryZoneState(state({ price: 97 }))).toBeNull();
+  });
+
+  it("dedupe theo kind + symbol + side + lần ghi; thiếu mốc vô hiệu vẫn báo entry", () => {
+    const invalid = state({ price: 94 });
+    const sent = new Set([stateAlertKey(invalid, "invalidation")]);
+    expect(selectStateAlerts([invalid], new Set())).toHaveLength(1);
+    expect(selectStateAlerts([invalid], sent)).toHaveLength(0);
+    const noLevel = state({ invalidationPrice: null, price: 100 });
+    expect(selectStateAlerts([noLevel], new Set()).map((item) => item.kind)).toEqual([
+      "entry-zone",
+    ]);
   });
 });

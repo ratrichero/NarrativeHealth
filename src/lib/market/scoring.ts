@@ -42,11 +42,26 @@ export interface MoverScore {
   invalidationPrice: number | null;
   /** Mô tả ngắn điều kiện vô hiệu tương ứng `invalidationPrice`. */
   invalidationNote: string | null;
+  /** Move đã quá xa để vào mới — hiển thị badge "không đuổi giá". */
+  chaseRisk: boolean;
+  /** Vì sao `decideBias` chọn nhãn này (kể cả neutral). */
+  decisionReason: BiasDecisionReason;
+  /** Câu giải thích cho nhãn neutral / nhãn bị giữ; null khi không cần. */
+  explanation: string | null;
+}
+
+/** Percentile trong universe của snapshot — chuẩn hoá theo chính tập coin đang xét. */
+export interface ScorePercentiles {
+  /** 0–100, cao = funding đắt so với universe. */
+  funding?: number | null;
+  /** 0–100, thấp = OI đang đóng ra so với universe. */
+  oiChange?: number | null;
 }
 
 /** Bias lần trước của cùng symbol+side — nguồn cho hysteresis. */
 export interface ScoreOptions {
   prevBias?: Bias | null;
+  percentiles?: ScorePercentiles;
 }
 
 /**
@@ -131,53 +146,161 @@ export function decideBias(params: {
   return { bias: best.bias, score: best.score, reason: prevCandidate ? "held" : "fresh" };
 }
 
-/**
- * Xác nhận đảo chiều cho exhaustion — không chỉ “move đã đi xa”.
- *
- * Một trong ba tín hiệu: giá đã đóng dưới EMA20 khung 1h (mất cấu trúc ngắn
- * hạn), OI giảm (vị thế đang đóng ra), hoặc đã lùi ≥ 1 ATR khỏi đỉnh 24h
- * (không còn là “đang ở đỉnh” nữa).
- */
-export function exhaustionConfirmed(m: MarketMetrics): boolean {
-  const belowEma20OneHour =
-    m.ema20_1h !== null && m.ema20_1h !== undefined && m.ema20_1h > 0 && m.price < m.ema20_1h;
-  const oiUnwinding = m.oiChangePct !== null && m.oiChangePct <= -2;
-  const gaveBackAtr =
-    m.atrPct !== null && m.atrPct > 0 && m.distanceFromHighPct >= m.atrPct;
-  return belowEma20OneHour || oiUnwinding || gaveBackAtr;
+/** Câu giải thích cho nhãn neutral ("vì sao không có nhãn"). */
+export function describeNeutralDecision(
+  decision: BiasDecision,
+  candidates: BiasCandidate[],
+  margin: number = BIAS_MARGIN
+): string | null {
+  if (decision.bias !== "neutral") return null;
+  const ranked = [...candidates].sort((a, b) => b.score - a.score);
+  const best = ranked[0];
+  if (!best) return "Không đủ dữ liệu để chấm.";
+  const second = ranked[1];
+  if (decision.reason === "low-score") {
+    return `Điểm cao nhất ${Math.round(best.score)} chưa đạt ngưỡng ${best.threshold} (${BIAS_LABELS[best.bias]})`;
+  }
+  if (decision.reason === "tight") {
+    return second
+      ? `Hai phe sát nhau ${Math.round(best.score)} vs ${Math.round(second.score)} — chênh dưới ${margin} điểm`
+      : "Chưa đủ phe để chọn";
+  }
+  return null;
 }
 
-/** Giá vô hiệu bias theo từng nhãn, kèm điều kiện đọc được. */
+/**
+ * Các phiếu xác nhận đảo chiều cho exhaustion.
+ *
+ * Trước đây chỉ cần MỘT tín hiệu (thường là OI giảm 2%) là đủ gọi kiệt sức, nên
+ * một nhịp đóng vị thế bình thường cũng biến thành fade (case MMT). Giờ cần
+ * ≥2 phiếu độc lập mới coi là đảo chiều thật.
+ */
+export const EXHAUSTION_MIN_VOTES = 2;
+
+/** ATR dùng cho sàn vô hiệu: ưu tiên 4h, thiếu thì rơi về ATR ngày. */
+export function referenceAtrPct(m: MarketMetrics): number | null {
+  const value = m.atrPct4h ?? m.atrPct;
+  return value !== null && value !== undefined && value > 0 ? value : null;
+}
+
+/** Khoảng cách tối thiểu của giá vô hiệu, tính theo ATR 4h. */
+export const INVALIDATION_FLOOR_ATR = 0.5;
+
+export interface ExhaustionCheck {
+  confirmed: boolean;
+  votes: number;
+  /** Nhãn ngắn của từng phiếu, để hiển thị "vì sao". */
+  signals: string[];
+}
+
+/**
+ * Kiểm tra đảo chiều: đếm các tín hiệu độc lập — đóng 1h dưới EMA20, OI giảm,
+ * đã lùi ≥ 1 ATR 4h khỏi đỉnh 24h, RSI 4h đã hạ nhiệt dưới 65.
+ */
+export function exhaustionCheck(
+  m: MarketMetrics,
+  percentiles?: ScorePercentiles
+): ExhaustionCheck {
+  const signals: string[] = [];
+  if (m.ema20_1h !== null && m.ema20_1h !== undefined && m.ema20_1h > 0 && m.price < m.ema20_1h) {
+    signals.push("đóng 1h dưới EMA20");
+  }
+  const oiUnwinding =
+    m.oiChangePct !== null &&
+    (m.oiChangePct <= -2 || (percentiles?.oiChange ?? 100) <= 20);
+  if (oiUnwinding) {
+    signals.push("OI giảm");
+  }
+  const atr4h = referenceAtrPct(m);
+  if (atr4h !== null && m.distanceFromHighPct >= atr4h) {
+    signals.push("lùi ≥1 ATR 4h khỏi đỉnh 24h");
+  }
+  // Không dùng RSI làm phiếu: RSI 64 ở một coin đang grind lên là bình thường,
+  // thêm vào chỉ làm loãng điều kiện "≥2 phiếu độc lập".
+  return { confirmed: signals.length >= EXHAUSTION_MIN_VOTES, votes: signals.length, signals };
+}
+
+export function exhaustionConfirmed(m: MarketMetrics): boolean {
+  return exhaustionCheck(m).confirmed;
+}
+
+/**
+ * Giá vô hiệu bias theo từng nhãn, kèm điều kiện đọc được.
+ *
+ * Mọi mốc đều cách giá hiện tại tối thiểu 0.5 ATR 4h: trước đây exhaustion dùng
+ * thẳng đỉnh 24h nên khi giá đang ở đỉnh thì "vô hiệu" cách 0% — vô nghĩa; còn
+ * continuation dùng EMA20 1h có thể sát giá sau một nhịp nén.
+ */
 export function invalidationFor(
   bias: Bias,
   m: MarketMetrics
 ): { invalidationPrice: number | null; invalidationNote: string | null } {
-  const atrValue = m.atrPct && m.atrPct > 0 ? (m.price * m.atrPct) / 100 : null;
+  const atrPct = referenceAtrPct(m);
+  const atrValue = atrPct !== null ? (m.price * atrPct) / 100 : null;
+  const floor = atrValue !== null ? atrValue * INVALIDATION_FLOOR_ATR : null;
+  const belowFloor = floor !== null ? m.price - floor : null;
+  const aboveFloor = floor !== null ? m.price + floor : null;
   const ema1h = m.ema20_1h !== null && m.ema20_1h !== undefined && m.ema20_1h > 0 ? m.ema20_1h : null;
+  /** Mốc xa hơn trong hai mốc cùng phía dưới giá. */
+  const lower = (level: number | null): number | null => {
+    if (level === null) return belowFloor;
+    if (belowFloor === null) return level;
+    return Math.min(level, belowFloor);
+  };
+  /** Mốc xa hơn trong hai mốc cùng phía trên giá. */
+  const upper = (level: number | null): number | null => {
+    if (level === null) return aboveFloor;
+    if (aboveFloor === null) return level;
+    return Math.max(level, aboveFloor);
+  };
 
   switch (bias) {
     case "continuation":
     case "breakout":
-    case "accumulation":
-      if (ema1h !== null) {
-        return { invalidationPrice: roundPrice(ema1h), invalidationNote: "đóng 1h dưới EMA20" };
-      }
-      if (atrValue !== null) {
-        return { invalidationPrice: roundPrice(m.price - atrValue), invalidationNote: "giảm 1 ATR" };
-      }
-      return { invalidationPrice: null, invalidationNote: null };
-    case "exhaustion":
-      return { invalidationPrice: roundPrice(m.high24h), invalidationNote: "vượt đỉnh 24h" };
-    case "breakdown":
-      if (ema1h !== null) {
-        return { invalidationPrice: roundPrice(ema1h), invalidationNote: "đóng 1h trên EMA20" };
-      }
-      return { invalidationPrice: null, invalidationNote: null };
-    case "flush-bounce":
-      return { invalidationPrice: roundPrice(m.low24h), invalidationNote: "thủng đáy 24h" };
+    case "accumulation": {
+      const level = lower(ema1h);
+      if (level === null) return { invalidationPrice: null, invalidationNote: null };
+      const pushedByFloor = ema1h === null || level < ema1h;
+      return {
+        invalidationPrice: roundPrice(level),
+        invalidationNote: pushedByFloor ? "giảm 0.5 ATR 4h" : "đóng 1h dưới EMA20",
+      };
+    }
+    case "exhaustion": {
+      // `m.high24h` luôn là số nên `upper` không thể trả null ở đây.
+      const level = upper(m.high24h) as number;
+      const pushedByFloor = level > m.high24h;
+      return {
+        invalidationPrice: roundPrice(level),
+        invalidationNote: pushedByFloor ? "tăng 0.5 ATR 4h" : "vượt đỉnh 24h",
+      };
+    }
+    case "breakdown": {
+      const level = upper(ema1h);
+      if (level === null) return { invalidationPrice: null, invalidationNote: null };
+      const pushedByFloor = ema1h === null || level > ema1h;
+      return {
+        invalidationPrice: roundPrice(level),
+        invalidationNote: pushedByFloor ? "tăng 0.5 ATR 4h" : "đóng 1h trên EMA20",
+      };
+    }
+    case "flush-bounce": {
+      const level = lower(m.low24h) as number;
+      return { invalidationPrice: roundPrice(level), invalidationNote: "thủng đáy 24h" };
+    }
     default:
       return { invalidationPrice: null, invalidationNote: null };
   }
+}
+
+/** Impulse đã đi ≥2.5 ATR kể từ điểm nổ = không còn là entry mới. */
+export const CHASE_EXTENSION_ATR = 2.5;
+
+/** Move đã quá xa để đuổi: impulse extension lớn hoặc move 24h ≥3.5 ATR. */
+export function chaseRiskOf(m: MarketMetrics): boolean {
+  const extension = m.impulseExtensionAtr;
+  if (extension !== null && extension !== undefined && extension >= CHASE_EXTENSION_ATR) return true;
+  return m.changeAtrMultiple !== null && m.changeAtrMultiple >= 3.5;
 }
 
 function pct(value: number | null, digits = 1): string {
@@ -200,6 +323,7 @@ function atrMult(m: MarketMetrics): number {
  */
 export function scoreGainer(m: MarketMetrics, options: ScoreOptions = {}): MoverScore {
   const mult = atrMult(m);
+  const chaseRisk = chaseRiskOf(m);
   const funding = m.fundingRate;
   const oi = m.oiChangePct;
   const volRatio = m.volumeRatio7d;
@@ -258,11 +382,15 @@ export function scoreGainer(m: MarketMetrics, options: ScoreOptions = {}): Mover
     exh += 30;
     reasons.push(`Đã đi ${mult.toFixed(1)} ATR — move quá xa`);
   }
-  if (funding !== null && funding >= 0.0005) {
+  const fundingCrowded =
+    funding !== null && (funding >= 0.0005 || (options.percentiles?.funding ?? -1) >= 80);
+  if (fundingCrowded) {
     exh += 20;
     reasons.push(`Funding ${fundingText(funding)} — long đã đông`);
   }
-  if (oi !== null && oi <= -3) {
+  const oiUnwinding =
+    oi !== null && (oi <= -3 || (options.percentiles?.oiChange ?? 100) <= 20);
+  if (oiUnwinding) {
     exh += 15;
     reasons.push(`OI ${pct(oi)} dù giá tăng — short covering, không bền`);
   }
@@ -281,19 +409,29 @@ export function scoreGainer(m: MarketMetrics, options: ScoreOptions = {}): Mover
   // Exhaustion phải chờ xác nhận đảo chiều: “đã đi xa” một mình chỉ là điều
   // kiện cần. Không xác nhận thì phe fade bị loại khỏi lượt chọn, để nhãn
   // không hô đảo chiều khi trend còn nguyên.
-  const reversalConfirmed = exhaustionConfirmed(m);
+  const reversal = exhaustionCheck(m, options.percentiles);
+  const reversalConfirmed = reversal.confirmed;
   if (exh >= 55 && !reversalConfirmed) {
     warnings.push(
-      "Đã đi xa nhưng chưa có xác nhận đảo chiều — chưa gọi kiệt sức (cần đóng 1h dưới EMA20, OI giảm, hoặc lùi ≥ 1 ATR khỏi đỉnh 24h)"
+      `Đã đi xa nhưng chưa đủ xác nhận đảo chiều (${reversal.votes}/${EXHAUSTION_MIN_VOTES} phiếu) — chưa gọi kiệt sức`
     );
   }
+  if (exh >= 55 && reversalConfirmed) {
+    reasons.push(`Xác nhận đảo chiều: ${reversal.signals.slice(0, 2).join(", ")}`);
+  }
+  if (chaseRisk) {
+    warnings.push(
+      `Giá đã đi ${(m.impulseExtensionAtr ?? mult).toFixed(1)} ATR từ điểm nổ — không đuổi giá`
+    );
+  }
+  const gainerCandidates: BiasCandidate[] = [
+    { bias: "continuation", score: cont, threshold: 45 },
+    ...(reversalConfirmed
+      ? [{ bias: "exhaustion" as Bias, score: exh, threshold: 55 }]
+      : []),
+  ];
   const decision = decideBias({
-    candidates: [
-      { bias: "continuation", score: cont, threshold: 45 },
-      ...(reversalConfirmed
-        ? [{ bias: "exhaustion" as Bias, score: exh, threshold: 55 }]
-        : []),
-    ],
+    candidates: gainerCandidates,
     prevBias: options.prevBias,
   });
   const bias: Bias = decision.bias;
@@ -309,6 +447,7 @@ export function scoreGainer(m: MarketMetrics, options: ScoreOptions = {}): Mover
     entryQuality -= Math.min(20, (m.impulseAgeHours - 6) * 2);
   }
   if (m.spotLed === false) entryQuality -= 5;
+  if (chaseRisk) entryQuality -= 15;
 
   if (oi === null) warnings.push("Thiếu OI — tín hiệu kém tin cậy hơn");
   if (funding === null) warnings.push("Thiếu funding — không đọc được crowding");
@@ -320,6 +459,9 @@ export function scoreGainer(m: MarketMetrics, options: ScoreOptions = {}): Mover
     entryQuality: clamp(entryQuality),
     reasons: reasons.slice(0, 5),
     warnings,
+    chaseRisk,
+    decisionReason: decision.reason,
+    explanation: describeNeutralDecision(decision, gainerCandidates),
     ...invalidationFor(bias, m),
   };
 }
@@ -330,6 +472,7 @@ export function scoreGainer(m: MarketMetrics, options: ScoreOptions = {}): Mover
  */
 export function scoreLoser(m: MarketMetrics, options: ScoreOptions = {}): MoverScore {
   const mult = atrMult(m);
+  const chaseRisk = chaseRiskOf(m);
   const funding = m.fundingRate;
   const oi = m.oiChangePct;
   const volRatio = m.volumeRatio7d;
@@ -339,7 +482,9 @@ export function scoreLoser(m: MarketMetrics, options: ScoreOptions = {}): MoverS
   const warnings: string[] = [];
 
   let flush = 0;
-  if (oi !== null && oi <= -3) {
+  const oiFlushed =
+    oi !== null && (oi <= -3 || (options.percentiles?.oiChange ?? 100) <= 20);
+  if (oiFlushed) {
     flush += 25;
     reasons.push(`OI ${pct(oi)} — long đã bị thanh lý`);
   }
@@ -363,11 +508,13 @@ export function scoreLoser(m: MarketMetrics, options: ScoreOptions = {}): MoverS
   }
 
   let breakdown = 0;
+  const oiBuilding =
+    oi !== null && (oi >= 3 || (options.percentiles?.oiChange ?? -1) >= 80);
   if (trendDown) {
     breakdown += 25;
     reasons.push("EMA20 < EMA50 trên 4h — cấu trúc giảm");
   }
-  if (oi !== null && oi >= 3) {
+  if (oiBuilding) {
     breakdown += 20;
     reasons.push(`OI ${pct(oi)} dù giá giảm — short mới vào`);
   }
@@ -385,19 +532,27 @@ export function scoreLoser(m: MarketMetrics, options: ScoreOptions = {}): MoverS
     warnings.push("Sát đáy tuyệt đối 24h — short muộn rất rủi ro");
   }
 
+  const loserCandidates: BiasCandidate[] = [
+    { bias: "flush-bounce", score: flush, threshold: 55 },
+    { bias: "breakdown", score: breakdown, threshold: 50 },
+  ];
   const decision = decideBias({
-    candidates: [
-      { bias: "flush-bounce", score: flush, threshold: 55 },
-      { bias: "breakdown", score: breakdown, threshold: 50 },
-    ],
+    candidates: loserCandidates,
     prevBias: options.prevBias,
   });
   const bias: Bias = decision.bias;
   const score = bias === "neutral" ? Math.max(flush, breakdown) : decision.score;
 
+  if (chaseRisk && bias === "breakdown") {
+    warnings.push(
+      `Giá đã đi ${(m.impulseExtensionAtr ?? mult).toFixed(1)} ATR từ điểm nổ — short muộn, không đuổi`
+    );
+  }
+
   let entryQuality = 100;
   entryQuality -= Math.min(60, Math.max(0, mult - 1.5) * 12);
   if (m.rangePosition <= 0.05) entryQuality -= 15;
+  if (chaseRisk) entryQuality -= 10;
   if (oi === null) warnings.push("Thiếu OI — không phân biệt được flush và short mới");
   if (funding === null) warnings.push("Thiếu funding — không đọc được crowding");
 
@@ -408,6 +563,9 @@ export function scoreLoser(m: MarketMetrics, options: ScoreOptions = {}): MoverS
     entryQuality: clamp(entryQuality),
     reasons: reasons.slice(0, 5),
     warnings,
+    chaseRisk,
+    decisionReason: decision.reason,
+    explanation: describeNeutralDecision(decision, loserCandidates),
     ...invalidationFor(bias, m),
   };
 }
@@ -511,6 +669,12 @@ export function scoreUnusual(m: MarketMetrics, options: ScoreOptions = {}): Move
     entryQuality: clamp(entryQuality),
     reasons: reasons.slice(0, 5),
     warnings,
+    chaseRisk: false,
+    decisionReason: bias === "neutral" ? "low-score" : prev ? "held" : "fresh",
+    explanation:
+      bias === "neutral"
+        ? `Điểm ${Math.round(score)} chưa đạt ngưỡng 45 cho tích lũy/breakout`
+        : null,
     ...invalidationFor(bias, m),
   };
 }

@@ -56,12 +56,48 @@ const mockMetrics = {
   ],
 };
 
+const mockBiasReview = {
+  days: 30,
+  since: "2026-10-20T00:00:00.000Z",
+  transitionHours: 4,
+  logs: 120,
+  flips: 18,
+  // API luôn trả `engines` (xem BiasReviewPayload); mock thiếu field này làm card
+  // đọc `.length` của undefined.
+  engines: [{ version: "v3", logs: 120, flips: 18 }],
+  rows: [
+    {
+      bias: "exhaustion",
+      label: "Kiệt sức (fade)",
+      n: 9,
+      horizons: [{ horizon: "4h", n: 9, wins: 4, hitRate: 44.4, avgEdgePct: -1.2, avgRelativePct: -0.8 }],
+    },
+  ],
+  transitions: {
+    rows: [
+      {
+        from: "exhaustion",
+        label: "Kiệt sức (fade)",
+        total: 9,
+        flips: 6,
+        flipRate: 66.7,
+        byTo: [{ to: "continuation", label: "Tiếp diễn tăng", n: 5 }],
+      },
+    ],
+    columns: [{ bias: "continuation", label: "Tiếp diễn tăng" }],
+    afterExhaustion: { total: 9, toContinuation: 5, toContinuationRate: 55.6 },
+  },
+  generatedAt: "2026-11-19T00:00:00.000Z",
+};
+
 jest.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: jest.fn(async () => undefined) }),
   useQuery: ({ queryKey }: { queryKey: unknown[] }) =>
     queryKey[1] === "radar-metrics"
       ? { data: mockMetrics, isLoading: false, error: null, isFetching: false, refetch: jest.fn() }
-      : { data: mockPayload, isLoading: false, error: null },
+      : queryKey[1] === "radar-bias-review"
+        ? { data: mockBiasReview, isLoading: false, error: null, isFetching: false, refetch: jest.fn() }
+        : { data: mockPayload, isLoading: false, error: null },
 }));
 
 describe("RadarConfigSection", () => {

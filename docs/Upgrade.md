@@ -1,9 +1,5 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-11-22
-
----
-
 ## Ngày cập nhật: 2026-11-26
 
 ---
@@ -52,8 +48,6 @@ công khai theo hướng phá vỡ: mọi field mới là cộng thêm.
   lượt chốt đầu trên production, đặt `SCHEDULER_CATALYST_TOKEN`/`SNAPSHOT_ANCHOR_FILE`
   trên VPS, xác nhận bảng chụp rỗng trước khi migrate, và các phép đo preset/fill-aware
   cần dữ liệu `top_recommendation_picks`. Runbook: `docs/SNAPSHOT-02_FIRST_SEAL_RUNBOOK.md`.
-
----
 
 ---
 
@@ -628,6 +622,88 @@ ORDER BY l.bias, o.horizon;
   dueHorizons); `python3 -m py_compile backend/scheduler.py backend/config.py` OK.
   **Chưa chạy** với Postgres/Binance thật: chưa áp migration, chưa xem row dữ liệu
   hay outcome thật trên VPS.
+
+## RADAR-BIAS-STATE — nhãn sống, chống đuổi giá và cứu survivorship (2026-11-20)
+
+> Một phần của đợt này đã được thay ở mục **RADAR-REFINE** cuối tài liệu (bỏ
+timeline 7 ngày và carry survivorship, bỏ `atrPct1h`, alert gộp theo trạng thái,
+setup tách preset, hit-rate tách bucket/regime). Đọc mục cuối để lấy hành vi hiện tại.
+
+Lớp hiển thị + logic sau khi rà 2 case BREV/MMT. Mục tiêu: nhãn nói được
+“còn đúng đến bao giờ”, người đọc biết khi nào **không** nên vào, và coin rời
+top movers không còn bị xoá khỏi thống kê.
+
+- **Nền scoring (engine v3).**
+  - `computeMarketMetrics` thêm `atrPct4h` (nay là ATR duy nhất — `atrPct1h` đã bỏ);
+    mọi mốc vô hiệu và setup dùng ATR 4h, chỉ rơi về ATR ngày khi thiếu nến 4h.
+  - `invalidationFor` bắt buộc mốc cách giá ≥0.5 ATR 4h: exhaustion =
+    `max(high24h, giá + 0.5 ATR)` (trước đây đỉnh 24h cách 0% khi giá đang ở
+    đỉnh); continuation/breakout/accumulation = mốc dưới xa hơn giữa EMA20 1h và
+    `giá − 0.5 ATR`; breakdown/flush-bounce tương tự ở phía trên/dưới.
+  - `exhaustionCheck` đếm **phiếu độc lập** (đóng 1h dưới EMA20, OI ≤ −2%, lùi
+    ≥1 ATR 4h khỏi đỉnh) và chỉ xác nhận khi ≥2 phiếu; phiếu RSI đã bỏ vì làm
+    loãng điều kiện. Một mình OI giảm không còn đủ gọi “kiệt sức” (case MMT).
+  - `chaseRiskOf`: impulse extension ≥2.5 ATR hoặc move 24h ≥3.5 ATR → nhãn bị
+    gắn cờ “không đuổi giá”, `entryQuality` bị trừ và row không còn `actionable`.
+  - Gate `rangePosition ≥0.85` của gainer tăng từ −10 lên −16 điểm (BREV vẫn ra
+    “tiếp diễn” dù giá ở 100% range).
+  - `BIAS_ENGINE_VERSION` → `v3`.
+- **Setup.** `buildSetup` dùng SL 1 ATR, TP1 2 ATR, TP2 4 ATR (R:R 2 thay vì 1)
+  — nay là preset `swing4h`, chat tools vẫn dùng preset `legacy`; `RadarRow.setup`
+  dựng sẵn bằng ATR 4h và hiển thị Entry/TP1/SL/R:R ở bảng radar (desktop + card
+  mobile) lẫn drawer chi tiết.
+- **Trạng thái sống (`src/lib/market/bias-state.ts`).** `invalidationState` trả
+  `intact | near | hit | expired | none` kèm buffer % và TTL theo nhãn (kiệt
+  sức/bắt hồi 8h, breakout 12h, tiếp diễn/breakdown 18h, tích lũy 36h, neutral
+  6h). Ledger gần đây so giá hiện tại (map từ snapshot) với mốc lúc ghi để hiện
+  badge; nhãn quá TTL hiện “hết hạn”.
+- **Hit-rate cạnh nhãn.** Bảng radar đọc chung cache `track-record`, gắn chip
+  `24h x%` (chỉ khi ≥10 mẫu) cạnh tên nhãn; “Nhãn tin cậy” lọc theo hit-rate ≥50%.
+  Từ RADAR-REFINE chip tra đúng bucket volume + regime đang xem.
+- **Tách “để xem” / “để hành động”.** Segmented control trong bảng radar:
+  Tất cả · Để hành động (score ≥55, độ mới ≥40, không đuổi giá; nay thêm điều
+  kiện thanh khoản và snapshot không cũ) · Nhãn tin cậy.
+- **Cảnh báo vô hiệu cho watchlist.** Đã thay bằng `dispatchStateAlerts` (gộp
+  invalidation + entry-zone + missed-entry) ở RADAR-REFINE.
+- **Survivorship.** `carryTrackedRows` đã bị bỏ ở RADAR-REFINE: nó phụ thuộc
+  `getMoverDetail` (gọi Binance thêm cho 12 symbol mỗi cohort) và trộn tín hiệu
+  cũ vào ledger mà không có nhãn nguồn, làm hit-rate không so sánh được giữa các
+  đợt. Hệ quả đã biết: tín hiệu rời top movers không còn được chấm tiếp — đây là
+  hạn chế chấp nhận để đổi lấy số mẫu sạch và không gọi Binance thêm.
+- **“Vì sao” + legend.** Dòng lý do đầu tiên hiện ngay dưới nhãn (bảng + card),
+  kèm legend giải thích chip hit-rate, badge không đuổi giá và các trạng thái vô
+  hiệu (timeline đã bỏ ở RADAR-REFINE).
+- Files: `src/lib/market/{bias-state,scoring,metrics,setup,radar,alerts,track-record,bias-log}.ts`,
+  `src/app/radar/page.tsx`.
+- Test: `bias-state.test.ts` (5 trạng thái + TTL + trust + Wilson),
+  `alerts.test.ts` (chiều vô hiệu + dedupe), `scoring.test.ts` (≥2 phiếu, sàn
+  ATR), `setup.test.ts` (R:R 2). Chưa chạy với Postgres/Binance thật trong sandbox.
+
+## RADAR-BIAS-REVIEW — bảng chất lượng nhãn trong tab Radar & Catalyst (2026-11-20)
+
+Card **Chất lượng nhãn (radar_bias_log)** đọc trực tiếp log thay vì ledger dedupe,
+nên thấy được cả những lượt chấm không sinh tín hiệu mới.
+
+- `GET /api/admin/radar/bias-review?days=7|30|90` (admin session qua proxy AUTH-01).
+  Gộp bằng SQL, không kéo row thô về Node: `bias × horizon` → `n`, `wins`,
+  `avg_edge_pct`, `avg_relative_pct`; query thứ hai đếm `logs`/`flips`; query thứ
+  ba tự join LATERAL lấy **bias của lần chấm kế tiếp cùng symbol+side trong 4h**.
+- `avg_edge_pct` = return trung bình **theo đúng chiều nhãn**: bias giảm
+  (`exhaustion`, `breakdown`) được đổi dấu, nên số dương luôn là “nhãn đúng”.
+  `win` lấy từ `radar_bias_outcome` (đã bias-aware trong `evaluateHorizon`).
+- Ma trận chuyển nhãn: mỗi hàng `from`, mỗi cột `to` = số lần chấm kế tiếp ra nhãn
+  đó; cột **Đổi nhãn** = `(total − diagonal) / total`. Ô lệch tô amber để thấy ngay
+  nhãn nào hay bị lật.
+- Callout riêng **Kiệt sức → Tiếp diễn tăng trong 4h** (`afterExhaustion`): tỷ lệ
+  cao nghĩa là fade bị gọi khi trend còn nguyên — đúng dạng case MMT (0.23).
+- Giới hạn đã biết: chuỗi chuyển tiếp khoá theo `symbol|side`, coin đổi side
+  (gainer → loser) bắt đầu chuỗi mới nên chuyển tiếp qua side không xuất hiện;
+  row chưa tới hạn horizon chỉ có trong `logs`, không có trong bảng win-rate.
+- Files: `src/lib/market/bias-review.ts` (thuần + 3 query), route
+  `src/app/api/admin/radar/bias-review/route.ts`, card
+  `src/components/admin/RadarBiasReviewCard.tsx` render trong `RadarConfigSection`.
+- Test: `bias-review.test.ts` (gộp bias × horizon, bỏ horizon lạ/n=0, tách lật,
+  callout kiệt sức, clamp 1..90 ngày). Chưa chạy với Postgres thật trong sandbox.
 
 ## RADAR-LEDGER-BIAS — ghi lật bias trong ngày (2026-11-19)
 
@@ -3651,6 +3727,65 @@ restart backend. Chỉ `SCHEDULER_CATALYST_TOKEN` vẫn là env-only (bí mật,
 vào form). `src/lib/catalyst/health.ts` đọc cùng nguồn nhịp để ngưỡng STALE khớp
 với lịch chạy thực tế.
 
+## RADAR-REFINE — Setup theo khung, fill-aware, regime, tin cậy có CI (2026-11-20)
+
+Đợt này sửa các điểm làm hit-rate/tín hiệu radar lạc quan hoặc khó đọc, không đổi
+API public ngoài các field **thêm** (đều optional nên dữ liệu cũ vẫn đọc được).
+
+**Setup tách preset.** `src/lib/market/setup.ts` có `SETUP_PRESETS`: `legacy`
+(1.5/1.5/3 ATR, R:R 1 — giữ nguyên cho chat tools đang dùng) và `swing4h`
+(SL 1 ATR, TP1 2 ATR, TP2 4 ATR, R:R 2, tính trên ATR 4h) cho radar/track-record.
+`buildSetup(direction, price, atr, options)` nhận preset hoặc object tuỳ biến;
+`RadarSignalRecord` ghi thêm `setupPreset` + `regime` (JSON trong `app_settings`,
+không cần migration) để so hiệu quả giữa các preset/regime.
+
+**Fill-aware.** TP/SL chỉ được chấm sau khi giá thật sự vào `[entryLow, entryHigh]`;
+row chưa khớp entry để `tp1Hit/slHit = null`, `win = null` và `mfe/mae = null` (không
+có lệnh thì không có excursion), không còn tính thắng nhờ nến chạy thẳng tới TP.
+`HorizonResult` thêm `entryFilled`; `HorizonSummary` thêm `filled`/`fillRate` (hiển
+thị ở bảng track-record và card bias review).
+
+Để fill-aware có nghĩa, preset `swing4h` đặt entry là **vùng hồi** 0.25–0.75 ATR
+ngược chiều tín hiệu (`entryOffsetAtr: 0.5`) thay vì căn giữa giá; vùng căn giữa
+khiến giá luôn "khớp entry" ở nến đầu và fill-rate luôn 100%. Preset `legacy` của
+chat tools giữ nguyên vùng căn giữa để không đổi hành vi cũ. Demo tính `filled`
+theo move 24h và trả null đúng như ledger thật, không còn 100%.
+
+**Percentile thay ngưỡng tuyệt đối.** Funding/OI được chấm theo percentile của
+universe từng side (`ScorePercentiles`, `crossSectionPercentiles`, `rescoreRow`);
+ngưỡng tuyệt đối chỉ còn là fallback khi thiếu percentile. `exhaustionCheck` bỏ
+phiếu RSI (RSI 64 khi grind lên là bình thường) và yêu cầu ≥2 phiếu độc lập.
+
+**Invalidation có sàn.** Mọi mốc vô hiệu cách giá tối thiểu 0.5 ATR 4h
+(`INVALIDATION_FLOOR_ATR`); trước đây exhaustion lấy thẳng đỉnh 24h nên khi giá ở
+đỉnh mốc cách 0% và continuation bám EMA20 1h có thể sát giá.
+
+**Alert trạng thái gộp.** `dispatchInvalidationAlerts` được thay bằng
+`dispatchStateAlerts` cho `invalidation | entry-zone | missed-entry`, dùng chung
+key `radar.alerts.invalidations.sent`. Thêm mute + quiet-hours
+(`RADAR_ALERT_MUTE`, `RADAR_ALERT_QUIET_START/END`) và `RADAR_ALERT_DIGEST=1` để
+gộp nhiều tín hiệu vào một tin.
+
+**Bỏ code chết.** `carryTrackedRows` (carry qua snapshot) và timeline lật nhãn 7
+ngày đã bị bỏ khỏi ledger/UI vì không có nguồn dữ liệu đủ dày và trùng với
+`radar_bias_log`; `getMoverDetail` và `atrPct1h` cũng bị xoá.
+
+**Đọc số liệu đúng hơn.** `summarizeByBias` nhóm theo `bias|bucket|regime` và UI
+tra hit-rate theo đúng bucket đang xem (fallback cộng gộp có trọng số theo n) thay
+vì key theo bias làm bucket sau ghi đè bucket trước. Hit-rate trong card admin có
+khoảng Wilson 95% (`wilsonInterval`), payload trả thêm `engines` để biết số liệu
+có trộn nhiều `engine_version` hay không.
+
+**UI `/radar`.** Bộ lọc `?filter=actionable|trusted` nằm trong URL; snapshot cũ
+hơn 5 phút hiện cảnh báo và không còn được gọi là "để hành động"; row có
+`liquidityRisk` (volume < 1.5× ngưỡng) được gắn nhãn; nhãn neutral hiện
+`explanation` thay vì danh sách lý do; filter "Nhãn tin cậy" bị disable khi chưa
+nhãn nào đủ `TRUST_MIN_SAMPLES` mẫu.
+
+**Kiểm chứng.** `tsc --noEmit`, eslint và `jest src/lib/market` (26 suite/196
+test) pass. Chưa chạy được Postgres/migration trong sandbox (không có server
+Postgres) nên các query `radar_bias_log`/`bias_outcome` vẫn cần chạy trên staging.
+
 ## TRACK-02 / RADAR-V2 — vận hành (sau ORIGIN-01)
 
 ### Migration
@@ -3671,14 +3806,15 @@ với lịch chạy thực tế.
 | `GET /api/health/track-record` | preflight schema, freshness, `LIVE_SINCE` (`invalid-env`), origin-never-live, pick PENDING quá hạn, cửa sổ đọc, và `snapshot`: bản chụp của ngày vừa đóng tồn tại, payload khớp `payload_hash`, `head_hash` nối đúng neo bản trước. Thiếu bản chụp = `warn`; lệch hash/head hoặc thiếu bảng = `fail` (503). |
 | `GET /api/track-record/snapshots` | các bản chụp + `head` (neo in ra ngoài) + kết quả băm lại payload từng dòng. |
 | `POST /api/track-record/snapshots` | chốt payload của ngày đã đóng (idempotent theo ngày; không ghi đè). **Chỉ scheduler**: bắt buộc token `SCHEDULER_CATALYST_TOKEN` qua `X-Scheduler-Token` (timing-safe); chưa set token → 503 fail-closed, sai/thiếu token → 401. Từ chối 409 khi ngày chưa đóng (`day >= hôm nay` theo giờ ICT) hoặc settlement chưa chạy trong/sau ngày đó. |
-| `GET /api/admin/radar/bias-review/rollup?days=30&periods=4` | gộp nhiều kỳ review, trend 24h, alert precision. |
 | `GET /api/admin/radar/backtest?days=30&horizon=24h` | chiến lược actionable vs basket vs random cùng số pick/ngày. |
 
 ### Thay đổi số liệu
 
-- **WINDOW-02**: phần forward đọc riêng với trần 20 000 dòng, không còn bị
-  `MAX_ROWS` 4 000 của lịch sử cắt. `meta.window.forward` công bố số dòng/trần.
-  `TRACK_RECORD_METRICS_VERSION` → `track-record-v10`.
+- **WINDOW-02 (rút gọn)**: lịch sử và phần forward dùng chung MỘT query, trần
+  20 000 dòng mới nhất; bỏ query forward riêng, bỏ `meta.window.forward`. Đánh
+  đổi có ý thức: nếu lịch sử vượt 20 000 dòng thì pick forward cũ nhất có thể
+  rơi khỏi cửa sổ, và `meta.window.capped` nói ra điều đó.
+  `TRACK_RECORD_METRICS_VERSION` → `track-record-v11`.
 - **SNAPSHOT-02**: mỗi ngày chốt `payload_hash` (băm lại được từ payload) +
   `head_hash` (neo `head-v1|ngày|payload_hash|head trước`). Không còn chuỗi hash
   nội bộ, sequence hay vòng retry. Giới hạn có chủ ý: sửa trực tiếp
@@ -3764,6 +3900,10 @@ với lịch chạy thực tế.
   đầu tiên ra ngoài DB, kiểm tra health/verify script và SQL đảo ngược.
 - **Stats**: Wilson interval gộp về `src/lib/stats/wilson.ts`; bootstrap chuyển
   sang `src/lib/stats/bootstrap.ts` (backtest vẫn import qua shim cũ).
-- **Bias review v2**: thêm cờ phản dự báo (`ciHigh < 50`, n ≥ 20), hiệu chuẩn
-  shadow (nửa đầu vs nửa sau), TTL đo từ độ dài run, alert precision. Không đổi
-  cách tính hit-rate cũ; mọi trường mới là additive.
+- **Bias review v3**: giữ cờ phản dự báo (`ciHigh < 50`, n ≥ 20) và TTL đo
+  từ các run **đã đóng** — quãng từ lần chấm cuối của nhãn cũ tới lần chấm đầu
+  của nhãn mới (`bias-ttl-v2`), bỏ run cuối chưa đóng nên không còn đo thiếu do
+  cắt cụt ở mép cửa sổ; badge radar hiện `n` = số run đã đóng; **bỏ** hiệu chuẩn
+  shadow (nửa cửa sổ) và bảng rollup nhiều kỳ;
+  alert precision giờ là một ô `alertPrecision` trong từng cặp bias × horizon
+  (cùng ngưỡng actionable score ≥ 55, entry ≥ 40). Không đổi công thức hit-rate.

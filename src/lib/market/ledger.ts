@@ -3,6 +3,7 @@
 
 import type { KlineData } from "@/lib/collectors/binance";
 import { BIAS_LABELS, type Bias, type MoverSide } from "@/lib/market/scoring";
+import type { SetupPresetId } from "@/lib/market/setup";
 import type { RadarRow } from "@/lib/market/radar";
 
 export const HORIZONS = [
@@ -82,6 +83,10 @@ export interface RadarSignalRecord {
    */
   invalidationPrice?: number | null;
   invalidationNote?: string | null;
+  /** Regime thị trường lúc ghi — để tách hit-rate theo risk-on/off. */
+  regime?: string | null;
+  /** Preset setup đã dùng (`legacy` 1.5/1.5/3 hay `swing4h` 1/2/4). */
+  setupPreset?: SetupPresetId;
 }
 
 export interface HorizonResult {
@@ -97,6 +102,12 @@ export interface HorizonResult {
   firstEvent: "tp" | "sl" | "ambiguous" | null;
   win: boolean | null;
   pending: boolean;
+  /**
+   * Giá đã vào vùng entry chưa (null = không có setup). TP/SL chỉ được chấm
+   * SAU khi entry khớp — trước đây row chưa từng khớp entry vẫn được tính
+   * "TP1 hit" nếu giá chạy qua mức TP.
+   */
+  entryFilled: boolean | null;
 }
 
 export interface TrackedSignal extends RadarSignalRecord {
@@ -107,6 +118,10 @@ export interface TrackedSignal extends RadarSignalRecord {
 export interface HorizonSummary {
   horizon: HorizonId;
   n: number;
+  /** Số mẫu có setup và đã khớp entry. */
+  filled: number;
+  /** filled / số mẫu có setup (%). */
+  fillRate: number | null;
   hitRate: number | null;
   avgReturnPct: number | null;
   avgRelativePct: number | null;
@@ -124,6 +139,8 @@ export interface BiasSummary {
    * chưa có field. Hai bucket KHÔNG bị gộp: mỗi population là một hàng riêng.
    */
   minVolume?: number;
+  /** Regime của nhóm; undefined = tín hiệu cũ chưa có field. */
+  regime?: string | null;
   horizons: HorizonSummary[];
 }
 
@@ -163,6 +180,13 @@ export interface CatalystComparison {
   note: string;
 }
 
+/** TTL của một nhãn như badge cần biết: số giờ, nguồn, và số run đã đo. */
+export interface TrackRecordTtlEntry {
+  hours: number;
+  source: "measured" | "static";
+  samples: number;
+}
+
 export interface TrackRecordResult {
   summaries: BiasSummary[];
   clusterSummaries?: ClusterPerformanceSummary[];
@@ -174,6 +198,12 @@ export interface TrackRecordResult {
   recent: TrackedSignal[];
   total: number;
   actionable: number;
+  /**
+   * TTL hiệu lực theo từng nhãn + nguồn của nó. Badge trạng thái dùng con số
+   * này thay vì bảng viết tay, và nói rõ đây là số đo hay số tĩnh — nếu không,
+   * người đọc sẽ coi một con số viết tay là kết quả đo.
+   */
+  ttl?: Record<Bias, TrackRecordTtlEntry>;
   note: string;
   demo?: boolean;
   evaluatedAt: string;
@@ -243,7 +273,7 @@ function closeAt(candles: KlineData[], timestamp: number): number | null {
   return found !== null && Number.isFinite(found) && found > 0 ? found : null;
 }
 
-function evaluateHorizon(
+export function evaluateHorizon(
   signal: RadarSignalRecord,
   coinCandles: KlineData[],
   btcCandles: KlineData[],
@@ -266,6 +296,7 @@ function evaluateHorizon(
       firstEvent: null,
       win: null,
       pending: true,
+      entryFilled: null,
     };
   }
 
@@ -283,6 +314,7 @@ function evaluateHorizon(
       firstEvent: null,
       win: null,
       pending: false,
+      entryFilled: null,
     };
   }
 
@@ -304,20 +336,33 @@ function evaluateHorizon(
   const adverseMove = bearishBias
     ? (signal.price - maxHigh) / signal.price
     : (minLow - signal.price) / signal.price;
-  const mfePct = favorableMove * 100;
-  const maePct = adverseMove * 100;
+  let mfePct: number | null = favorableMove * 100;
+  let maePct: number | null = adverseMove * 100;
 
   let tp1Hit: boolean | null = null;
   let slHit: boolean | null = null;
   let firstEvent: HorizonResult["firstEvent"] = null;
+  let entryFilled: boolean | null = null;
   if (signal.setup) {
-    tp1Hit = false;
-    slHit = false;
-    firstEvent = null;
+    entryFilled = false;
     const isShort = signal.setup.direction === "BEARISH";
+    const { entryLow, entryHigh } = signal.setup;
+    let active = false;
     for (const candle of window) {
       const high = Number(candle.high);
       const low = Number(candle.low);
+      // Chỉ bắt đầu tính TP/SL từ nến giá thật sự chạm vùng entry. Row chưa
+      // bao giờ khớp entry thì không có "hit" nào để đếm.
+      if (!active) {
+        if (low <= entryHigh && high >= entryLow) {
+          active = true;
+          entryFilled = true;
+          tp1Hit = false;
+          slHit = false;
+        } else {
+          continue;
+        }
+      }
       const hitTp = isShort ? low <= signal.setup.tp1 : high >= signal.setup.tp1;
       const hitSl = isShort ? high >= signal.setup.stopLoss : low <= signal.setup.stopLoss;
       if (hitTp) tp1Hit = true;
@@ -331,6 +376,11 @@ function evaluateHorizon(
       }
       if (firstEvent === "tp" || firstEvent === "sl") break;
     }
+    if (!entryFilled) {
+      // Chưa có lệnh thì không có excursion của lệnh để đem đi trung bình.
+      mfePct = null;
+      maePct = null;
+    }
   }
 
   const btcStart = signal.btcPrice && signal.btcPrice > 0 ? signal.btcPrice : closeAt(btcCandles, start);
@@ -340,7 +390,10 @@ function evaluateHorizon(
   const relativePct = btcReturnPct === null ? null : returnPct - btcReturnPct;
 
   let win: boolean | null = null;
-  if (BULLISH.includes(signal.bias)) win = returnPct > 0;
+  if (signal.setup && entryFilled === false) {
+    // Chưa từng khớp entry thì không có lệnh nào để nói thắng/thua.
+    win = null;
+  } else if (BULLISH.includes(signal.bias)) win = returnPct > 0;
   else if (BEARISH.includes(signal.bias)) win = returnPct < 0;
 
   return {
@@ -354,6 +407,7 @@ function evaluateHorizon(
     firstEvent,
     win,
     pending: false,
+    entryFilled,
   };
 }
 
@@ -381,6 +435,8 @@ export function aggregateHorizon(rows: TrackedSignal[], horizon: HorizonId): Hor
     return {
       horizon,
       n: 0,
+      filled: 0,
+      fillRate: null,
       hitRate: null,
       avgReturnPct: null,
       avgRelativePct: null,
@@ -401,10 +457,15 @@ export function aggregateHorizon(rows: TrackedSignal[], horizon: HorizonId): Hor
 
   const withTp = evaluated.filter((h) => h.tp1Hit !== null);
   const withSl = evaluated.filter((h) => h.slHit !== null);
+  const withSetup = evaluated.filter((h) => h.entryFilled !== null);
+  const filled = withSetup.filter((h) => h.entryFilled === true).length;
 
   return {
     horizon,
     n,
+    filled,
+    fillRate:
+      withSetup.length > 0 ? Math.round((filled / withSetup.length) * 100) : null,
     hitRate: directional > 0 ? Math.round((wins / directional) * 100) : null,
     avgReturnPct: avg((h) => h.returnPct),
     avgRelativePct: avg((h) => h.relativePct),
@@ -453,11 +514,15 @@ function compareVolumeBuckets(a: { minVolume?: number }, b: { minVolume?: number
 }
 
 export function summarizeByBias(rows: TrackedSignal[]): BiasSummary[] {
-  const groups = new Map<string, { bias: Bias; minVolume?: number; rows: TrackedSignal[] }>();
+  const groups = new Map<
+    string,
+    { bias: Bias; minVolume?: number; regime: string | null; rows: TrackedSignal[] }
+  >();
   for (const row of rows) {
     const minVolume = minVolumeOf(row);
-    const key = `${row.bias}|${volumeBucketKey(minVolume)}`;
-    const group = groups.get(key) ?? { bias: row.bias, minVolume, rows: [] };
+    const regime = row.regime ?? null;
+    const key = `${row.bias}|${volumeBucketKey(minVolume)}|${regime ?? "unknown"}`;
+    const group = groups.get(key) ?? { bias: row.bias, minVolume, regime, rows: [] };
     group.rows.push(row);
     groups.set(key, group);
   }
@@ -466,6 +531,7 @@ export function summarizeByBias(rows: TrackedSignal[]): BiasSummary[] {
       bias: group.bias,
       label: BIAS_LABELS[group.bias],
       ...(group.minVolume === undefined ? {} : { minVolume: group.minVolume }),
+      ...(group.regime === null ? {} : { regime: group.regime }),
       horizons: HORIZONS.map((h) => aggregateHorizon(group.rows, h.id)),
     }))
     .sort((a, b) => {

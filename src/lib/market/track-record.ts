@@ -20,7 +20,12 @@ import {
   type TrackRecordResult,
 } from "@/lib/market/ledger";
 import { buildSetup, type SetupLevels } from "@/lib/market/setup";
-import { dispatchClusterAlerts, dispatchRadarAlerts } from "@/lib/market/alerts";
+import {
+  dispatchClusterAlerts,
+  dispatchRadarAlerts,
+  dispatchStateAlerts,
+  type StateAlertInput,
+} from "@/lib/market/alerts";
 import { recordClusterSnapshots } from "@/lib/market/cluster-history";
 import { recordBiasSnapshot } from "@/lib/market/bias-log";
 import { isBearishBias, isBullishBias } from "@/lib/market/ledger";
@@ -174,10 +179,26 @@ function catalystLabelsFor(
 }
 
 function setupFor(row: RadarRow): SetupLevels | null {
+  // `row.setup` đã dựng bằng ATR 4h tại lúc chấm — chỉ rơi về ATR ngày cho row
+  // dựng từ snapshot cũ/thiếu nến 4h.
+  if (row.setup) return row.setup;
   if (!row.atrPct || row.atrPct <= 0) return null;
-  if (isBullishBias(row.bias)) return buildSetup("BULLISH", row.price, (row.price * row.atrPct) / 100);
-  if (isBearishBias(row.bias)) return buildSetup("BEARISH", row.price, (row.price * row.atrPct) / 100);
+  if (isBullishBias(row.bias))
+    return buildSetup("BULLISH", row.price, (row.price * row.atrPct) / 100, "swing4h");
+  if (isBearishBias(row.bias))
+    return buildSetup("BEARISH", row.price, (row.price * row.atrPct) / 100, "swing4h");
   return null;
+}
+
+/** Tín hiệu gần nhất của từng symbol+side trong ledger cũ. */
+function latestSignalsByKey(existing: RadarSignalRecord[]): Map<string, RadarSignalRecord> {
+  const map = new Map<string, RadarSignalRecord>();
+  for (const signal of existing) {
+    const key = biasTrackKey(signal.symbol, signal.side);
+    const current = map.get(key);
+    if (!current || Date.parse(signal.at) > Date.parse(current.at)) map.set(key, signal);
+  }
+  return map;
 }
 
 async function readSignals(): Promise<RadarSignalRecord[]> {
@@ -273,6 +294,10 @@ export async function recordAllRadarCohorts(
 
   const [gainer, loser, unusual] = snapshots;
 
+  // Đọc ledger một lần: vừa để dedupe, vừa để biết bias lần trước của mỗi
+  // symbol+side — cơ sở của `prevBias`/`biasChanged` và alert trạng thái.
+  const existing = await readSignals();
+
   // Cluster history + cảnh báo cấp cụm độc lập với việc có signal mới hay không.
   const clusterEvents = await recordClusterSnapshots(snapshots).catch(() => []);
   let clusterAlerts = 0;
@@ -312,10 +337,7 @@ export async function recordAllRadarCohorts(
     );
   }
 
-  // Đọc ledger một lần: vừa để dedupe, vừa để biết bias lần trước của mỗi
-  // symbol+side — cơ sở của `prevBias`/`biasChanged` khi bias lật trong ngày.
   // `readSignals()` không throw: lỗi DB trả [] như trước.
-  const existing = await readSignals();
   const prevBiasByKey = lastBiasBySymbolSide(existing);
 
   const candidates = plan.map<RadarSignalRecord>(({ side, row }) => {
@@ -335,6 +357,8 @@ export async function recordAllRadarCohorts(
       price: row.price,
       at: new Date(now).toISOString(),
       minVolume,
+      regime: gainer.market.regime,
+      setupPreset: "swing4h",
       btcPrice: btcPrice !== null && Number.isFinite(btcPrice) && btcPrice > 0 ? btcPrice : null,
       setup: setup
         ? {
@@ -351,7 +375,12 @@ export async function recordAllRadarCohorts(
       clusterSize: row.clusterSize ?? 1,
       clusterLeader: row.clusterLeader ?? false,
       clusterLaggard: row.clusterLaggard ?? false,
-      actionable: row.bias !== "neutral" && row.score >= 55 && row.entryQuality >= 40,
+      // Không đuổi giá: move đã ≥2.5 ATR từ điểm nổ thì không còn là entry mới.
+      actionable:
+        row.bias !== "neutral" &&
+        row.score >= 55 &&
+        row.entryQuality >= 40 &&
+        row.chaseRisk !== true,
       ...(labels
         ? {
             hasCatalyst: labels.hasCatalyst,
@@ -363,6 +392,26 @@ export async function recordAllRadarCohorts(
   });
   let signals = 0;
   let rowAlerts = 0;
+
+  // Cảnh báo trạng thái cho watchlist: nhãn bị vô hiệu, hoặc giá đã vào / bỏ lỡ
+  // vùng entry của tín hiệu cũ. Một lượt gửi cho cả hai loại.
+  const latestByKey = latestSignalsByKey(existing);
+  const stateInputs: StateAlertInput[] = [];
+  for (const { side, row } of plan) {
+    const prev = latestByKey.get(biasTrackKey(row.symbol, side));
+    if (!prev) continue;
+    stateInputs.push({
+      symbol: row.symbol,
+      side,
+      bias: prev.bias,
+      price: row.price,
+      invalidationPrice: prev.invalidationPrice ?? null,
+      invalidationNote: prev.invalidationNote ?? null,
+      setup: prev.setup ?? null,
+      prevAt: prev.at,
+    });
+  }
+  const stateAlerts = await dispatchStateAlerts(stateInputs, gainer.market).catch(() => 0);
 
   if (candidates.length > 0) {
     try {
@@ -404,7 +453,7 @@ export async function recordAllRadarCohorts(
     signals,
     clusterEvents: clusterEvents.length,
     biasRows: biasLog.inserted,
-    alerts: clusterAlerts + rowAlerts,
+    alerts: clusterAlerts + rowAlerts + stateAlerts,
     at: new Date().toISOString(),
   };
 }

@@ -4,7 +4,7 @@
 
 import type { MarketMetrics } from "@/lib/market/metrics";
 import { compositeScore, scoreForSide, type MoverSide } from "@/lib/market/scoring";
-import { buildSetup } from "@/lib/market/setup";
+import { SETUP_PRESETS, buildSetup } from "@/lib/market/setup";
 import { netRiskReward } from "@/lib/market/liquidity";
 import type { RadarClusterSummary, RadarDetail, RadarRow, RadarSnapshot } from "@/lib/market/radar";
 import {
@@ -20,6 +20,7 @@ import {
   type TrackedSignal,
 } from "@/lib/market/ledger";
 import type { Bias } from "@/lib/market/scoring";
+import type { BiasTtlPayloadEntry } from "./bias-ttl-read";
 import { demoCatalystLabels } from "@/lib/catalyst/demo-facts";
 
 interface DemoSpec {
@@ -103,6 +104,9 @@ function toMetrics(spec: DemoSpec, side: MoverSide): MarketMetrics {
     volumeRatio7d: spec.volRatio,
     volumeZ: spec.volZ,
     atrPct: spec.atr,
+    // ATR 4h nhỏ hơn ATR ngày — dùng cho setup/invalidation giống radar thật.
+    atrPct4h: Number((spec.atr * 0.55).toFixed(2)),
+    ema20_1h: spec.price * (bullish ? 0.998 : 1.002),
     changeAtrMultiple: Math.abs(spec.change) / spec.atr,
     ema20: spec.price * (bullish ? 1.01 : 0.99),
     ema50: spec.price * (bullish ? 0.97 : 1.03),
@@ -122,6 +126,15 @@ function toMetrics(spec: DemoSpec, side: MoverSide): MarketMetrics {
 function toRow(spec: DemoSpec, side: MoverSide): RadarRow {
   const metrics = toMetrics(spec, side);
   const score = scoreForSide(metrics, side);
+  const bullish = ["continuation", "flush-bounce", "breakout", "accumulation"].includes(
+    score.bias
+  );
+  const bearish = ["exhaustion", "breakdown"].includes(score.bias);
+  const atr4h = metrics.atrPct4h ? (metrics.price * metrics.atrPct4h) / 100 : null;
+  const setup =
+    atr4h && atr4h > 0 && (bullish || bearish)
+      ? buildSetup(bullish ? "BULLISH" : "BEARISH", metrics.price, atr4h, SETUP_PRESETS.swing4h)
+      : null;
   // RADAR-06: cờ mở panel catalyst lấy từ chính facts mẫu (cùng nguồn với panel),
   // không dùng danh sách symbol hardcode.
   const catalyst = demoCatalystLabels().get(spec.symbol);
@@ -173,6 +186,13 @@ function toRow(spec: DemoSpec, side: MoverSide): RadarRow {
     reasons: score.reasons,
     warnings: score.warnings,
     catalystTriggered: Boolean(catalyst),
+    invalidationPrice: score.invalidationPrice,
+    invalidationNote: score.invalidationNote,
+    chaseRisk: score.chaseRisk,
+    setup,
+    explanation: score.explanation,
+    decisionReason: score.decisionReason,
+    liquidityRisk: spec.volume < 25e6,
   };
 }
 
@@ -313,7 +333,7 @@ interface DemoLedgerSpec {
 }
 
 // 14 tín hiệu mẫu với kết quả khác nhau để panel track record có dữ liệu đọc.
-const DEMO_LEDGER: DemoLedgerSpec[] = [
+const BASE_LEDGER: DemoLedgerSpec[] = [
   { symbol: "WIF", bias: "continuation", score: 82, entryQuality: 71, price: 2.31, base24h: 9.4, ageHours: 190 },
   { symbol: "ENA", bias: "continuation", score: 76, entryQuality: 64, price: 0.58, base24h: 5.2, ageHours: 96 },
   { symbol: "SUI", bias: "continuation", score: 71, entryQuality: 68, price: 3.12, base24h: -2.1, ageHours: 48 },
@@ -330,10 +350,73 @@ const DEMO_LEDGER: DemoLedgerSpec[] = [
   { symbol: "RNDR", bias: "neutral", score: 35, entryQuality: 57, price: 6.4, base24h: -0.6, ageHours: 24 },
 ];
 
-function demoHorizons(base24h: number, bias: Bias): TrackedSignal["horizons"] {
+// Sinh thêm mẫu để mỗi nhãn đủ ≥10 quan sát (chip hit-rate) và mỗi coin có chuỗi
+// lật nhãn (timeline 7 ngày). Hai lượt lệch pha nhau đảm bảo cùng symbol xuất
+// hiện với hai nhãn khác nhau.
+const CYCLE_BIASES: Bias[] = [
+  "continuation",
+  "exhaustion",
+  "breakdown",
+  "flush-bounce",
+  "accumulation",
+  "breakout",
+];
+
+const GENERATED_LEDGER: DemoLedgerSpec[] = [...GAINERS, ...LOSERS, ...UNUSUAL].flatMap(
+  (spec, index) => {
+    const first = CYCLE_BIASES[index % CYCLE_BIASES.length];
+    const second = CYCLE_BIASES[(index + 1) % CYCLE_BIASES.length];
+    return [
+      {
+        symbol: spec.symbol,
+        bias: first,
+        score: 58 + (index % 25),
+        entryQuality: 40 + (index % 45),
+        price: spec.price,
+        base24h: spec.change * 0.4,
+        ageHours: 18 + index,
+      },
+      {
+        symbol: spec.symbol,
+        bias: second,
+        score: 55 + ((index + 7) % 28),
+        entryQuality: 35 + ((index + 11) % 50),
+        price: spec.price,
+        base24h: spec.change * -0.3,
+        ageHours: 6 + index,
+      },
+    ];
+  }
+);
+
+/** Chuỗi lật nhãn rõ ràng cho 4 coin để timeline có dữ liệu. */
+const SEQUENCE_LEDGER: DemoLedgerSpec[] = [
+  { symbol: "AERO", bias: "exhaustion", score: 78, entryQuality: 20, price: 1.52, base24h: -4.2, ageHours: 14 },
+  { symbol: "AERO", bias: "continuation", score: 74, entryQuality: 52, price: 1.42, base24h: 6.1, ageHours: 8 },
+  { symbol: "ZEC", bias: "flush-bounce", score: 85, entryQuality: 44, price: 50.1, base24h: 8.4, ageHours: 16 },
+  { symbol: "ZEC", bias: "continuation", score: 72, entryQuality: 48, price: 48.2, base24h: 5.2, ageHours: 5 },
+  { symbol: "ALT", bias: "accumulation", score: 70, entryQuality: 86, price: 0.4, base24h: 2.2, ageHours: 12 },
+  { symbol: "ALT", bias: "breakout", score: 77, entryQuality: 58, price: 0.42, base24h: 7.3, ageHours: 4 },
+  { symbol: "DASH", bias: "breakdown", score: 81, entryQuality: 55, price: 30.4, base24h: -7.1, ageHours: 10 },
+  { symbol: "DASH", bias: "flush-bounce", score: 68, entryQuality: 47, price: 29.4, base24h: 3.8, ageHours: 3 },
+];
+
+const DEMO_LEDGER: DemoLedgerSpec[] = [
+  ...BASE_LEDGER,
+  ...GENERATED_LEDGER,
+  ...SEQUENCE_LEDGER,
+];
+
+function demoHorizons(
+  base24h: number,
+  bias: Bias,
+  /** Giá đã hồi về vùng entry chưa — chỉ khi đó mới có TP/SL để chấm. */
+  filled: boolean
+): TrackedSignal["horizons"] {
   const factors: Record<HorizonId, number> = { "1h": 0.2, "4h": 0.45, "24h": 1, "3d": 1.7, "7d": 2.4 };
   const bullish = ["continuation", "flush-bounce", "breakout", "accumulation"].includes(bias);
   const bearish = ["exhaustion", "breakdown"].includes(bias);
+  const directional = bullish || bearish;
   const result: TrackedSignal["horizons"] = {};
 
   for (const horizon of HORIZONS) {
@@ -341,35 +424,67 @@ function demoHorizons(base24h: number, bias: Bias): TrackedSignal["horizons"] {
     const btc = Number((0.9 * factors[horizon.id]).toFixed(2));
     const mfe = Number((Math.max(ret, 0) + Math.abs(base24h) * 0.35 + 1.2).toFixed(2));
     const mae = Number((Math.min(ret, 0) - Math.abs(base24h) * 0.3 - 1.1).toFixed(2));
-    const tp1Hit = bullish ? mfe >= 3 : bearish ? mae <= -3 : null;
-    const slHit = bullish ? mae <= -3 : bearish ? mfe >= 3 : null;
+    // Chưa khớp entry thì không có lệnh: TP/SL/win/MFE đều để null, giống
+    // ledger thật — nếu không demo sẽ tự báo fill-rate 100% và hit-rate ảo.
+    const active = directional && filled;
+    const tp1Hit = active ? (bullish ? mfe >= 3 : mae <= -3) : null;
+    const slHit = active ? (bullish ? mae <= -3 : mfe >= 3) : null;
     result[horizon.id] = {
       returnPct: ret,
       btcReturnPct: btc,
       relativePct: Number((ret - btc).toFixed(2)),
-      mfePct: mfe,
-      maePct: mae,
+      mfePct: active ? mfe : null,
+      maePct: active ? mae : null,
       tp1Hit,
       slHit,
       firstEvent: tp1Hit && slHit ? "ambiguous" : tp1Hit ? "tp" : slHit ? "sl" : null,
-      win: bullish ? ret > 0 : bearish ? ret < 0 : null,
+      win: active ? (bullish ? ret > 0 : ret < 0) : null,
       pending: false,
+      entryFilled: directional ? filled : null,
     } satisfies HorizonResult;
   }
   return result;
 }
 
+/**
+ * TTL mẫu cho chế độ demo. Production gửi kèm `ttl` đo từ `radar_bias_log`;
+ * demo không đọc DB nên trước đây badge luôn hiện "tĩnh (chưa có số đo)" và
+ * không ai nhìn thấy trạng thái "đo" của badge trên môi trường demo. Giữ hai
+ * nhãn `measured` (số khác bảng tĩnh để thấy rõ) + phần còn lại `static`.
+ */
+const DEMO_TTL: Record<Bias, BiasTtlPayloadEntry> = {
+  continuation: { hours: 18, source: "static", samples: 4 },
+  breakout: { hours: 12, source: "static", samples: 2 },
+  accumulation: { hours: 30, source: "measured", samples: 11 },
+  exhaustion: { hours: 6, source: "measured", samples: 15 },
+  "flush-bounce": { hours: 8, source: "static", samples: 0 },
+  breakdown: { hours: 18, source: "static", samples: 1 },
+  neutral: { hours: 6, source: "static", samples: 3 },
+};
+
 export function buildDemoTrackRecord(): TrackRecordResult {
   const now = Date.now();
   // Nhãn ledger demo lấy từ cùng bộ facts mẫu mà panel/card admin đang dùng.
   const catalystLabels = demoCatalystLabels(now);
-  const tracked: TrackedSignal[] = DEMO_LEDGER.map((spec) => {
+  // Cũ → mới để tính prevBias/biasChanged theo từng symbol.
+  const ordered = [...DEMO_LEDGER].sort((a, b) =>
+    a.ageHours === b.ageHours ? a.symbol.localeCompare(b.symbol) : b.ageHours - a.ageHours
+  );
+  const prevBiasBySymbol = new Map<string, Bias>();
+  const tracked: TrackedSignal[] = ordered.map((spec) => {
     const bullish = ["continuation", "flush-bounce", "breakout", "accumulation"].includes(spec.bias);
     const bearish = ["exhaustion", "breakdown"].includes(spec.bias);
     const setup =
       bullish || bearish
-        ? buildSetup(bullish ? "BULLISH" : "BEARISH", spec.price, spec.price * 0.035)
+        ? buildSetup(
+            bullish ? "BULLISH" : "BEARISH",
+            spec.price,
+            spec.price * 0.035,
+            SETUP_PRESETS.swing4h
+          )
         : null;
+    const prevBias = prevBiasBySymbol.get(spec.symbol) ?? null;
+    prevBiasBySymbol.set(spec.symbol, spec.bias);
     const at = new Date(now - spec.ageHours * 3_600_000).toISOString();
     const sourceRow = [...demoRows("gainer"), ...demoRows("loser"), ...demoRows("unusual")].find(
       (row) => row.symbol === spec.symbol
@@ -378,10 +493,17 @@ export function buildDemoTrackRecord(): TrackRecordResult {
       symbol: spec.symbol,
       side: bullish ? "gainer" : bearish ? "loser" : "unusual",
       bias: spec.bias,
+      prevBias,
+      biasChanged: prevBias !== null && prevBias !== spec.bias,
       score: spec.score,
       entryQuality: spec.entryQuality,
       price: spec.price,
       at,
+      minVolume: 25_000_000,
+      regime: "risk-on",
+      setupPreset: "swing4h",
+      invalidationPrice: setup ? setup.stopLoss : null,
+      invalidationNote: setup ? "SL setup (1 ATR 4h)" : null,
       btcPrice: 94_250,
       setup: setup
         ? {
@@ -407,12 +529,18 @@ export function buildDemoTrackRecord(): TrackRecordResult {
             catalystSources: catalystLabels.get(spec.symbol)!.sources,
           }
         : {}),
-      actionable: spec.bias !== "neutral" && spec.score >= 55,
+      // Cùng ngưỡng "không đuổi giá" của scoring (move 24h ≥3.5 ATR).
+      actionable:
+        spec.bias !== "neutral" &&
+        spec.score >= 55 &&
+        spec.entryQuality >= 40 &&
+        Math.abs(spec.base24h) < 10,
     };
     return {
       ...record,
       ageHours: spec.ageHours,
-      horizons: demoHorizons(spec.base24h, spec.bias),
+      // Move 24h càng lớn càng khó hồi về vùng entry (0.25–0.75 ATR dưới giá).
+      horizons: demoHorizons(spec.base24h, spec.bias, Math.abs(spec.base24h) < 8),
     };
   });
 
@@ -423,6 +551,7 @@ export function buildDemoTrackRecord(): TrackRecordResult {
     recent: [...tracked].sort((a, b) => a.ageHours - b.ageHours).slice(0, 20),
     total: tracked.length,
     actionable: tracked.filter((s) => s.actionable).length,
+    ttl: DEMO_TTL,
     note: `${LEDGER_NOTE} (Dữ liệu mẫu vì server bị Binance geo-block.)`,
     demo: true,
     evaluatedAt: new Date().toISOString(),
@@ -448,14 +577,9 @@ export function getDemoDetail(rawSymbol: string): RadarDetail | null {
     row.clusterLaggard = member.laggard ?? false;
   }
 
-  const bullish = ["continuation", "flush-bounce", "breakout", "accumulation"].includes(row.bias);
-  const bearish = ["exhaustion", "breakdown"].includes(row.bias);
-  const atrValue = row.atrPct ? (row.price * row.atrPct) / 100 : null;
-
-  const setup =
-    atrValue && (bullish || bearish)
-      ? buildSetup(bullish ? "BULLISH" : "BEARISH", row.price, atrValue)
-      : null;
+  // Dùng lại setup của row (swing4h trên ATR 4h) — trước đây detail tự dựng lại
+  // bằng preset legacy + ATR ngày nên vùng entry lệch và luôn căn giữa giá.
+  const setup = row.setup ?? null;
   return {
     row,
     setup,

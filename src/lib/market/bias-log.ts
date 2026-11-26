@@ -26,7 +26,7 @@ import type { RadarSnapshot } from "@/lib/market/radar";
  * Phiên bản bộ trọng số sinh ra nhãn. Đổi scoring (hoặc chạy song song engine
  * mới) thì tăng số này để mọi thống kê/backtest tách được hai phiên bản.
  */
-export const BIAS_ENGINE_VERSION = "v2";
+export const BIAS_ENGINE_VERSION = "v3";
 
 /** 3 side × tối đa 30 row/side; chặn payload insert nếu snapshot phình bất thường. */
 const MAX_ROWS_PER_RUN = 120;

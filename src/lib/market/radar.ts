@@ -26,9 +26,12 @@ import {
   compositeScore,
   scoreForSide,
   type Bias,
+  type BiasDecisionReason,
+  type MoverScore,
   type MoverSide,
+  type ScorePercentiles,
 } from "@/lib/market/scoring";
-import { buildSetup, type SetupLevels } from "@/lib/market/setup";
+import { SETUP_PRESETS, buildSetup, type SetupLevels } from "@/lib/market/setup";
 import { shouldExplainCatalyst } from "@/lib/catalyst/matching";
 import { isEligibleTicker, listingAgeDays } from "@/lib/market/universe";
 import { buildDemoSnapshot, getDemoDetail } from "@/lib/market/demo";
@@ -196,6 +199,15 @@ export interface RadarRow {
   /** Giá làm bias này sai (từ scoring) — UI/backtest đọc cùng nhãn. */
   invalidationPrice?: number | null;
   invalidationNote?: string | null;
+  /** Move đã quá xa — UI gắn badge "không đuổi giá". */
+  chaseRisk?: boolean;
+  /** Setup entry/TP/SL dựng tại lúc chấm bằng ATR 4h; null = neutral/thiếu ATR. */
+  setup?: SetupLevels | null;
+  /** Vì sao nhãn là neutral (thiếu ngưỡng, hai phe sát nhau…). */
+  explanation?: string | null;
+  decisionReason?: BiasDecisionReason;
+  /** Volume 24h quá mỏng so với ngưỡng lọc — setup khó khớp giá tốt. */
+  liquidityRisk?: boolean;
   bias: Bias;
   label: string;
   score: number;
@@ -436,6 +448,28 @@ export function classifyRegime(
   return "neutral";
 }
 
+const BULLISH_BIASES: Bias[] = ["continuation", "flush-bounce", "breakout", "accumulation"];
+const BEARISH_BIASES: Bias[] = ["exhaustion", "breakdown"];
+
+/** ATR tuyệt đối cho setup: ưu tiên khung 4h (khung vào lệnh), thiếu thì ATR ngày. */
+export function setupAtrValue(metrics: MarketMetrics): number | null {
+  const pct = metrics.atrPct4h ?? metrics.atrPct;
+  if (pct === null || pct === undefined || pct <= 0) return null;
+  const value = (metrics.price * pct) / 100;
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** Setup entry/TP/SL của một row, null khi nhãn trung tính hoặc thiếu ATR. */
+export function setupForBias(metrics: MarketMetrics, bias: Bias): SetupLevels | null {
+  const atr = setupAtrValue(metrics);
+  if (atr === null) return null;
+  if (BULLISH_BIASES.includes(bias))
+    return buildSetup("BULLISH", metrics.price, atr, SETUP_PRESETS.swing4h);
+  if (BEARISH_BIASES.includes(bias))
+    return buildSetup("BEARISH", metrics.price, atr, SETUP_PRESETS.swing4h);
+  return null;
+}
+
 function toRow(
   ticker: FuturesTicker,
   metrics: MarketMetrics,
@@ -506,12 +540,67 @@ function toRow(
     warnings: score.warnings,
     invalidationPrice: score.invalidationPrice,
     invalidationNote: score.invalidationNote,
+    chaseRisk: score.chaseRisk,
+    setup: setupForBias(metrics, score.bias),
+    explanation: score.explanation,
+    decisionReason: score.decisionReason,
   };
+}
+
+/**
+ * Chấm lại row sau khi có percentile của universe — chuẩn hoá funding/OI theo
+ * chính tập coin đang xét thay vì ngưỡng tuyệt đối.
+ */
+function rescoreRow(
+  row: RadarRow,
+  metrics: MarketMetrics,
+  side: MoverSide,
+  prevBias: Bias | null,
+  percentiles: ScorePercentiles
+): void {
+  const score: MoverScore = scoreForSide(metrics, side, { prevBias, percentiles });
+  row.bias = score.bias;
+  row.label = score.label;
+  row.score = score.score;
+  row.entryQuality = score.entryQuality;
+  row.composite = compositeScore(score.score, score.entryQuality);
+  row.reasons = score.reasons;
+  row.warnings = score.warnings;
+  row.invalidationPrice = score.invalidationPrice;
+  row.invalidationNote = score.invalidationNote;
+  row.chaseRisk = score.chaseRisk;
+  row.setup = setupForBias(metrics, score.bias);
+  row.explanation = score.explanation;
+  row.decisionReason = score.decisionReason;
+}
+
+/** Percentile funding/OI trong universe các row được enrich của một side. */
+function crossSectionPercentiles(entries: EnrichedRow[]): Map<string, ScorePercentiles> {
+  const funding = entries
+    .map((entry) => entry.metrics.fundingRate)
+    .filter((value): value is number => value !== null && Number.isFinite(value))
+    .sort((a, b) => a - b);
+  const oi = entries
+    .map((entry) => entry.metrics.oiChangePct)
+    .filter((value): value is number => value !== null && Number.isFinite(value))
+    .sort((a, b) => a - b);
+
+  const map = new Map<string, ScorePercentiles>();
+  for (const entry of entries) {
+    const fundingRate = entry.metrics.fundingRate;
+    const oiChange = entry.metrics.oiChangePct;
+    map.set(entry.row.symbol, {
+      funding: fundingRate === null ? null : percentileRank(funding, fundingRate),
+      oiChange: oiChange === null ? null : percentileRank(oi, oiChange),
+    });
+  }
+  return map;
 }
 
 interface EnrichedRow {
   row: RadarRow;
   closes: number[];
+  metrics: MarketMetrics;
 }
 
 async function enrichTicker(
@@ -553,6 +642,7 @@ async function enrichTicker(
   return {
     row: toRow(ticker, metrics, side, system, spot, prevBias),
     closes: hourly.map((c) => Number(c.close)).filter(Number.isFinite),
+    metrics,
   };
 }
 
@@ -1075,8 +1165,15 @@ async function buildSnapshot(side: MoverSide, minVolume: number): Promise<RadarS
   );
 
   const clean = enriched.filter((r): r is EnrichedRow => r !== null);
+  // Percentile funding/OI theo universe của side rồi chấm lại: ngưỡng tuyệt đối
+  // (funding 0.05%/8h, OI ±3%) sai với coin có baseline khác nhau.
+  const percentiles = crossSectionPercentiles(clean);
   for (const entry of clean) {
     entry.row.rsPercentile = percentileRank(changeRanks, entry.row.changePct);
+    const prevBias =
+      (prevBiasMap.get(`${entry.row.symbol}|${side}`) as Bias | undefined) ?? null;
+    rescoreRow(entry.row, entry.metrics, side, prevBias, percentiles.get(entry.row.symbol) ?? {});
+    entry.row.liquidityRisk = entry.row.quoteVolume < minVolume * 1.5;
   }
 
   // Cluster được tính trên universe cố định trước; row enrich chỉ merge vào sau.
@@ -1313,13 +1410,7 @@ export async function getMoverDetail(rawSymbol: string): Promise<RadarDetail | n
     // và cờ catalyst phải được tính lại với clusterLeader thật (RADAR-05 E5).
     applyDetailCluster(row, await getClusterInfoForSymbol(symbol));
 
-    const bullish: Bias[] = ["continuation", "flush-bounce", "breakout", "accumulation"];
-    const bearish: Bias[] = ["exhaustion", "breakdown"];
-    const atrValue = metrics.atrPct ? (metrics.price * metrics.atrPct) / 100 : null;
-    const setup =
-      atrValue && atrValue > 0 && (bullish.includes(row.bias) || bearish.includes(row.bias))
-        ? buildSetup(bullish.includes(row.bias) ? "BULLISH" : "BEARISH", metrics.price, atrValue)
-        : null;
+    const setup = setupForBias(metrics, row.bias);
 
     const liquidity = depth
       ? computeLiquidity(

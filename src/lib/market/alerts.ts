@@ -8,6 +8,8 @@ import { appSettings } from "@/db/schema";
 import type { RadarRow, RadarMarketContext } from "@/lib/market/radar";
 import { isBearishBias, isBullishBias } from "@/lib/market/ledger";
 import type { ClusterEvent } from "@/lib/market/cluster-history";
+import { biasDirection } from "@/lib/market/bias-state";
+import type { Bias } from "@/lib/market/scoring";
 import { matchCatalystsForSymbol } from "@/lib/catalyst/matching";
 import { readRecentCatalystFacts } from "@/lib/catalyst/store";
 import type { CatalystFact } from "@/lib/catalyst/types";
@@ -15,6 +17,7 @@ import { peekRadarRuntimeConfig, readRadarRuntimeConfig } from "@/lib/settings/r
 
 const KEY = "radar.alerts.sent";
 const CLUSTER_KEY = "radar.alerts.clusters.sent";
+const INVALIDATION_KEY = "radar.alerts.invalidations.sent";
 const MAX_SENT = 200;
 const KEEP_DAYS = 7;
 /** Số fact tối đa kèm một alert catalyst (1–3, đủ để đọc, không thành bài báo). */
@@ -253,8 +256,39 @@ export async function dispatchRadarAlerts(
 
   const candidates = selectAlertCandidates(rows, keys, cooling, day, opts, (row) =>
     factsBySymbol.get(row.symbol) ?? []
-  );
-  if (candidates.length === 0) return 0;
+  ).filter((candidate) => !isMuted(candidate.row.symbol));
+  if (candidates.length === 0 || inQuietHours()) return 0;
+
+  // Digest: gộp nhiều tín hiệu vào một tin để không dội kênh khi thị trường động.
+  if (process.env.RADAR_ALERT_DIGEST === "1" && candidates.length > 1) {
+    const texts = candidates.map(({ row, facts }) => buildRadarAlertText(row, market, facts));
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          text: `[Radar] ${candidates.length} tín hiệu mới\n\n${texts.join("\n\n---\n\n")}`,
+          digest: true,
+          count: candidates.length,
+          at: new Date().toISOString(),
+          url: "/radar",
+        }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) return 0;
+      for (const { row, key } of candidates) {
+        kept.push({ key, at: new Date().toISOString(), symbol: row.symbol });
+      }
+      await writeSent(kept.slice(-MAX_SENT)).catch(() => undefined);
+      return 1;
+    } catch (error) {
+      console.warn(
+        "[RADAR-ALERT] Webhook digest lỗi:",
+        error instanceof Error ? error.message : String(error)
+      );
+      return 0;
+    }
+  }
 
   let delivered = 0;
   for (const candidate of candidates) {
@@ -310,6 +344,200 @@ export async function dispatchRadarAlerts(
     } catch (error) {
       console.warn(
         "[RADAR-ALERT] Không lưu được sent:",
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+  return delivered;
+}
+
+export interface StateAlertInput {
+  symbol: string;
+  side: string;
+  /** Nhãn của tín hiệu cũ (không phải nhãn vừa chấm). */
+  bias: Bias;
+  /** Giá hiện tại của row vừa chấm. */
+  price: number;
+  invalidationPrice: number | null;
+  invalidationNote?: string | null;
+  setup?: { entryLow: number; entryHigh: number } | null;
+  /** Thời điểm ghi của tín hiệu — một phần của khoá dedupe. */
+  prevAt: string;
+}
+
+export type StateAlertKind = "invalidation" | "entry-zone" | "missed-entry";
+
+export function stateAlertKey(input: StateAlertInput, kind: StateAlertKind): string {
+  return `state|${kind}|${input.symbol}|${input.side}|${input.prevAt}`;
+}
+
+/** Nhãn đã bị giá vượt qua mốc vô hiệu chưa. */
+export function isInvalidated(input: StateAlertInput): boolean {
+  const level = input.invalidationPrice;
+  if (level === null || !Number.isFinite(level) || !Number.isFinite(input.price)) return false;
+  const direction = biasDirection(input.bias);
+  if (direction === 1) return input.price <= level;
+  if (direction === -1) return input.price >= level;
+  return false;
+}
+
+/**
+ * Trạng thái vùng entry của tín hiệu cũ: giá đã vào vùng (có thể khớp), đã bỏ
+ * lỡ (đi quá 1% ra ngoài), hoặc còn chờ (null — không báo để tránh nhiễu).
+ */
+export function entryZoneState(
+  input: StateAlertInput
+): "in-zone" | "missed" | null {
+  if (!input.setup) return null;
+  const direction = biasDirection(input.bias);
+  if (direction === 0) return null;
+  const { entryLow, entryHigh } = input.setup;
+  if (!Number.isFinite(entryLow) || !Number.isFinite(entryHigh)) return null;
+  if (input.price >= entryLow && input.price <= entryHigh) return "in-zone";
+  if (direction === 1 && input.price > entryHigh * 1.01) return "missed";
+  if (direction === -1 && input.price < entryLow * 0.99) return "missed";
+  return null;
+}
+
+export interface SelectedStateAlert {
+  input: StateAlertInput;
+  kind: StateAlertKind;
+}
+
+/** Chọn cảnh báo trạng thái chưa gửi cho đúng lần ghi đó. */
+export function selectStateAlerts(
+  inputs: StateAlertInput[],
+  sentKeys: Set<string>
+): SelectedStateAlert[] {
+  const selected: SelectedStateAlert[] = [];
+  for (const input of inputs) {
+    if (isInvalidated(input)) {
+      if (!sentKeys.has(stateAlertKey(input, "invalidation"))) {
+        selected.push({ input, kind: "invalidation" });
+      }
+      continue;
+    }
+    const zone = entryZoneState(input);
+    const kind: StateAlertKind | null =
+      zone === "in-zone" ? "entry-zone" : zone === "missed" ? "missed-entry" : null;
+    if (kind && !sentKeys.has(stateAlertKey(input, kind))) {
+      selected.push({ input, kind });
+    }
+  }
+  return selected;
+}
+
+function stateAlertText(
+  input: StateAlertInput,
+  kind: StateAlertKind,
+  market: RadarMarketContext
+): string {
+  const headline =
+    kind === "invalidation"
+      ? `[Radar] Nhãn vô hiệu: $${input.symbol} (${input.side})`
+      : kind === "entry-zone"
+        ? `[Radar] Giá vào vùng entry: $${input.symbol} (${input.side})`
+        : `[Radar] Bỏ lỡ vùng entry: $${input.symbol} (${input.side})`;
+  const detail =
+    kind === "invalidation"
+      ? `Nhãn ${input.bias} không còn đúng — giá ${pct(input.price)} đã vượt mốc vô hiệu ${input.invalidationPrice}.`
+      : kind === "entry-zone"
+        ? `Giá ${pct(input.price)} đã vào vùng ${input.setup?.entryLow}–${input.setup?.entryHigh} của tín hiệu ${input.bias}.`
+        : `Giá ${pct(input.price)} đã đi quá vùng entry ${input.setup?.entryLow}–${input.setup?.entryHigh} — đừng đuổi.`;
+  return [
+    headline,
+    detail,
+    input.invalidationNote ? `Điều kiện vô hiệu: ${input.invalidationNote}.` : null,
+    `Regime: ${market.regime} · BTC ${market.btcChangePct?.toFixed(2) ?? "—"}%`,
+    "Không phải khuyến nghị đầu tư.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Muted symbols qua `RADAR_ALERT_MUTED=BTC,ETH` — tắt alert cho coin ồn. */
+function isMuted(symbol: string): boolean {
+  const list = (process.env.RADAR_ALERT_MUTED ?? "")
+    .split(",")
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+  return list.includes(symbol.toUpperCase());
+}
+
+/** Quiet hours qua `RADAR_ALERT_QUIET_UTC=22-7` (có thể qua đêm). */
+function inQuietHours(now = new Date()): boolean {
+  const raw = process.env.RADAR_ALERT_QUIET_UTC?.trim();
+  if (!raw) return false;
+  const [startRaw, endRaw] = raw.split("-");
+  const start = Number(startRaw);
+  const end = Number(endRaw);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+  const hour = now.getUTCHours();
+  return start <= end ? hour >= start && hour < end : hour >= start || hour < end;
+}
+
+/** Gửi cảnh báo trạng thái (vô hiệu / vào vùng entry / bỏ lỡ entry). */
+export async function dispatchStateAlerts(
+  inputs: StateAlertInput[],
+  market: RadarMarketContext
+): Promise<number> {
+  if (process.env.NODE_ENV === "test" || process.env.RADAR_DEMO === "1") return 0;
+  if (inputs.length === 0 || inQuietHours()) return 0;
+  const url = peekRadarRuntimeConfig().alertWebhookUrl;
+  if (!url) return 0;
+
+  const sent = await readSent(INVALIDATION_KEY);
+  const cutoff = Date.now() - KEEP_DAYS * 86_400_000;
+  const kept = sent.filter((item) => {
+    const at = new Date(item.at).getTime();
+    return Number.isFinite(at) && at >= cutoff;
+  });
+  const keys = new Set(kept.map((item) => item.key));
+  const candidates = selectStateAlerts(
+    inputs.filter((input) => !isMuted(input.symbol)),
+    keys
+  );
+  if (candidates.length === 0) return 0;
+
+  let delivered = 0;
+  for (const candidate of candidates) {
+    const { input, kind } = candidate;
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          text: stateAlertText(input, kind, market),
+          symbol: input.symbol,
+          bias: input.bias,
+          price: input.price,
+          event: kind,
+          at: new Date().toISOString(),
+          url: `/radar?symbol=${input.symbol}`,
+        }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) continue;
+      kept.push({
+        key: stateAlertKey(input, kind),
+        at: new Date().toISOString(),
+        symbol: input.symbol,
+      });
+      delivered += 1;
+    } catch (error) {
+      console.warn(
+        "[RADAR-ALERT] Webhook state lỗi:",
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+
+  if (delivered > 0) {
+    try {
+      await writeSent(kept.slice(-MAX_SENT), INVALIDATION_KEY);
+    } catch (error) {
+      console.warn(
+        "[RADAR-ALERT] Không lưu được state sent:",
         error instanceof Error ? error.message : String(error)
       );
     }

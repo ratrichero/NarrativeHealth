@@ -53,7 +53,10 @@ export function clampTtlDays(raw: unknown, fallback = TTL_WINDOW_DAYS): number {
   return Math.min(TTL_MAX_DAYS, Math.max(1, Math.floor(value)));
 }
 
-/** Độ dài các run giữ nhãn trong `since` — nguồn duy nhất cho TTL đo được. */
+/**
+ * Các run đã đóng trong `since`: quãng từ lần chấm cuối của nhãn cũ tới lần
+ * chấm đầu của nhãn mới. Run đang mở ở mép phải bị `buildHoldRuns` bỏ.
+ */
 export async function readBiasHoldRuns(since: Date): Promise<BiasHoldRun[]> {
   const result = await db.execute(sql`
     SELECT symbol, side, bias, logged_at

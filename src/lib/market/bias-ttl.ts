@@ -2,8 +2,15 @@
 //
 // `BIAS_TTL_HOURS` là con số viết tay: "kiệt sức" 8h, "tích lũy" 36h. Nếu
 // thực tế nhãn "kiệt sức" đổi sau trung bình 5h, bảng tĩnh vẫn cho nó sống 8h —
-// tức là UI báo "còn hiệu lực" cho một nhãn đã chết. Module này đo độ dài run
-// (các lần chấm liên tiếp cùng bias trên cùng symbol+side) rồi lấy trung vị.
+// tức là UI báo "còn hiệu lực" cho một nhãn đã chết. Module này đo KHOẢNG TỪ
+// LẦN CHẤM CUỐI CỦA NHÃN CŨ TỚI LẦN CHẤM ĐẦU CỦA NHÃN MỚI trên cùng
+// symbol+side rồi lấy trung vị.
+//
+// Vì sao không đo "từ lần chấm đầu tới lần chấm cuối của nhãn cũ": cách đó chỉ
+// biết nhãn còn sống tới lần chấm cuối, bỏ sót quãng từ đó tới lúc thật sự lật
+// nhãn (log thưa thì hụt vài giờ), và run bắt đầu trước cửa sổ bị cắt mất phần
+// đầu nên đo ngắn hơn thực tế — cả hai đều đẩy TTL xuống. Khoảng tới lúc lật
+// dùng hai lần chấm đều nằm trong cửa sổ nên không bị cắt cụt.
 //
 // Chỉ thay bảng tĩnh khi đủ mẫu; thiếu mẫu thì giữ nguyên — thà dùng số viết
 // tay còn hơn một TTL suy từ 3 lần quan sát.
@@ -32,9 +39,12 @@ export const MAX_MEASURED_TTL_HOURS = 72;
 /** Số run tối thiểu của một bias để dùng trung vị đo được. */
 export const MIN_TTL_RUNS = 10;
 
-export const BIAS_TTL_METRICS_VERSION = "bias-ttl-v1";
+export const BIAS_TTL_METRICS_VERSION = "bias-ttl-v2";
 
-/** Một lần giữ nhãn: cùng symbol+side giữ nguyên bias trong `hours` giờ. */
+/**
+ * Một run đã đóng: `hours` = quãng từ lần chấm cuối của `bias` tới lần chấm đầu
+ * của nhãn kế tiếp trên cùng symbol+side (chính là lúc nhãn cũ hết hiệu lực).
+ */
 export interface BiasHoldRun {
   bias: string;
   hours: number;
@@ -109,8 +119,14 @@ export function effectiveTtlHours(
 }
 
 /**
- * Gom danh sách lần chấm (đã sắp theo thời gian cho từng symbol+side) thành
- * các run. Tách khỏi I/O để test được; `readBiasHoldRuns` chỉ lo đọc DB.
+ * Gom danh sách lần chấm thành các run ĐÃ ĐÓNG: mỗi run kết thúc ở lần chấm
+ * đầu tiên của một nhãn khác trên cùng symbol+side, và độ dài là quãng từ lần
+ * chấm cuối của nhãn cũ tới lần chấm đầu của nhãn mới.
+ *
+ * Run cuối cùng của mỗi symbol+side (chưa thấy nhãn kế tiếp trong cửa sổ) bị
+ * BỎ: nó chưa đóng nên không biết nhãn còn sống bao lâu — tính nó sẽ kéo TTL
+ * xuống đúng bằng phần đuôi bị cắt. Tách khỏi I/O để test được;
+ * `readBiasHoldRuns` chỉ lo đọc DB.
  */
 export function buildHoldRuns(
   observations: readonly { symbol: string; side: string; bias: string; atMs: number }[]
@@ -119,25 +135,28 @@ export function buildHoldRuns(
     (a, b) => a.symbol.localeCompare(b.symbol) || a.side.localeCompare(b.side) || a.atMs - b.atMs
   );
   const runs: BiasHoldRun[] = [];
-  let current: { key: string; bias: string; start: number; last: number } | null = null;
-
-  const flush = () => {
-    if (!current) return;
-    // Run chưa đóng cũng tính: độ dài tới lần chấm cuối của nó.
-    runs.push({ bias: current.bias, hours: (current.last - current.start) / 3_600_000 });
-    current = null;
-  };
+  /** Run đang mở: không cần `start` vì chỉ đo tới lần lật nhãn. */
+  let current: { key: string; bias: string; last: number } | null = null;
 
   for (const obs of sorted) {
     if (!Number.isFinite(obs.atMs)) continue;
     const key = `${obs.symbol}|${obs.side}`;
-    if (!current || current.key !== key || current.bias !== obs.bias) {
-      flush();
-      current = { key, bias: obs.bias, start: obs.atMs, last: obs.atMs };
+    if (!current || current.key !== key) {
+      // Sang symbol+side mới: run đang mở của khoá cũ chưa đóng → bỏ.
+      current = { key, bias: obs.bias, last: obs.atMs };
       continue;
     }
-    current.last = obs.atMs;
+    if (current.bias === obs.bias) {
+      current.last = obs.atMs;
+      continue;
+    }
+    // Nhãn lật: run cũ đóng tại lần chấm đầu của nhãn mới.
+    runs.push({
+      bias: current.bias,
+      hours: Math.max(0, (obs.atMs - current.last) / 3_600_000),
+    });
+    current = { key, bias: obs.bias, last: obs.atMs };
   }
-  flush();
+  // `current` còn lại là run chưa đóng của symbol+side cuối → không tính.
   return runs;
 }

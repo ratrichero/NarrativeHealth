@@ -21,6 +21,8 @@ export interface MarketMetrics {
   volumeZ: number | null;
   /** ATR(14) ngày / giá * 100. */
   atrPct: number | null;
+  /** ATR(14) khung 4h / giá * 100 — khung vào lệnh cho SL/TP và sàn vô hiệu. */
+  atrPct4h?: number | null;
   /** |change 24h| / ATR% — move đã đi bao nhiêu ATR. */
   changeAtrMultiple: number | null;
   ema20: number | null;
@@ -276,6 +278,7 @@ export function computeMarketMetrics(input: MarketMetricsInput): MarketMetrics {
     : input.dailyCandles;
 
   const atr = atrPctLast(input.dailyCandles);
+  const atr4h = atrPctLast(input.h4Candles);
   const changeAbs = Math.abs(input.changePct);
   const changeAtrMultiple = atr && atr > 0 ? changeAbs / atr : null;
 
@@ -326,6 +329,7 @@ export function computeMarketMetrics(input: MarketMetricsInput): MarketMetrics {
     volumeRatio7d: round(ratio7d, 2),
     volumeZ: round(z, 2),
     atrPct: round(atr, 2),
+    atrPct4h: round(atr4h, 2),
     changeAtrMultiple: round(changeAtrMultiple, 2),
     ema20: round(ema20, 8),
     ema50: round(ema50, 8),

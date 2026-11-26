@@ -76,6 +76,8 @@ describe("scoreGainer", () => {
         rsi14: 82,
         ema20: 150,
         ema50: 120,
+        // Phiếu thứ hai: giá đã đóng dưới EMA20 1h (mất cấu trúc ngắn hạn).
+        ema20_1h: 101,
       })
     );
     expect(result.bias).toBe("exhaustion");
@@ -183,7 +185,7 @@ describe("scoreUnusual", () => {
 
 describe("scoreForSide + composite", () => {
   it("dispatch đúng hàm theo side", () => {
-    const metrics = m({ changePct: 42, atrPct: 6, changeAtrMultiple: 7, fundingRate: 0.0009, oiChangePct: -8, rsi14: 82 });
+    const metrics = m({ changePct: 42, atrPct: 6, changeAtrMultiple: 7, fundingRate: 0.0009, oiChangePct: -8, rsi14: 82, ema20_1h: 101 });
     expect(scoreForSide(metrics, "gainer").bias).toBe("exhaustion");
     expect(scoreForSide(metrics, "loser").bias).not.toBe("flush-bounce");
     expect(scoreForSide(m({ changePct: 1, volumeZ: 4, volumeRatio7d: 3, oiChangePct: 9, rangePct7d: 7 }), "unusual").bias).toBe(
@@ -276,7 +278,7 @@ describe("exhaustion cần xác nhận đảo chiều", () => {
     expect(result.warnings.join(" ")).toContain("xác nhận");
   });
 
-  it("xác nhận bằng OI giảm → vẫn gọi kiệt sức như trước", () => {
+  it("hai phiếu (OI giảm + mất EMA20 1h) mới gọi kiệt sức", () => {
     const result = scoreGainer(
       m({
         changePct: 42,
@@ -288,9 +290,29 @@ describe("exhaustion cần xác nhận đảo chiều", () => {
         rangePosition: 0.98,
         distanceFromHighPct: 0.1,
         rsi14: 82,
+        ema20_1h: 101,
       })
     );
     expect(result.bias).toBe("exhaustion");
+  });
+
+  it("OI giảm một mình chỉ là một phiếu — không đoán đảo chiều", () => {
+    const result = scoreGainer(
+      m({
+        changePct: 42,
+        atrPct: 6,
+        changeAtrMultiple: 7,
+        volumeRatio7d: 9,
+        oiChangePct: -8,
+        fundingRate: 0.0009,
+        rangePosition: 0.98,
+        distanceFromHighPct: 0.1,
+        rsi14: 82,
+        ema20_1h: null,
+      })
+    );
+    expect(result.bias).not.toBe("exhaustion");
+    expect(result.warnings.join(" ")).toContain("phiếu");
   });
 
   it("hysteresis giữ exhaustion khi bằng chứng chưa đổi phe", () => {
@@ -304,6 +326,7 @@ describe("exhaustion cần xác nhận đảo chiều", () => {
       rangePosition: 0.98,
       distanceFromHighPct: 0.1,
       rsi14: 82,
+      ema20_1h: 101,
     });
     expect(scoreGainer(metrics, { prevBias: "exhaustion" }).bias).toBe("exhaustion");
     // Bằng chứng đủ mạnh (chênh > switch margin) vẫn đổi được sang continuation.
@@ -330,6 +353,7 @@ describe("giá vô hiệu bias", () => {
         rsi14: 82,
         rangePosition: 0.98,
         distanceFromHighPct: 0.1,
+        ema20_1h: 101,
       })
     );
     expect(result.bias).toBe("exhaustion");
