@@ -35,6 +35,16 @@ Thứ tự là bắt buộc: **0041 sửa bảng do 0040 tạo** (thêm `head_ha
 từ `hash`, rồi drop `sequence`/`prev_hash`/`hash`). Runner sắp theo tên file nên
 `0040` luôn chạy trước `0041`.
 
+Kiểm bảng trước khi migrate (mất 1 giây, tránh `0041` drop cột trên dữ liệu thật):
+
+```bash
+# 0 dòng hoặc "bảng chưa tồn tại" = đường bình thường, chạy tiếp.
+# Có dòng > 0 = bảng đã được chốt từ trước — đọc §1b trước, 0041 sẽ drop
+# sequence/prev_hash/hash và backfill head_hash từ hash.
+psql "$DATABASE_URL" -c "SELECT count(*) AS rows_now FROM track_record_snapshots;" \
+  || echo "bảng chưa tồn tại — 0040 sẽ tạo"
+```
+
 ```bash
 cd /path/to/app
 npx --yes tsx scripts/migrate-raw.ts 2>&1 | tee /tmp/migrate-snapshot.log
