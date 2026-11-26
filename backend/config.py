@@ -3,7 +3,16 @@ Application configuration using Pydantic Settings
 """
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-import os
+import logging
+
+
+_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def resolve_log_level(value: str) -> int:
+    """Đổi `LOG_LEVEL` (env) thành hằng của `logging`; giá trị lạ rơi về INFO."""
+    name = (value or "").strip().upper()
+    return getattr(logging, name) if name in _LOG_LEVELS else logging.INFO
 
 
 class Settings(BaseSettings):
@@ -12,13 +21,10 @@ class Settings(BaseSettings):
     
     # App
     app_env: str = "development"
+    # Mức log của process FastAPI/backend (Next.js không đọc). Nhận
+    # DEBUG/INFO/WARNING/ERROR/CRITICAL; giá trị khác rơi về INFO.
     log_level: str = "INFO"
-    
-    # API Keys (optional)
-    coingecko_api_key: str = ""
-    binance_api_key: str = ""
-    binance_secret: str = ""
-    
+
     # Scheduler (Vietnam timezone UTC+7)
     scheduler_enabled: bool = True
     scheduler_hour: int = 7  # Run at 7:00 AM Vietnam time (UTC+7)

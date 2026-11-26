@@ -1,6 +1,70 @@
 # Tóm tắt Nâng cấp & Thay đổi
 
-## Ngày cập nhật: 2026-11-25
+## Ngày cập nhật: 2026-11-26
+
+## ENV-AUDIT — 4 field cấu hình chết trong backend (2026-11-26)
+
+Rà 32 field của `backend/config.py` và 70 key của `.env.example` để tìm biến được khai báo nhưng
+không nơi nào đọc. Kết quả: `.env.example` không có key mồ côi (mọi key đều có consumer hoặc map
+vào một field Settings), nhưng `backend/config.py` có **4 field không được dùng ở đâu** — cả bốn
+vào từ commit MVP `e3c7ef6` và chưa từng được đọc lại.
+
+| Field | Xử lý | Lý do |
+|---|---|---|
+| `log_level` (`LOG_LEVEL`) | **Nối vào chỗ dùng** | Là biến vận hành thật: `backend/main.py` gọi `logging.basicConfig(level=resolve_log_level(settings.log_level))` trước khi tạo app, nên `LOG_LEVEL=DEBUG` từ nay mới có tác dụng. |
+| `coingecko_api_key` | **Bỏ** | Backend không gọi CoinGecko — không có HTTP client nào trong `backend/`. |
+| `binance_api_key` | **Bỏ** | Backend chỉ đọc cột `binance_*_symbol` từ DB, không gọi Binance API. |
+| `binance_secret` | **Bỏ** | Như trên; giữ lại chỉ khiến người vận hành tưởng backend cần credential Binance. |
+
+- `resolve_log_level()` (`backend/config.py`): nhận `DEBUG/INFO/WARNING/ERROR/CRITICAL` (không
+  phân biệt hoa/thường, cắt khoảng trắng), giá trị lạ/để trống → `INFO` thay vì làm chết startup.
+  `logging.basicConfig` chỉ đặt mức cho root logger; handler/level riêng của uvicorn không bị ghi đè.
+- Bỏ luôn `import os` không dùng trong `backend/config.py`.
+- `.env.example`: giữ `LOG_LEVEL` (nay có consumer) và ghi rõ đây là mức log của FastAPI, Next.js
+  không đọc.
+- Không sửa `docs/mvp_spec.md:670-672` — đó là spec MVP lịch sử, vẫn mô tả 3 khoá API là tuỳ chọn.
+
+Không cần migration và không phải sửa `.env` trên VPS: ba khoá kia vốn không có trong
+`.env.example`, và `Settings.Config.extra = "ignore"` nên `.env` có sót cũng không lỗi. Thay đổi
+hành vi duy nhất là `LOG_LEVEL` từ nay thật sự đặt mức log của backend.
+
+### Phần 2 — biến đang đọc trong code nhưng thiếu key trong `.env.example`
+
+Chiều ngược lại của cùng đợt rà: 54 tên biến được đọc bằng `process.env` trong `src/` nhưng
+không có dòng `KEY=` nào trong `.env.example`. Đa số là biến test/canary/dev (`LLM_CANARY_*`,
+`LLM_FORCE_ENV`, `BT_*`, `CHAT_*`, `NEXT_RUNTIME`, `PORT`, `NO_PROXY`, `SQ_TEST_MODE`…) nên giữ
+nguyên. Nhóm vận hành thật đã được bổ sung key (không đổi code — chúng đã có consumer, drift nằm
+ở tài liệu):
+
+| Biến | Đọc ở | Ghi chú khi thêm vào `.env.example` |
+|---|---|---|
+| `AUTH_SECRET` | `src/lib/auth/session.ts:24` | **Bắt buộc ≥ 32 ký tự**, thiếu là login fail-closed; cũng là khoá dự phòng mã hoá key LLM (`LLM_CONFIG_SECRET` ưu tiên hơn). Đổi giá trị = mọi phiên bị đăng xuất. |
+| `TELEGRAM_BOT_TOKEN` | `alert-outbox.ts:271`, `alerts.ts:526/899`, `alert-delivery.service.ts` | Token @BotFather, dùng chung cho alert Radar + alert vận hành + bot `/start`. |
+| `TELEGRAM_CHAT_ID` | `alert-delivery.service.ts:155` | Kênh alert vận hành kiểu cũ; alert Radar dùng `RADAR_TELEGRAM_TARGETS`, không dùng biến này. |
+| `ALERT_WEBHOOK_SECRET` | `alert-delivery.service.ts:172` | Header `X-Webhook-Secret` gửi kèm webhook, để receiver xác thực nguồn gọi. |
+| `RESEND_API_KEY` | `alert-delivery.service.ts:190` | Kênh email chỉ chạy khi có **đủ bộ ba** `RESEND_API_KEY` + `ALERT_EMAIL_FROM` + `ALERT_EMAIL_TO`. |
+| `ALERT_EMAIL_FROM` / `ALERT_EMAIL_TO` | `alert-delivery.service.ts:191-192` | `TO` nhận nhiều địa chỉ, cách nhau dấu phẩy. |
+| `UNLOCK_DATA_URL` | `src/lib/collectors/unlocks.ts:199` | Endpoint JSON lịch unlock; không set = collector no-op (không lỗi). |
+| `UNLOCK_DATA_API_KEY` | `src/lib/collectors/unlocks.ts:205` | Chỉ dùng khi endpoint cần `Authorization: Bearer`. |
+| `BINANCE_SQUARE_OPENAPI_KEY` | `src/lib/square/publisher.ts:332/391` | Thiếu key = publish trả lỗi mềm, pipeline vẫn chạy nhưng không đăng bài. |
+
+### Phần 3 — nguồn unlock Apify (`APIFY_*`)
+
+Collector unlock (`src/lib/collectors/unlocks.ts`) đọc `APIFY_TOKEN` và `APIFY_UNLOCK_DAYS_AHEAD`
+(mặc định 45) để chạy actor `foxlabs/token-unlocks-calendar`, fallback `UNLOCK_DATA_URL` khi
+không có token. Hai biến này **bị audit bỏ sót** vì code cũ đọc bằng tên ghép chuỗi
+(`process.env["APIFY" + "_TOKEN"]`) nên `git grep APIFY_TOKEN` không thấy gì — đó là lý do
+`APIFY_*` từng nằm trong danh sách “chưa có key”, không phải comment lỗi thời.
+
+- `.env.example`: thêm `APIFY_TOKEN` và `APIFY_UNLOCK_DAYS_AHEAD=45` vào block ALERT-06, ghi rõ
+  thứ tự ưu tiên (Apify → `UNLOCK_DATA_URL` → no-op) và chi phí theo bản ghi của actor.
+- `unlocks.ts`: bỏ ghép chuỗi, đọc thẳng `process.env.APIFY_TOKEN` / `process.env.APIFY_UNLOCK_DAYS_AHEAD`
+  — cùng giá trị, không đổi hành vi, nhưng audit env lần sau thấy được consumer.
+- **Kiểm:** `npm run typecheck` pass; audit env báo 0 key không có consumer.
+
+Còn treo (không thuộc nhóm vận hành): biến test/canary (`LLM_CANARY_*`, `LLM_FORCE_ENV`, `BT_*`,
+`CHAT_*`, `LLM_SETTINGS_TEST_DB`, `SQ_TEST_MODE`…) và biến nền tảng (`NODE_ENV`, `PORT`,
+`NEXT_RUNTIME`, `NO_PROXY`).
 
 ## RADAR-TG P3-fix — `SCHEDULER_RADAR_FAST_TIMEOUT` nối vào lượt gọi fast lane (2026-11-25)
 

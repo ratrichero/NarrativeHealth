@@ -4,6 +4,7 @@ FastAPI Main Application
 - Prod: Next.js server is primary, FastAPI serves as backup API
 - Static export NOT recommended due to Next.js API routes dependency
 """
+import logging
 import os
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from backend.config import settings
+from backend.config import resolve_log_level, settings
 from backend.database import init_db
 from backend.api import (
     dashboard_router,
@@ -30,6 +31,10 @@ from backend.api import (
 # This only activates if you manually build Next.js static export
 OUT_DIR = Path(__file__).parent.parent / "out"
 IS_PRODUCTION = OUT_DIR.exists() and (OUT_DIR / "index.html").exists()
+
+# LOG_LEVEL (env) → mức log của process FastAPI; trước đây biến này được khai
+# báo nhưng không ai đọc. uvicorn vẫn tự cấu hình logger riêng của nó.
+logging.basicConfig(level=resolve_log_level(settings.log_level))
 
 
 @asynccontextmanager

@@ -82,10 +82,12 @@ function riskFromPct(pct: number | null): { level: string; score: number } {
 }
 
 async function fetchApifyUnlocks(errors: string[]): Promise<UnlockEntry[] | null> {
-  const token = process.env["APIFY" + "_TOKEN"]?.trim();
+  // Đọc thẳng tên env (trước đây ghép chuỗi `"APIFY" + "_TOKEN"`), để
+  // `git grep APIFY_TOKEN` thấy được consumer — audit env đã bỏ sót đúng vì thế.
+  const token = process.env.APIFY_TOKEN?.trim();
   if (!token) return null;
 
-  const daysAhead = Number(process.env["APIFY" + "_UNLOCK_DAYS_AHEAD"] ?? 45) || 45;
+  const daysAhead = Number(process.env.APIFY_UNLOCK_DAYS_AHEAD ?? 45) || 45;
   const base = "https://api.apify.com/v2";
 
   try {

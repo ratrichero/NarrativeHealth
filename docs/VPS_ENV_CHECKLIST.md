@@ -36,6 +36,19 @@ Cả ba file đều idempotent (`CREATE ... IF NOT EXISTS`, `ADD COLUMN IF NOT E
 chạy lại an toàn.
 
 ```bash
+cd "$APP_DIR"                 # thư mục có .env và node_modules của app đang chạy
+node scripts/apply-radar-migrations.js
+```
+
+Script chạy đúng thứ tự `0038 → 0039 → 0040` trong **một transaction**, in từng file, rồi tự kiểm
+tra (2 bảng · 4 cột · 7 index) và **exit 1** nếu lỗi hoặc thiếu — chỉ cần xem dòng cuối
+`=> ĐẠT: 13/13 kiểm tra` là biết có được deploy tiếp hay không. Lỗi giữa chừng thì `ROLLBACK`
+toàn bộ, không để trạng thái “bảng có mà cột thiếu”. Chạy lại nhiều lần vô hại (idempotent);
+muốn kiểm tra mà không ghi DDL thì thêm `--check` (dùng được cả sau deploy/restart).
+
+Máy chưa `npm ci` hoặc không có `node`? Chạy từng file bằng `psql`, dừng ở file lỗi:
+
+```bash
 cd "$APP_DIR"
 set -a; . ./.env; set +a      # nạp DATABASE_URL từ cùng file .env
 for f in 0038_radar_alert_outbox 0039_radar_alert_metrics 0040_radar_subscribers; do
@@ -44,20 +57,16 @@ for f in 0038_radar_alert_outbox 0039_radar_alert_metrics 0040_radar_subscribers
 done
 ```
 
-Kiểm tra ngay sau khi chạy (chưa cần deploy code):
+Kiểm tra thủ công (script đã in sẵn đúng các câu này):
 
 ```bash
-# 2 bảng phải tồn tại
 psql "$DATABASE_URL" -c '\d radar_alert_outbox' -c '\d radar_subscribers'
-
-# 2 cột mới của 0039 — mỗi truy vấn phải trả đủ 2 dòng
 psql "$DATABASE_URL" -c "select column_name from information_schema.columns
-  where table_name = 'radar_alert_outbox' and column_name in ('bias_log_id','tier')"
-psql "$DATABASE_URL" -c "select column_name from information_schema.columns
-  where table_name = 'radar_bias_outcome' and column_name in ('atr_multiple','invalidation_hit')"
+  where table_name in ('radar_alert_outbox','radar_bias_outcome')
+    and column_name in ('bias_log_id','tier','atr_multiple','invalidation_hit')"
 ```
 
-Kỳ vọng: hai lệnh `\d` in ra 2 bảng; hai truy vấn `information_schema` trả đủ 2 dòng mỗi bảng.
+Kỳ vọng: hai lệnh `\d` in ra 2 bảng; truy vấn `information_schema` trả đủ 4 dòng.
 Xong bước này mới sang §3.
 
 ## 3. Set các biến (thêm/sửa trong `$APP_DIR/.env`)
@@ -68,6 +77,14 @@ APP_ENV=production
 # Hostname thật, phân tách bằng dấu phẩy. KHÔNG kèm http://, path hay port.
 # Thêm cả domain nếu đang dùng (ví dụ: narrativehealth.example,www.narrativehealth.example)
 PRODUCTION_ALLOWED_HOSTS=168.138.179.192
+
+# Auth — khoá ký phiên đăng nhập (JWT HS256, `src/lib/auth/session.ts`).
+# BẮT BUỘC và phải >= 32 ký tự: thiếu hoặc ngắn hơn là login **fail-closed**
+# trên production — /api/auth/login và /api/auth/register trả lỗi cấu hình thay
+# vì cấp phiên, nên không ai đăng nhập được (kể cả admin).
+# Sinh bằng: openssl rand -hex 32   (32 byte → 64 ký tự hex, dư ngưỡng 32)
+# Đổi giá trị = toàn bộ phiên hiện có bị đăng xuất.
+AUTH_SECRET=<output của: openssl rand -hex 32>
 
 # SCHEDULER-AUTH — bắt buộc để /api/refresh không mở cho host công khai.
 # Dùng CÙNG một giá trị cho Next và FastAPI (cùng file .env).
