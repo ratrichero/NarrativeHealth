@@ -45,15 +45,16 @@ import {
   type TrackRecordSummary,
 } from "./track-record";
 
-const MAX_ROWS = 4000;
 /**
- * WINDOW-02 — trần riêng cho pick forward. Trước đây forward record được tính
- * trên đúng 4000 dòng mới nhất của lịch sử, nên khi lịch sử dài hơn trần thì
- * pick forward cũ rơi khỏi cửa sổ và "bằng chứng forward" âm thầm co lại —
- * đúng loại số liệu không được phép mất. Forward được đọc riêng với trần cao
- * hơn nhiều; nếu vẫn chạm trần thì payload nói rõ (`window.forward.capped`).
+ * WINDOW-02 (rút gọn) — MỘT query, trần 20 000 dòng mới nhất.
+ *
+ * Bản trước đọc forward bằng query thứ hai (trần riêng, gộp theo id) để không
+ * bị trần 4 000 của lịch sử cắt. Hai query + merge là quá nhiều máy móc cho
+ * một con số, nên giờ chỉ còn một cửa sổ rộng hơn: nếu lịch sử vượt trần thì
+ * payload nói rõ (`window.capped`), và đánh đổi có ý thức là pick forward cũ
+ * nhất có thể rơi khỏi cửa sổ.
  */
-const FORWARD_MAX_ROWS = 20000;
+const MAX_ROWS = 20000;
 const RECENT_LIMIT = 25;
 
 /** Ngưỡng cỡ mẫu có thể chỉnh qua env (1..100000); sai/thiếu → mặc định. */
@@ -93,19 +94,12 @@ export interface TrackRecordMeta {
   /** Commit đang chạy (12 ký tự) nếu môi trường cung cấp, ngược lại null. */
   commit: string | null;
   changelog: readonly { version: string; note: string }[];
-  /** WINDOW-01/02: cửa sổ lịch sử và cửa sổ forward đọc riêng. */
+  /** WINDOW-01/02: cửa sổ đọc duy nhất (lịch sử + forward dùng chung). */
   window: {
     capped: boolean;
     rowsRead: number;
     limit: number;
     oldestIncluded: string | null;
-    /** WINDOW-02: forward không bị trần lịch sử cắt. */
-    forward: {
-      rowsRead: number;
-      limit: number;
-      capped: boolean;
-      oldestIncluded: string | null;
-    };
   };
 }
 
@@ -585,51 +579,16 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
     backtestEvaluatedAt: topRecommendationPicks.backtestEvaluatedAt,
   };
 
-  // Lịch sử: trần MAX_ROWS, mới nhất trước để bản bị cắt vẫn chứa pick mới và
-  // stamp settlement mới (freshness đọc max của chúng).
-  const historyRows = await db
+  // Một cửa sổ duy nhất, mới nhất trước: bản bị cắt vẫn chứa pick mới và stamp
+  // settlement mới (freshness đọc max của chúng), và phần forward được tính từ
+  // chính cửa sổ này.
+  const rows = await db
     .select(pickSelection)
     .from(topRecommendationPicks)
     .innerJoin(coins, eq(coins.id, topRecommendationPicks.coinId))
     .where(and(publicPickFilter, ne(topRecommendationPicks.backtestStatus, "PENDING")))
     .orderBy(desc(topRecommendationPicks.dataDate), desc(topRecommendationPicks.id))
     .limit(MAX_ROWS);
-
-  // WINDOW-02: forward đọc RIÊNG, không phụ thuộc trần lịch sử. Điều kiện lag
-  // viết bằng SQL để không phải kéo toàn bảng về Node; `picked_origin = 'live'`
-  // được giữ vì đó là tín hiệu mạnh hơn heuristic (lệch giờ quanh nửa đêm).
-  const liveSinceForSql = liveSinceMarker;
-  const forwardPredicate = and(
-    publicPickFilter,
-    ne(topRecommendationPicks.backtestStatus, "PENDING"),
-    sql`(
-      ${topRecommendationPicks.pickedOrigin} = 'live'
-      OR (
-        ${topRecommendationPicks.pickedAt} IS NOT NULL
-        AND (${topRecommendationPicks.pickedAt})::date <= ${topRecommendationPicks.dataDate} + CAST(${FORWARD_PICK_LAG_DAYS} AS integer)
-      )
-    )`,
-    ...(liveSinceForSql
-      ? [sql`(${topRecommendationPicks.pickedAt})::date >= ${liveSinceForSql}`]
-      : [])
-  );
-  const forwardSourceRows = await db
-    .select(pickSelection)
-    .from(topRecommendationPicks)
-    .innerJoin(coins, eq(coins.id, topRecommendationPicks.coinId))
-    .where(forwardPredicate)
-    .orderBy(desc(topRecommendationPicks.dataDate), desc(topRecommendationPicks.id))
-    .limit(FORWARD_MAX_ROWS);
-
-  // Gộp theo id: forward thắng bản trùng trong lịch sử, lịch sử vẫn giữ phần
-  // còn lại. Sắp xếp lại newest-first để mọi thứ phía dưới thấy cùng thứ tự.
-  const mergedRows = new Map<number, (typeof historyRows)[number]>();
-  for (const row of historyRows) mergedRows.set(row.id, row);
-  for (const row of forwardSourceRows) mergedRows.set(row.id, row);
-  const rows = [...mergedRows.values()].sort((a, b) =>
-    a.dataDate === b.dataDate ? b.id - a.id : a.dataDate < b.dataDate ? 1 : -1
-  );
-  const forwardRowsRead = forwardSourceRows.length;
 
   // FORWARD-01: phân loại MỘT lần cho cả trang lẫn export. Pick ghi trước mốc
   // LIVE_SINCE là lịch sử seed dù lag nhỏ, và pick ghi trễ hơn data_date vẫn là
@@ -785,22 +744,10 @@ export async function readTrackRecord(): Promise<TrackRecordRead> {
         // WINDOW-01: cửa sổ đọc bị cắt ở MAX_ROWS — công bố thay vì để người
         // đọc tưởng đang xem toàn bộ lịch sử.
         window: {
-          capped: historyRows.length >= MAX_ROWS,
+          capped: rows.length >= MAX_ROWS,
           rowsRead: rows.length,
           limit: MAX_ROWS,
           oldestIncluded: picks.length > 0 ? picks[picks.length - 1].dataDate : null,
-          forward: {
-            rowsRead: forwardRowsRead,
-            limit: FORWARD_MAX_ROWS,
-            capped: forwardRowsRead >= FORWARD_MAX_ROWS,
-            oldestIncluded:
-              forwardPicks.length > 0
-                ? forwardPicks.reduce(
-                    (min, pick) => (pick.dataDate < min ? pick.dataDate : min),
-                    forwardPicks[0].dataDate
-                  )
-                : null,
-          },
         },
         generatedAt: new Date().toISOString(),
         metricsVersion: TRACK_RECORD_METRICS_VERSION,

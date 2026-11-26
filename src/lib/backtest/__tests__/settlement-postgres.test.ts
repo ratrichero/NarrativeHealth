@@ -733,11 +733,19 @@ describe("BT-E2E settlement trên Postgres thật", () => {
       },
     });
 
+    // Ngày nghiệp vụ (ICT) có thể đã sang ngày mới trong khi `evaluated_at` vẫn
+    // là hôm trước theo UTC (17:00–24:00 UTC). Tuổi settlement vì thế bằng độ
+    // lệch ngày nghiệp vụ − ngày UTC, không phải luôn 0; test không được phụ
+    // thuộc giờ chạy.
+    const utcToday = new Date().toISOString().slice(0, 10);
+    const businessVsUtcDays = Math.round(
+      (Date.parse(today) - Date.parse(utcToday)) / 86_400_000
+    );
     // FRESH-01 exposed cho uptime-check: record vừa được chốt hôm nay → không stale.
     expect(body.data.freshness).toMatchObject({
       stale: false,
       reason: null,
-      settlementAgeDays: 0,
+      settlementAgeDays: businessVsUtcDays,
       pickAgeDays: 0,
       today,
     });
@@ -775,22 +783,22 @@ describe("BT-E2E settlement trên Postgres thật", () => {
       2
     );
 
-    // DD-01: hai lệnh cùng chốt hôm nay → đang underwater so với đỉnh, 0 ngày.
+    // DD-01: hai lệnh cùng chốt trong MỘT ngày UTC → đang underwater so với đỉnh,
+    // 0 ngày; mốc ngày lấy từ `evaluatedAt` (UTC), không phải ngày nghiệp vụ.
     expect(body.data.summary.drawdown).toMatchObject({
       maxR: body.data.summary.maxDrawdownR,
       maxDays: 0,
-      currentFromDate: today,
+      currentFromDate: utcToday,
     });
     expect(body.data.summary.drawdown.currentR).toBeLessThanOrEqual(0);
 
-    // WINDOW-01/02: chưa chạm trần nào → minh bạch "không bị cắt", và forward
-    // có cửa sổ đọc riêng (không phụ thuộc MAX_ROWS của lịch sử).
-    expect(body.data.meta.window).toMatchObject({
+    // WINDOW-01/02: một cửa sổ đọc duy nhất, trần 20 000, chưa chạm trần →
+    // minh bạch "không bị cắt" và không còn `window.forward` riêng.
+    expect(body.data.meta.window).toEqual({
       capped: false,
       rowsRead: 2,
-      limit: 4000,
+      limit: 20000,
       oldestIncluded: addDaysIso(today, -20),
-      forward: { capped: false, limit: 20000, rowsRead: 1 },
     });
 
     // BT-11: kịch bản chi phí thực tế đọc coin_metrics thật (BTC có funding,

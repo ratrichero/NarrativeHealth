@@ -27,7 +27,7 @@ import {
 } from "./bootstrap";
 
 /** Bumped when the aggregation semantics change (shown on the public page). */
-export const TRACK_RECORD_METRICS_VERSION = "track-record-v10";
+export const TRACK_RECORD_METRICS_VERSION = "track-record-v11";
 
 /** 1R = 1% vốn (rủi ro cố định mỗi lệnh) — cùng đơn vị với % return của benchmark. */
 export const RISK_PCT_PER_TRADE = 1;
@@ -42,8 +42,8 @@ export const MIN_EPISODES_FOR_VERDICT = 5;
  */
 export const TRACK_RECORD_CHANGELOG: readonly { version: string; note: string }[] = [
   {
-    version: "track-record-v10",
-    note: "WINDOW-02 + SNAPSHOT-01: phần forward được đọc riêng, không còn bị trần 4000 dòng của lịch sử cắt (payload công bố `window.forward`). Mỗi ngày có thể chốt một bản chụp bất biến kèm chuỗi hash (`/api/track-record/snapshots`) để chứng minh số đã công bố hôm qua. Số liệu của một ngày không đổi nghĩa; chỉ phạm vi đọc forward được nới đúng như đã công bố.",
+    version: "track-record-v11",
+    note: "WINDOW-02 (rút gọn) + SNAPSHOT-02: lịch sử và phần forward dùng CHUNG một cửa sổ 20 000 dòng mới nhất (bỏ query forward riêng và `window.forward`). Bản chụp hằng ngày giờ chỉ lưu `payload_hash` + `head_hash` để neo ra ngoài, không còn chuỗi hash nội bộ. Hit-rate/return không đổi; phạm vi đọc (trần rộng hơn) và hình dạng bản chụp thì có.",
   },
   {
     version: "track-record-v9",
