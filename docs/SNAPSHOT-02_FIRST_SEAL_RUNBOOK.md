@@ -340,8 +340,6 @@ curl -sS https://<domain>/api/health/track-record \
 | `fail` | "Không đọc được bản chụp (đã chạy migration…)" | Migration chưa xong — quay lại bước 1 |
 | `warn` | `snapshot-freshness`: "Bản chụp mới nhất là … trong khi ngày đã đóng gần nhất là …" | **Watchdog refresh chết**: bản chụp mới nhất đã trễ > 1 ngày. Check này chỉ đọc một dòng nên còn nói được khi cả `/api/refresh` (nơi duy nhất tính gap) đã ngừng chạy — xem log refresh + job FastAPI |
 | `ok` | `snapshot-freshness`: "Chưa có bản chụp nào (deployment mới)" | Chưa chốt lần nào — không phải tụt lại; bước 3 sẽ tạo bản đầu tiên |
-| `warn` | `snapshot-config`: "Bản chụp … theo luật băm v1 …" | Dòng cũ trước SNAPSHOT-02. Vẫn verify đúng bằng luật v1 (`schemaVersion` từng dòng), nhưng `snapshot.capturedAt` không nằm trong hash của dòng đó |
-| `warn` | `snapshot-config`: "ghi metricsVersion … code hiện tại …" | Bản chụp sinh bởi bản code cũ — đối chiếu trước khi so số giữa hai mốc |
 
 Endpoint health trả **503** khi có bất kỳ check `fail`; `warn` vẫn `200` để
 monitor phân biệt "hỏng" với "cần xem". Lưu ý hai điều dễ đọc sai: (1) bản chụp
@@ -392,9 +390,7 @@ Neo thứ hai: đặt `SNAPSHOT_ANCHOR_FILE` trên VPS (xem `.env.example`). M�
 chốt ghi thêm một dòng `[SNAPSHOT-ANCHOR] day=… payloadHash=… head=…` vào file,
 cùng định dạng với log và tin nhắn — file này đọc được bằng `--anchor-file`.
 
-Lượt kiểm chỉ cần danh sách hash/head (không cần băm lại payload) dùng
-`GET /api/track-record/snapshots?verify=none`: bỏ bước kéo payload từng dòng,
-response ghi `verification.skipped = true` để không ai đọc nhầm là "đã kiểm xong".
+GET list luôn băm lại payload của từng dòng — không có chế độ bỏ qua bước kiểm.
 
 ---
 
@@ -425,8 +421,8 @@ response ghi `verification.skipped = true` để không ai đọc nhầm là "đ
   (`attempts` × `retry_minutes`) khi gặp `settlement-pending`; hết lượt mới
   `Snapshot anchor failed (lần n/N)`. Lượt refresh sau (hôm sau) vẫn chốt được ngày mới;
   ngày bị lỡ chỉ được **báo** qua log
-  `[SNAPSHOT-02] N ngày đã đóng … CHƯA có bản chụp …` (refresh) + cảnh báo kênh
-  ALERT-02 (lỗi gửi có prefix `[SNAPSHOT-GAP]`), không được ghi bù. Job chạy 6
+  `[SNAPSHOT-02] N ngày đã đóng … CHƯA có bản chụp …` (refresh) và liệt kê trong
+  check `snapshot` của health, không được ghi bù. Job chạy 6
   lượt cách 15 phút → lượt cuối khoảng 08:25 ICT; thành công in
   `[SNAPSHOT-02] head=… day=… created=… payloadHash=…`.
 - **Health 503 ngay sau deploy**: nếu còn trong cửa sổ build (§1b) thì chờ pm2

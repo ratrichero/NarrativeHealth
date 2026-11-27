@@ -376,12 +376,6 @@ export interface SnapshotVerification {
   checked: number;
   /** Ngày có payload trong DB không còn khớp `payload_hash` đã công bố. */
   mismatchedDays: string[];
-  /**
-   * true khi caller chọn bỏ bước băm lại (`?verify=none`) để tiết kiệm băng
-   * thông: danh sách hash vẫn đúng, nhưng lượt này KHÔNG chứng minh payload
-   * còn khớp. `ok` khi đó không được đọc như "đã kiểm xong".
-   */
-  skipped?: boolean;
 }
 
 export interface VerifiedSnapshotChain {

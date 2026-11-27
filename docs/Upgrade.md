@@ -26,9 +26,6 @@ công khai theo hướng phá vỡ: mọi field mới là cộng thêm.
   ngưỡng 1 ngày. Vì sao cần riêng: gap chỉ được tính trong lượt `/api/refresh`, nên
   khi refresh chết thì không lượt nào chạy gap và mọi thứ vẫn im lặng cho tới khi có
   người mở web. Hàm thuần `evaluateSnapshotFreshness` + `readSnapshotFreshness`.
-- **SNAPSHOT-CONFIG.** Check `snapshot-config` báo khi bản chụp mới nhất dùng luật
-  băm cũ, hoặc `metricsVersion` khác code hiện tại — hai trường hợp làm việc so số
-  giữa hai mốc sai nghĩa. Đây là `warn`, không phải lỗi dữ liệu.
 - **Neo thứ hai (file append-only).** `SNAPSHOT_ANCHOR_FILE` (tuỳ chọn): mỗi lượt
   chốt ghi thêm một dòng `[SNAPSHOT-ANCHOR] day=… payloadHash=… head=…` vào file
   ngoài DB. Cùng định dạng với log/tin nhắn nên `verify-snapshot.mjs --anchor-file`
@@ -36,14 +33,10 @@ công khai theo hướng phá vỡ: mọi field mới là cộng thêm.
 - **Verify ngoài VPS.** `--require-anchor` biến "không có head neo ngoài" từ cảnh
   báo thành lỗi (exit 1): lượt kiểm chạy ngoài máy chủ mà không đối chiếu được với
   bản đã in ra ngoài thì không chứng minh thêm gì.
-- **Băng thông GET list.** `?verify=none` bỏ bước băm lại payload từng dòng (mỗi
-  dòng là full JSON track record); response ghi `verification.skipped = true` và
-  `verify: "none"` để không ai đọc `ok: true` như "đã kiểm xong". Mặc định vẫn là
-  `all`.
 - **Test:** `snapshot.test.ts` (v1/v2 + freshness), `snapshot-postgres.test.ts`
   (dòng v1 chèn thẳng vào PGlite vẫn `payloadMatches: true`), `snapshot-anchor.test.ts`
   (file neo, lỗi ghi file), `verify-snapshot.test.ts` (chuỗi v1, `--require-anchor`),
-  `health/track-record/__tests__/route.test.ts` (watchdog + config).
+  `health/track-record/__tests__/route.test.ts` (watchdog + gap).
 - **Chưa làm được trong đợt này (cần môi trường thật):** chạy migration 0040/0041 và
   lượt chốt đầu trên production, đặt `SCHEDULER_CATALYST_TOKEN`/`SNAPSHOT_ANCHOR_FILE`
   trên VPS, xác nhận bảng chụp rỗng trước khi migrate, và các phép đo preset/fill-aware
@@ -3878,11 +3871,10 @@ Postgres) nên các query `radar_bias_log`/`bias_outcome` vẫn cần chạy tr�
   `SNAPSHOT_GAP_WINDOW_DAYS = 31` ngày đã đóng gần nhất, chỉ từ bản chụp đầu
   tiên trở đi, trả `{ missing, windowDays, tip }`; bảng rỗng thì không báo (chưa
   có mốc nào để nói "đáng lẽ phải có"). Có ngày thiếu → `/api/refresh` log
-  `[SNAPSHOT-02] N ngày đã đóng … CHƯA có bản chụp …` kèm danh sách, rồi gửi
-  cảnh báo qua kênh ALERT-02 bằng `alertSnapshotGaps` (chống dội theo cặp tập
-  ngày + ngày nghiệp vụ, state ở `app_settings` key `snapshot.gap.alerted`; gửi
-  lỗi chỉ log `[SNAPSHOT-GAP]`, không phá refresh). Bước gap chạy ĐỘC LẬP với
-  settlement: vẫn đọc và cảnh báo kể cả khi `settleErrors > 0` — lúc đó chỉ bỏ
+  `[SNAPSHOT-02] N ngày đã đóng … CHƯA có bản chụp …` kèm danh sách, và check
+  `snapshot` của health liệt kê cùng danh sách đó. Không gửi cảnh báo qua kênh
+  alert (health đã là chỗ đọc được bằng máy). Bước gap chạy ĐỘC LẬP với
+  settlement: vẫn đọc và ghi log kể cả khi `settleErrors > 0` — lúc đó chỉ bỏ
   qua việc chốt, không bỏ qua việc nói ra ngày thiếu.
   `/api/health/track-record` trả `warn` (không phải `fail`) khi có ngày thiếu,
   nêu số ngày + tối đa 10 ngày gần nhất; thiếu bản chụp hôm qua cũng `warn`,

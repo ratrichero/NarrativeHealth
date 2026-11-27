@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
 import { preflightTrackRecordSchema } from "@/lib/db/preflight";
 import { readTrackRecord } from "@/lib/backtest/track-record-read";
-import { SNAPSHOT_SCHEMA_VERSION } from "@/lib/backtest/snapshot";
 import {
   listSnapshotGaps,
   readSnapshotDayStatus,
-  readSnapshotEntries,
   readSnapshotFreshness,
 } from "@/lib/backtest/snapshot-store";
 import { getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
@@ -215,46 +213,6 @@ export async function GET() {
       id: "snapshot-freshness",
       status: "warn",
       detail: `Không đo được độ trễ bản chụp: ${error instanceof Error ? error.message : String(error)}`,
-    });
-  }
-
-  // SNAPSHOT-CONFIG: bản chụp sinh bởi bản code/luật băm cũ. Không phải lỗi dữ
-  // liệu (dòng v1 vẫn verify đúng bằng luật v1), nhưng so sánh số giữa hai
-  // metricsVersion hoặc đọc `capturedAt` từ dòng v1 sẽ sai. Báo để người vận
-  // hành biết trước khi so sánh.
-  try {
-    const recent = await readSnapshotEntries(1);
-    const newest = recent.length > 0 ? recent[recent.length - 1] : null;
-    if (!newest) {
-      checks.push({
-        id: "snapshot-config",
-        status: "ok",
-        detail: "Chưa có bản chụp nào để đối chiếu cấu hình.",
-      });
-    } else if (newest.schemaVersion < SNAPSHOT_SCHEMA_VERSION) {
-      checks.push({
-        id: "snapshot-config",
-        status: "warn",
-        detail: `Bản chụp mới nhất ${newest.day} theo luật băm v${newest.schemaVersion} (thiếu snapshot.capturedAt trong payload_hash); code hiện tại chốt v${SNAPSHOT_SCHEMA_VERSION} — verify phải dùng schemaVersion của từng dòng.`,
-      });
-    } else if (newest.metricsVersion !== payload.meta.metricsVersion) {
-      checks.push({
-        id: "snapshot-config",
-        status: "warn",
-        detail: `Bản chụp ${newest.day} ghi metricsVersion ${newest.metricsVersion}, code hiện tại ${payload.meta.metricsVersion} — số đã công bố sinh bởi bản code khác, đối chiếu trước khi so sánh.`,
-      });
-    } else {
-      checks.push({
-        id: "snapshot-config",
-        status: "ok",
-        detail: `Bản chụp ${newest.day}: luật băm v${newest.schemaVersion}, metricsVersion ${newest.metricsVersion} khớp code hiện tại.`,
-      });
-    }
-  } catch (error) {
-    checks.push({
-      id: "snapshot-config",
-      status: "warn",
-      detail: `Không đọc được bản chụp mới nhất: ${error instanceof Error ? error.message : String(error)}`,
     });
   }
 

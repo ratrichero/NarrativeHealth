@@ -1,7 +1,7 @@
 // SNAPSHOT-02 — bước snapshot trong refresh.
 //
 // Điều cần khoá: settlement hỏng chỉ chặn việc CHỐT. Danh sách ngày đã đóng
-// còn thiếu vẫn phải được đọc và cảnh báo — nếu không, log im lặng đúng lúc
+// còn thiếu vẫn phải được đọc và ghi log — nếu không, log im lặng đúng lúc
 // settlement hỏng, tức đúng lúc bảng chụp có nguy cơ thiếu ngày nhất.
 
 import { describe, expect, it, jest, beforeEach, afterEach } from "@jest/globals";
@@ -50,11 +50,6 @@ function deps(overrides: Partial<RefreshSnapshotDeps> = {}) {
       },
     })) as unknown as RefreshSnapshotDeps["publishClosedDaySnapshot"],
     listSnapshotGaps: jest.fn(async () => gapReport),
-    alertSnapshotGaps: jest.fn(async () => ({
-      sent: true,
-      reason: "ok" as const,
-      channels: 1,
-    })),
     today: () => TODAY,
     yesterday: () => "2026-11-23",
     ...overrides,
@@ -78,7 +73,7 @@ describe("runRefreshSnapshotStep", () => {
     log.mockRestore();
   });
 
-  it("settleErrors > 0 → không chốt, nhưng vẫn đọc gap và gửi cảnh báo", async () => {
+  it("settleErrors > 0 → không chốt, nhưng vẫn đọc gap và ghi log", async () => {
     const d = deps();
 
     const outcome = await runRefreshSnapshotStep({ settleErrors: 2, deps: d });
@@ -89,10 +84,9 @@ describe("runRefreshSnapshotStep", () => {
 
     // Phần quan trọng: gap vẫn được nói ra dù settlement hỏng.
     expect(d.listSnapshotGaps).toHaveBeenCalledWith({ today: TODAY });
-    expect(d.alertSnapshotGaps).toHaveBeenCalledWith(gapReport, { today: TODAY });
     expect(outcome.gaps).toEqual(gapReport);
-    expect(outcome.alert?.sent).toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("skip seal"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("2026-11-21, 2026-11-22"));
   });
 
   it("settleErrors = 0 → chốt rồi vẫn đọc gap", async () => {
@@ -103,7 +97,6 @@ describe("runRefreshSnapshotStep", () => {
     expect(outcome.seal).toBe("sealed");
     expect(d.publishClosedDaySnapshot).toHaveBeenCalledTimes(1);
     expect(d.listSnapshotGaps).toHaveBeenCalledTimes(1);
-    expect(d.alertSnapshotGaps).toHaveBeenCalledTimes(1);
   });
 
   it("bước chốt ném lỗi → gap vẫn chạy, không ném ra ngoài", async () => {
@@ -116,7 +109,7 @@ describe("runRefreshSnapshotStep", () => {
     const outcome = await runRefreshSnapshotStep({ settleErrors: 0, deps: d });
 
     expect(outcome.seal).toBe("error");
-    expect(d.alertSnapshotGaps).toHaveBeenCalledTimes(1);
+    expect(d.listSnapshotGaps).toHaveBeenCalledTimes(1);
     expect(error).toHaveBeenCalled();
   });
 });

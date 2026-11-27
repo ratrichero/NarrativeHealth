@@ -3,7 +3,6 @@ import { timingSafeEqual } from "node:crypto";
 import { readTrackRecord } from "@/lib/backtest/track-record-read";
 import {
   publishClosedDaySnapshot,
-  readSnapshotEntries,
   readVerifiedSnapshotChain,
 } from "@/lib/backtest/snapshot-store";
 import { runtimeGuardResponse } from "@/lib/env/route-guard";
@@ -42,24 +41,10 @@ function tokenMatches(expected: string, got: string | null): boolean {
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
   const limit = params.get("limit");
-  // `verify=none` bỏ bước băm lại payload (mỗi dòng một JSON lớn): client chỉ
-  // cần danh sách hash/head (dashboard, đối chiếu `head`) không phải kéo cả
-  // payload về mỗi lượt. Mặc định giữ `all` để không âm thầm mất phần kiểm.
-  const verify = (params.get("verify") ?? "all").toLowerCase() !== "none";
   try {
-    if (!verify) {
-      const entries = await readSnapshotEntries(limit ? Number(limit) : undefined);
-      return NextResponse.json({
-        success: true,
-        data: {
-          entries,
-          head: entries.length > 0 ? entries[entries.length - 1].headHash : null,
-          verification: { ok: true, checked: 0, mismatchedDays: [], skipped: true },
-          verify: "none",
-          generatedAt: new Date().toISOString(),
-        },
-      });
-    }
+    // Luôn băm lại payload của từng dòng — đây là phần kiểm được tại chỗ, không
+    // có chế độ "chỉ lấy danh sách hash" để khỏi ai đọc `ok: true` mà payload
+    // chưa được kiểm.
     const chain = await readVerifiedSnapshotChain(limit ? Number(limit) : undefined);
     return NextResponse.json({
       success: true,
@@ -67,7 +52,6 @@ export async function GET(request: Request) {
         entries: chain.entries,
         head: chain.head,
         verification: chain.verification,
-        verify: "all",
         generatedAt: new Date().toISOString(),
       },
     });

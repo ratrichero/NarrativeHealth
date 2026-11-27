@@ -3,10 +3,11 @@
 // Hai việc ĐỘC LẬP:
 //  1. Chốt ngày vừa đóng — chỉ khi settlement sạch. Settlement hỏng thì số chưa
 //     chốt hết, đóng băng bây giờ là đóng băng số dở.
-//  2. Báo gap — LUÔN chạy, kể cả khi settlement hỏng hoặc bước chốt ném lỗi.
+//  2. Đọc gap — LUÔN chạy, kể cả khi settlement hỏng hoặc bước chốt ném lỗi.
 //     Ngày thiếu là chuyện của bảng append-only, không phải của lượt settlement
 //     vừa hỏng; bỏ qua cả hai khi settlement lỗi sẽ làm log im lặng đúng lúc
-//     cần nói nhất.
+//     cần nói nhất. Gap chỉ nằm trong log + health (`snapshot` check liệt kê
+//     ngày thiếu); không gửi cảnh báo qua kênh alert.
 //
 // Không bao giờ ném lỗi ra ngoài: refresh không được chết vì snapshot.
 
@@ -14,10 +15,6 @@ import { getBusinessDate, getYesterdayBusinessDate } from "@/lib/utils";
 import type { TrackRecordRead } from "./track-record-read";
 import { readTrackRecord } from "./track-record-read";
 import type { SnapshotDayDecision } from "./snapshot";
-import {
-  alertSnapshotGaps,
-  type SnapshotGapAlertOutcome,
-} from "./snapshot-gap-alert";
 import {
   listSnapshotGaps,
   publishClosedDaySnapshot,
@@ -33,18 +30,12 @@ export interface RefreshSnapshotOutcome {
   decision: SnapshotDayDecision | null;
   /** Kết quả đọc gap; null khi chính bước đọc gap ném lỗi. */
   gaps: SnapshotGapReport | null;
-  /** Kết quả gửi cảnh báo; null khi không có gap hoặc không đọc được gap. */
-  alert: SnapshotGapAlertOutcome | null;
 }
 
 export interface RefreshSnapshotDeps {
   readTrackRecord: () => Promise<TrackRecordRead>;
   publishClosedDaySnapshot: typeof publishClosedDaySnapshot;
   listSnapshotGaps: (options: { today: string }) => Promise<SnapshotGapReport>;
-  alertSnapshotGaps: (
-    report: SnapshotGapReport,
-    options: { today: string }
-  ) => Promise<SnapshotGapAlertOutcome>;
   today: () => string;
   yesterday: () => string;
 }
@@ -53,17 +44,16 @@ const DEFAULT_DEPS: RefreshSnapshotDeps = {
   readTrackRecord,
   publishClosedDaySnapshot,
   listSnapshotGaps,
-  alertSnapshotGaps,
   today: getBusinessDate,
   yesterday: getYesterdayBusinessDate,
 };
 
 /**
- * Chạy bước chốt + báo gap của một lượt refresh.
+ * Chạy bước chốt + đọc gap của một lượt refresh.
  *
  * `settleErrors` chỉ chặn bước CHỐT. Bước gap luôn chạy để ngày đã đóng mà
- * không có bản chụp vẫn được nói ra (log + kênh alert) ngay trong lượt refresh
- * mà settlement hỏng.
+ * không có bản chụp vẫn được nói ra trong log ngay trong lượt refresh mà
+ * settlement hỏng.
  */
 export async function runRefreshSnapshotStep(options: {
   settleErrors: number;
@@ -110,26 +100,16 @@ export async function runRefreshSnapshotStep(options: {
   }
 
   let gaps: SnapshotGapReport | null = null;
-  let alert: SnapshotGapAlertOutcome | null = null;
   try {
-    const today = deps.today();
-    gaps = await deps.listSnapshotGaps({ today });
+    gaps = await deps.listSnapshotGaps({ today: deps.today() });
     if (gaps.missing.length > 0) {
       console.warn(
         `[SNAPSHOT-02] ${gaps.missing.length} ngày đã đóng trong ${gaps.windowDays} ngày gần nhất CHƯA có bản chụp (không chốt bù — số hiện tại không phải số của ngày đó): ${gaps.missing.join(", ")}. Đuôi chuỗi neo: ${gaps.tip ?? "chưa có"}.`
       );
-      alert = await deps.alertSnapshotGaps(gaps, { today });
-      if (alert.reason === "no-channel") {
-        console.warn(
-          "[SNAPSHOT-02] chưa cấu hình kênh alert nào — cảnh báo gap chỉ nằm trong log."
-        );
-      } else if (alert.reason === "error") {
-        console.warn("[SNAPSHOT-02] gửi cảnh báo gap thất bại — xem log [SNAPSHOT-GAP].");
-      }
     }
   } catch (gapError) {
     console.error("Snapshot gap check error (non-blocking):", gapError);
   }
 
-  return { seal, decision, gaps, alert };
+  return { seal, decision, gaps };
 }
