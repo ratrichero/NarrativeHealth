@@ -57,6 +57,24 @@ export async function readSnapshotEntries(limit = SNAPSHOT_READ_LIMIT): Promise<
   return rows.map(toEntry).reverse();
 }
 
+/**
+ * Chỉ `day` của các bản chụp (mới nhất trước khi reverse, trả về tăng dần).
+ *
+ * Gap/health chỉ cần biết NGÀY nào đã chốt — không cần payload/hash. Đọc thẳng
+ * `readSnapshotEntries()` sẽ kéo theo payload JSON của cả 90 dòng mỗi lần
+ * uptime ping, nên chỗ nào chỉ cần ngày thì dùng hàm này.
+ */
+export async function readSnapshotDays(
+  limit = SNAPSHOT_READ_LIMIT
+): Promise<string[]> {
+  const rows = await db
+    .select({ day: trackRecordSnapshots.day })
+    .from(trackRecordSnapshots)
+    .orderBy(desc(trackRecordSnapshots.day))
+    .limit(clampLimit(limit));
+  return rows.map((row) => row.day).reverse();
+}
+
 export interface PublishSnapshotResult {
   /** false = ngày này đã có bản chụp, dòng cũ được giữ nguyên. */
   created: boolean;
@@ -211,24 +229,24 @@ export async function listSnapshotGaps(options: {
   today: string;
   /** Số ngày đã đóng gần nhất được kiểm; mặc định `SNAPSHOT_GAP_WINDOW_DAYS`. */
   windowDays?: number;
-  /** Truyền sẵn entries để caller khỏi đọc DB hai lần. */
-  entries?: SnapshotEntry[];
+  /** Truyền sẵn danh sách ngày để caller khỏi đọc DB hai lần. */
+  days?: string[];
 }): Promise<SnapshotGapReport> {
   const windowDays = Math.min(
     Math.max(1, Math.floor(options.windowDays ?? SNAPSHOT_GAP_WINDOW_DAYS)),
     366
   );
-  const entries = options.entries ?? (await readSnapshotEntries());
-  const tip = entries.length > 0 ? entries[entries.length - 1].day : null;
+  const days = options.days ?? (await readSnapshotDays());
+  const tip = days.length > 0 ? days[days.length - 1] : null;
   // Chưa từng chốt ngày nào: không có mốc nào để nói "đáng lẽ phải có", và
   // deployment mới không được coi là đang thiếu 31 ngày.
   if (tip === null) return { missing: [], windowDays, tip: null };
 
-  const sealed = new Set(entries.map((entry) => entry.day));
+  const sealed = new Set(days);
   // Mốc bắt đầu "đã hứa": ngày chốt sớm nhất. Ngày trước nó thì chưa có gì để
   // thiếu; từ nó trở đi, ngày đã đóng mà không có dòng đều được báo — kể cả lỗ
   // chen giữa (chỉ xảy ra khi ai đó sửa/xoá DB, và càng phải nói ra).
-  const first = entries[0].day;
+  const first = days[0];
   const missing = closedDaysBefore(options.today, windowDays).filter(
     (day) => day >= first && !sealed.has(day)
   );
@@ -311,7 +329,7 @@ export async function readSnapshotFreshness(options: {
   maxAgeDays?: number;
 }): Promise<SnapshotFreshness> {
   const [row] = await db
-    .select({ day: trackRecordSnapshots.day, payload: trackRecordSnapshots.payload })
+    .select({ day: trackRecordSnapshots.day })
     .from(trackRecordSnapshots)
     .orderBy(desc(trackRecordSnapshots.day))
     .limit(1);
