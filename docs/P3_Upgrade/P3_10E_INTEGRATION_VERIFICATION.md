@@ -418,7 +418,7 @@ All authoritative signal path placeholders have been resolved:
 ### Test Database Infrastructure (P3-10E.1): PASS
 
 Test database infrastructure was implemented in P3-10E.1:
-- ✅ `drizzle.config.test.json` created (isolated test DB config)
+- ✅ `drizzle.config.test.ts` created (isolated test DB config)
 - ✅ Production safety guard implemented (`test-setup.ts`)
 - ✅ Safety guard tests created and PASS
 - ✅ Package scripts added (`test:db:migrate`, `test:db:push`, `test:integration`, `test:smoke`)
@@ -454,7 +454,7 @@ src/lib/p3/orchestrator.ts (MODIFIED)
 
 **Test Infrastructure (P3-10E.1):**
 ```text
-drizzle.config.test.json (CREATED)
+drizzle.config.test.ts (CREATED)
   - Isolated test database configuration
   - Points to localhost:5432/narrative_health_test
 
@@ -544,7 +544,7 @@ This document includes:
 - `src/lib/p3/orchestrator.ts` - Updated to use implemented signals
 
 **Test Infrastructure (P3-10E.1):**
-- `drizzle.config.test.json` - Isolated test database configuration
+- `drizzle.config.test.ts` - Isolated test database configuration
 - `.env.example` - TEST_DATABASE_URL template
 - `package.json` - Test DB scripts added (test:db:migrate, test:db:push, test:integration, test:smoke, audit:production, audit:migration, audit:score-configs, check:backup, migrate:p3)
 - `src/lib/p3/__tests__/integration/test-setup.ts` - Production safety guard

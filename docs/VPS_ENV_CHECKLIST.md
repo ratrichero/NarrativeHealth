@@ -140,6 +140,19 @@ Lưu ý:
 
 ## 4. Restart và kiểm tra
 
+Trước khi restart, kiểm `.env` bằng script chỉ in **tên** key (không in giá trị — dán vào ticket được):
+
+```bash
+cd "$APP_DIR"
+npm run check:env-values -- --env ./.env     # hoặc: node scripts/check-env-values.js --env ./.env
+```
+
+Script kiểm `AUTH_SECRET` ≥ 32 ký tự (bắt buộc khi `APP_ENV=production`), `TEST_DATABASE_URL` không
+trùng/không trỏ DB production và tên DB phải chứa `test`, `PRODUCTION_ALLOWED_HOSTS` không kèm
+scheme/path/port, các biến số nằm trong khoảng code clamp, và so tên key với `.env.example`
+(key lạ/typo, key trùng trong `.env`, key bắt buộc bị thiếu). Exit `1` = có lỗi,
+`2` = không đọc được file; `--values` / `--keys` để chạy riêng từng phần.
+
 ```bash
 # Next.js
 pm2 restart <app-name>          # hoặc: docker compose up -d
@@ -179,10 +192,29 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 # d) webhook Telegram thiếu secret → phải là 401 (không xử lý lệnh)
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   http://127.0.0.1:3000/api/telegram/webhook
+
+# e) login còn sống sau khi set AUTH_SECRET: sai mật khẩu → phải là 401
+#    (không phải 500, không phải 503 lỗi cấu hình)
+curl -s -w '\n%{http_code}\n' -X POST http://127.0.0.1:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"kiem-tra-auth","password":"sai-mat-khau"}'
 ```
 
 Kỳ vọng: `a` = `{"ok":true,"scheduler":{"stalled":false,...},"radar":{"checked":true,...}}`;
-`b` = `403`; `c` = `401`; `d` = `401`.
+`b` = `403`; `c` = `401`; `d` = `401`;
+`e` = `401` kèm `{"success":false,"error":"Sai tên đăng nhập hoặc mật khẩu."}`.
+
+`e` trả `500` → route ném lỗi khi đọc DB/parse body; xem `pm2 logs` của Next ngay sau lượt gọi.
+
+Lưu ý phép thử này **không** chạm tới `signSession`: sai mật khẩu là 401 ngay ở bước verify,
+nên `401` chỉ chứng minh route + DB sống, **không** chứng minh `AUTH_SECRET` đã đúng. Câu
+`503` kèm `Máy chủ chưa cấu hình AUTH_SECRET` chỉ xuất hiện khi đăng nhập **đúng** mật khẩu
+mà khoá thiếu/< 32 ký tự. Muốn xác nhận khoá: đăng nhập bằng một tài khoản thật (kỳ vọng
+`200` + cookie `session`), hoặc kiểm tra độ dài khoá đang nạp:
+
+```bash
+awk -F= '/^AUTH_SECRET=/{print length($2)}' "$APP_DIR/.env"   # phải >= 32
+```
 
 `radar.checked` là dấu hiệu migration `0038` đã chạy: `true` = bảng outbox có và job đọc được
 (số `pending`/`failed`/`sentToday` nằm trong cùng object); `false` = bảng chưa có, quay lại §2.

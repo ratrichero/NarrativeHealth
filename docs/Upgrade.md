@@ -62,9 +62,103 @@ không có token. Hai biến này **bị audit bỏ sót** vì code cũ đọc b
   — cùng giá trị, không đổi hành vi, nhưng audit env lần sau thấy được consumer.
 - **Kiểm:** `npm run typecheck` pass; audit env báo 0 key không có consumer.
 
-Còn treo (không thuộc nhóm vận hành): biến test/canary (`LLM_CANARY_*`, `LLM_FORCE_ENV`, `BT_*`,
-`CHAT_*`, `LLM_SETTINGS_TEST_DB`, `SQ_TEST_MODE`…) và biến nền tảng (`NODE_ENV`, `PORT`,
-`NEXT_RUNTIME`, `NO_PROXY`).
+### Phần 4 — rà 44 biến còn lại (đính chính con số)
+
+Con số “44 biến đọc trong code nhưng chưa có key” ở Phần 2 đo theo **key active** (`^KEY=`),
+nên đếm nhầm cả những biến đã được document dưới dạng dòng comment ví dụ. Đo lại theo nghĩa
+“tên biến có xuất hiện ở đâu trong `.env.example` không”: **28/44 đã có**, chỉ **16/44 là chưa hề
+nhắc tới**.
+
+**Đã có sẵn (không phải drift):** `LLM_KEY_TOKENS_PER_MIN`, `LLM_CONTEXT_TOKENS`,
+`LLM_TOOL_CALLS_PER_MIN`, `LLM_HEDGE_MS`, `LLM_DAILY_BUDGET_USD`, `LLM_COST_INPUT_SHARE`,
+`LLM_SQUARE_JSON`, `LLM_GROUNDING_REPAIR`(+`_INTERVAL_MS`), `LLM_PERSIST`, `LLM_BREAKER_TEST`,
+`LLM_FORCE_ENV`, `LLM_CANARY_ENABLED/PREFLIGHT/RETRY_DELAY_MS/SKIP/STAGGER_MS`, `CHAT_TURNS_PER_DAY`,
+`CHAT_TOKENS_PER_DAY`, `CHAT_QUOTA_SOFT_PCT`, `EVAL_MIN_PASS_RATE`, `GOOGLE_AI_API_KEYS/MODEL_NAME`,
+`GOOGLE_AI_KEY_COOLDOWN_MS/AUTH_COOLDOWN_MS`, `GOOGLE_AI_API_KEY` (mô tả dạng prose: dùng một key
+thay cho pool), `NODE_ENV`, `PORT`. Không sửa gì — chúng nằm trong block LLM/Google đã có.
+
+**Knob vận hành thật, đã bổ sung vào `.env.example` (8):**
+
+| Biến | Default (kẹp biên) | Vì sao phải document |
+|---|---|---|
+| `BT_FEE_BPS` | 5 (0–1000) | Đổi là đổi chi phí round-trip hiển thị trên track-record |
+| `BT_SLIPPAGE_BPS` | 2 (0–1000) | Như trên; round-trip = 2 × (fee + slippage) |
+| `BT_EPISODE_TOLERANCE_PCT` | 3 (0.5–20) | Quyết định gộp các lần chốt thành episode |
+| `BT_MIN_CANDLE_COVERAGE` | 100 (1–100) | Hạ ngưỡng = chốt trên dữ liệu thiếu, ghi sai vĩnh viễn |
+| `BT_DIGEST_ENABLED` | BẬT | Tắt digest backtest gửi qua alert-delivery |
+| `SQUARE_LLM_ENABLED` | BẬT | Kill switch: `false` = chỉ đăng template khi provider sập |
+| `SQUARE_PUBLISH_STAGGER_MS` | 90000 | Giãn cách các bài movers để không dồn lên Square |
+| `FASTAPI_URL` | `http://localhost:8000` | Đổi khi FastAPI khác host/port; tool chat fallback pure-TS nếu chết |
+
+Nhóm `BT_*` để dạng comment kèm default vì chúng chỉ nên set khi chủ động đổi ngữ nghĩa record.
+
+**Để nguyên có chủ đích (8 biến, không thêm key riêng):**
+
+- Nền tảng/Next tự cấp, không thuộc `.env`: `NEXT_RUNTIME`, `LLM_SETTINGS_TEST_DB` (chỉ test),
+  `NEXT_ALLOWED_DEV_ORIGINS` (chỉ `next dev` qua proxy preview).
+- Dev/test: `SQ_TEST_MODE` (đặt stagger = 0; ghi ngay trong comment của
+  `SQUARE_PUBLISH_STAGGER_MS`).
+- Chỉ thuộc script `scripts/radar-mirror.mjs`, đã có runbook riêng
+  (`docs/RADAR-LIVE-MIRROR_RUNBOOK.md`): `NO_PROXY`, `RADAR_BASE`, `RADAR_MIRROR_MAP`,
+  `RADAR_MIRROR_PORT` — không đưa vào `.env.example` để tránh người vận hành tưởng app đọc chúng.
+
+Quy ước từ đây: một biến được coi là “đã document” khi tên nó xuất hiện trong `.env.example` (kể cả
+dòng comment kèm default), không chỉ khi có key active — nếu không, audit sẽ lặp lại false positive
+này.
+
+**Kiểm tự động (2026-11-26):** `npm run check:env-drift` → `scripts/check-env-drift.js`, chạy trong
+CI ở job `env-drift`. Ba loại lỗi, đúng những thứ vừa phải rà tay:
+
+| Loại | Nghĩa | Sửa thế nào |
+|---|---|---|
+| `dead-key` | `.env.example` có `KEY=` nhưng không nơi nào đọc | nối vào chỗ dùng, bỏ key, hoặc allowlist + lý do |
+| `scoped-only` | `KEY` chỉ được test/script đọc, runtime không dùng | nối vào runtime, bỏ key, hoặc allowlist + lý do |
+| `undocumented` | code đọc env (`process.env.KEY`, `os.getenv("KEY")`, field pydantic Settings) mà `.env.example` không nhắc tới | thêm key/comment, hoặc allowlist |
+| `stale-allowlist` | mục allowlist không còn được đọc | bỏ khỏi allowlist |
+| `allowlist-no-reason` | mục allowlist thiếu lý do | thêm lý do vì sao biến được phép |
+
+Quy tắc đo (chi tiết ở header `scripts/check-env-drift.js`): consumer là `process.env.KEY`,
+`process.env["KEY"]`, `process.env[CONST]` (với `const CONST = "KEY"`), call site
+`helper("KEY")` của helper nội file nhận tên env rồi đọc `process.env[name]`, hoặc một field
+`Settings` (`backend/config.py`, `backend/provider/config.py`) có `settings.<field>` / `cfg.<field>`
+dùng thật. Key phải là token riêng (không khớp giữa một định danh dài hơn), và **dòng comment bị
+bỏ ở cả hai chiều**: key chỉ nằm trong comment không tính là có người dùng, cũng không tính là nơi
+đọc env. `docs/`, `README.md`, `.env*` không bao giờ là consumer.
+
+**Phân loại consumer theo đường dẫn (2026-11-27):** consumer chỉ giữ một key sống khi nằm trong
+file `runtime` (app, backend, thư viện). File `test` (`__tests__/`, `*.test.ts`, `*.spec.ts`,
+`tests/`, `e2e/`) và `script` (`scripts/`, `.github/`) **không** tính: biến chỉ test/script đọc vẫn
+là biến chết ở production và bị báo `scoped-only`. Muốn giữ, phải thêm vào `ALLOWLIST` kèm lý do
+(ví dụ `TEST_DATABASE_URL`). Mục allowlist không có lý do bị báo `allowlist-no-reason`, nên
+allowlist không thể là nơi giấu biến chết mà không giải thích. Field Settings cũng chỉ tính là
+“đang dùng” khi có `settings.<field>` / `cfg.<field>` trong file runtime của `backend/`.
+Baseline sau khi phân loại: chỉ `TEST_DATABASE_URL` lộ ra (CI + test tích hợp), đã allowlist kèm lý do;
+83 key còn lại đều có consumer runtime hoặc là platform/dev-only đã allowlist.
+
+Chiều `undocumented` coi **mọi**
+field pydantic Settings là một chỗ đọc env (tên field → `FIELD_NAME`, tôn trọng `alias` và
+`env_prefix`), nên thêm field mà quên `.env.example` là đỏ; ngoài Settings chỉ có
+`backend/main.py` (`PRODUCTION_ALLOWED_HOSTS`) và các script `backend/*_p3_*.py` (`DATABASE_URL`).
+
+**Mở rộng 2026-11-27:** guard đọc thêm pydantic Settings (`backend/config.py` +
+`backend/provider/config.py`), `process.env[CONST]`, và call site của helper nhận tên env (ví dụ
+`numberFromEnv("LLM_MAX_RETRIES")`). Lượt đầu bắt được 6 key backend đọc nhưng chưa document — đã
+bổ sung vào `.env.example` dạng comment kèm default: `SCHEDULER_TIMEOUT`,
+`SCHEDULER_MOVERS_ENABLED/HOUR/MINUTE`, `SCHEDULER_P3_ENABLED/INTERVAL_HOURS`.
+
+**Kiểm giá trị (2026-11-27):** `npm run check:env-values` → `scripts/check-env-values.js`, dùng trên
+`.env` thật ở VPS (không chạy trong CI vì CI không có `.env`): `AUTH_SECRET` ≥ 32 ký tự,
+`TEST_DATABASE_URL` không trỏ DB production, `PRODUCTION_ALLOWED_HOSTS` là hostname trần, số nằm
+trong khoảng code clamp, và so **tên** key với `.env.example` (key lạ/typo, key trùng, key bắt buộc
+thiếu). Output chỉ có tên key + số dòng, không bao giờ in giá trị. Xem §4 của
+`docs/VPS_ENV_CHECKLIST.md`.
+Allowlist nằm ngay trong script kèm lý do; mục không còn ai đọc bị báo `stale-allowlist`.
+
+Đã kiểm ngược cả bốn nhánh: xoá consumer của `FASTAPI_URL` → báo `dead-key`; thêm
+`process.env.DRIFT_PROBE_KEY` → báo `undocumented` (kèm `next.config.ts:40`); thêm
+`os.getenv("DRIFT_PROBE_PY")` trong một file `.py` → báo `undocumented` ở đúng `file:line`;
+thêm mục allowlist không ai đọc → báo `stale-allowlist`; khôi phục → `0 dead-key, 0 undocumented, 0 stale-allowlist`,
+exit 0.
 
 ## RADAR-TG P3-fix — `SCHEDULER_RADAR_FAST_TIMEOUT` nối vào lượt gọi fast lane (2026-11-25)
 

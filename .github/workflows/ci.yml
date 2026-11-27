@@ -59,6 +59,20 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run lint
 
+  env-drift:
+    name: Env drift (.env.example ↔ env reads)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # ENV-DRIFT: báo khi .env.example có key không consumer, hoặc code (JS/TS + Python +
+    # pydantic Settings) đọc biến mà .env.example không nhắc tới. Allowlist biến nền tảng/dev-only/test-canary
+    # nằm ngay trong script (kèm lý do). Không cần `npm ci`: script chỉ dùng node + git.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run check:env-drift
+
   test:
     name: Jest (toàn repo, trừ nợ P3)
     runs-on: ubuntu-latest

@@ -17,7 +17,7 @@
 - Host: `localhost:5432`
 - Database: `narrative_health_test`
 - User: `postgres`
-- Configuration: `drizzle.config.test.json`
+- Configuration: `drizzle.config.test.ts`
 
 **Architecture Rationale:**
 - Uses same PostgreSQL engine as production for compatibility
@@ -71,7 +71,7 @@ npm run db:migrate
 ```bash
 npm run test:db:migrate
 ```
-- Uses `drizzle.config.test.json`
+- Uses `drizzle.config.test.ts`
 - Targets `narrative_health_test` database only
 - Safe to run multiple times
 
@@ -79,7 +79,7 @@ npm run test:db:migrate
 ```bash
 npm run test:db:push
 ```
-- Uses `drizzle.config.test.json`
+- Uses `drizzle.config.test.ts`
 - Pushes schema changes directly to test database
 - Useful for test database setup
 
@@ -229,7 +229,7 @@ psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE narrative_health_test TO p
 ## 11. Files Changed
 
 **Configuration:**
-- `drizzle.config.test.json` (CREATED) - Test database configuration
+- `drizzle.config.test.ts` (CREATED) - Test database configuration
 - `.env.example` (MODIFIED) - Added TEST_DATABASE_URL template
 - `package.json` (MODIFIED) - Added test DB scripts
 
@@ -245,7 +245,7 @@ psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE narrative_health_test TO p
 **Test Database Infrastructure:** PASS
 
 **Components Verified:**
-- ✅ Test database configuration created (`drizzle.config.test.json`)
+- ✅ Test database configuration created (`drizzle.config.test.ts`)
 - ✅ Production safety guard implemented (`test-setup.ts`)
 - ✅ Safety guard tests created and PASS (correctly rejects when TEST_DATABASE_URL not set)
 - ✅ Package scripts added (`test:db:migrate`, `test:db:push`, `test:integration`, `test:smoke`)
